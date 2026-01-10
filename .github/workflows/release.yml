@@ -1,0 +1,78 @@
+name: Release and Update Store
+
+on:
+  push:
+    branches: [ "main" ]
+    
+  workflow_dispatch:
+env:
+  REGISTRY: ghcr.io
+  # Формат: имя_пользователя/имя_репозитория_магазина
+  STORE_REPO: "${{ github.actor }}/ha_addons" 
+  # Путь к конфигу бота внутри репозитория-магазина
+  CONFIG_PATH: "telegram_bot_addon/config.yaml"
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout Bot Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Нужно для корректного определения версии
+
+      # 1. Генерируем новую версию (авто-инкремент патча)
+      - name: Bump version and push tag
+        id: tag_version
+        uses: mathieudutour/github-tag-action@v6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+
+      # 2. Настройка Docker (QEMU + Buildx)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. Сборка и Пуш образа
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/homeassistant_bot:${{ steps.tag_version.outputs.new_tag }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/homeassistant_bot:latest
+          provenance: false
+
+      # 4. Обновление версии в репозитории Магазина
+      - name: Update Version in Addons Store
+        run: |
+          # Клонируем репозиторий магазина, используя PAT
+          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ env.STORE_REPO }}.git store
+          cd store
+          
+          # Устанавливаем новую версию в config.yaml через sed
+          # Ищем строку version: "..." и заменяем значение
+          NEW_VER="${{ steps.tag_version.outputs.new_tag }}"
+          sed -i "s/^version: .*/version: \"$NEW_VER\"/" ${{ env.CONFIG_PATH }}
+          
+          # Настраиваем Git и пушим изменения
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.CONFIG_PATH }}
+          git commit -m "Update Telegram Bot to $NEW_VER"
+          git push
