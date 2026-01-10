@@ -3,15 +3,13 @@ name: Release and Update Store
 on:
   push:
     branches: [ "main" ]
-    
   workflow_dispatch:
+
 env:
   REGISTRY: ghcr.io
-  # Формат: имя_пользователя/имя_репозитория_магазина
-  STORE_REPO: "${{ github.actor }}/ha_addons" 
-  # Путь к конфигу бота внутри репозитория-магазина
+  STORE_REPO: "Anykei/ha_addons" 
   CONFIG_PATH: "telegram_bot_addon/config.yaml"
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -23,23 +21,23 @@ jobs:
       - name: Checkout Bot Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Нужно для корректного определения версии
-      
-      # lowercase Anykei -> anykey
+          fetch-depth: 0
+
       - name: Lowercase repo owner
         run: |
           echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
           
-      # 1. Генерируем новую версию (авто-инкремент патча)
-      - name: Bump version and push tag
+      # 1. Генерируем новую версию БЕЗ префикса "v"
+      - name: Bump version (Dry Run)
         id: tag_version
         uses: mathieudutour/github-tag-action@v6.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           default_bump: patch
           dry_run: true
+          tag_prefix: "" # Убираем букву "v" из тега
 
-      # 2. Настройка Docker (QEMU + Buildx)
+      # 2. Настройка Docker
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -52,7 +50,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. Сборка и Пуш образа
+      # 3. Сборка и Пуш образа (тег будет чистым числом, например 0.0.6)
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
@@ -66,19 +64,33 @@ jobs:
 
       # 4. Обновление версии в репозитории Магазина
       - name: Update Version in Addons Store
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # Клонируем репозиторий магазина, используя PAT
-          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ env.STORE_REPO }}.git store
-          cd store
+          # Используем явный URL с токеном для обхода 403
+          STORE_URL="https://Anykei:${MY_TOKEN}@github.com/${{ env.STORE_REPO }}.git"
           
-          # Устанавливаем новую версию в config.yaml через sed
-          # Ищем строку version: "..." и заменяем значение
+          git clone $STORE_URL store_repo
+          cd store_repo
+          
           NEW_VER="${{ steps.tag_version.outputs.new_tag }}"
+          
+          # Обновляем версию в config.yaml
           sed -i "s/^version: .*/version: \"$NEW_VER\"/" ${{ env.CONFIG_PATH }}
           
-          # Настраиваем Git и пушим изменения
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ env.CONFIG_PATH }}
           git commit -m "Update Telegram Bot to $NEW_VER"
-          git push
+          
+          # Пушим обратно в main
+          git push $STORE_URL main
+
+      # 5. Финальный шаг: фиксируем тег в репозитории БОТА
+      - name: Push Git Tag to Bot Repo
+        if: success()
+        uses: mathieudutour/github-tag-action@v6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          custom_tag: ${{ steps.tag_version.outputs.new_version }}
+          tag_prefix: ""
