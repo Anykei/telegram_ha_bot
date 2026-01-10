@@ -59,8 +59,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/homeassistant_bot:${{ steps.tag_version.outputs.new_tag }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/homeassistant_bot:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/telegram_ha_bot:${{ steps.tag_version.outputs.new_tag }}
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/telegram_ha_bot:latest
           provenance: false
 
       # 4. Обновление версии в репозитории Магазина
