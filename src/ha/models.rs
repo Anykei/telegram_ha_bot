@@ -13,6 +13,7 @@ pub struct Room {
     pub entities: Vec<Entity>,
 }
 
+#[derive(Deserialize, Debug, Clone)]
 pub struct NotifyEvent {
     pub entity_id: String,
     pub old_state: String,

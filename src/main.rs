@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tokio::signal;
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -20,6 +20,7 @@ mod ha;
 mod config;
 mod options;
 mod bot;
+mod core;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,7 +52,20 @@ async fn main() -> Result<()> {
         delete_chart_timeout_s: 600,
         delete_help_messages_timeout_s: 30,
         delete_error_messages_timeout_s: 5,
+        sessions: DashMap::new(),
+        name_aliases: DashMap::new(),
+        state_aliases: DashMap::new()
     });
+
+    let names = db::get_aliases_map(&app_config.db).await;
+    for (eid, name) in names {
+        app_config.name_aliases.insert(eid, name);
+    }
+
+    let states = db::get_state_aliases(&app_config.db).await;
+    for (eid, state_map) in states {
+        app_config.state_aliases.insert(eid, state_map);
+    }
 
     let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
     ha::spawn_event_listener(paths.ha_url.clone(), paths.ha_token.clone(), cancel_token.clone(), tx);
@@ -75,6 +89,8 @@ async fn main() -> Result<()> {
         (dispatcher, bot)
     };
 
+    core::spawn_notification_processor(rx, _bot.clone(), app_config.clone(), cancel_token.clone()).await;
+
     let bot_task = dispatcher.dispatch();
 
     tokio::select! {
@@ -87,5 +103,6 @@ async fn main() -> Result<()> {
     app_config.db.close().await;
 
     info!("Database connection closed.");
+    info!("Shutting down...");
     Ok(())
 }

@@ -22,3 +22,4 @@ futures-util = "0.3.31"
 tungstenite = "0.28.0"
 plotters = { version = "0.3.5", features = ["ttf", "bitmap_backend", "chrono"] }
 image = "0.25.9"
+dashmap = "7.0.0-rc2"
