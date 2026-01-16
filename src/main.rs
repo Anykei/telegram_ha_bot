@@ -49,13 +49,32 @@ async fn main() -> Result<()> {
         ha_client: ha_client.clone(),
         db: db_pool,
         root_user: options.root_user,
+
         delete_chart_timeout_s: 600,
         delete_help_messages_timeout_s: 30,
+        delete_notification_messages_timeout_s: 5,
         delete_error_messages_timeout_s: 5,
+        leak_time_notification_m: 100,
+        background_maintenance_interval_s:5,
+
         sessions: DashMap::new(),
+
         name_aliases: DashMap::new(),
-        state_aliases: DashMap::new()
+
+        state_aliases: DashMap::new(),
     });
+
+    info!("Load Backup sessions from database...");
+    let active_sessions = db::get_all_active_sessions(&app_config.db).await?;
+
+    for (uid, mid, context) in active_sessions {
+        app_config.sessions.insert(uid as u64, crate::models::UserSession {
+            last_menu_id: mid,
+            current_context: context,
+            header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
+        });
+    }
+    info!("Restored {} action sessions.", app_config.sessions.len());
 
     let names = db::get_aliases_map(&app_config.db).await;
     for (eid, name) in names {
@@ -89,7 +108,8 @@ async fn main() -> Result<()> {
         (dispatcher, bot)
     };
 
-    core::spawn_notification_processor(rx, _bot.clone(), app_config.clone(), cancel_token.clone()).await;
+    core::spawn_notification_processor(rx, _bot.clone(), app_config.clone(), cancel_token.clone());
+    core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
 
     let bot_task = dispatcher.dispatch();
 

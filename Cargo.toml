@@ -17,9 +17,10 @@ reqwest = { version = "0.13.1", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }
 chrono = "0.4.42"
 urlencoding = "2.1.3"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-native-tls", "sqlite"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-native-tls", "sqlite", "chrono", "macros"] }
 futures-util = "0.3.31"
 tungstenite = "0.28.0"
 plotters = { version = "0.3.5", features = ["ttf", "bitmap_backend", "chrono"] }
 image = "0.25.9"
 dashmap = "7.0.0-rc2"
+parking_lot = "0.12.5"

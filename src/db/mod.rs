@@ -1,4 +1,6 @@
 mod user;
+pub(crate) mod device_event_log;
+mod models;
 
 use std::collections::HashMap;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
@@ -8,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use log::info;
 
-pub use user::user_exists;
+pub use user::*;
 
 pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
 
@@ -59,7 +61,7 @@ fn prepare_db_dir(uri: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn create_backup(pool: &sqlx::SqlitePool, backup_path: &str) -> Result<()> {
+pub async fn create_backup(pool: &SqlitePool, backup_path: &str) -> Result<()> {
     let _ = std::fs::remove_file(backup_path);
 
     sqlx::query(&format!("VACUUM INTO '{}'", backup_path))
@@ -71,7 +73,7 @@ pub async fn create_backup(pool: &sqlx::SqlitePool, backup_path: &str) -> Result
     Ok(())
 }
 
-pub async fn get_subscribers(pool: &sqlx::SqlitePool, entity_id: &str) -> Result<Vec<i64>> {
+pub async fn get_subscribers(pool: &SqlitePool, entity_id: &str) -> Result<Vec<i64>> {
     let rows = sqlx::query_as::<_, (i64,)>("SELECT user_id FROM subscriptions WHERE entity_id = ?")
         .bind(entity_id)
         .fetch_all(pool)
@@ -79,7 +81,7 @@ pub async fn get_subscribers(pool: &sqlx::SqlitePool, entity_id: &str) -> Result
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
-pub async fn get_aliases_map(pool: &sqlx::SqlitePool) -> HashMap<String, String> {
+pub async fn get_aliases_map(pool: &SqlitePool) -> HashMap<String, String> {
     sqlx::query_as::<_, (String, String)>("SELECT entity_id, human_name FROM aliases")
         .fetch_all(pool)
         .await
@@ -89,7 +91,7 @@ pub async fn get_aliases_map(pool: &sqlx::SqlitePool) -> HashMap<String, String>
 }
 
 pub type StateMap = HashMap<String, HashMap<String, String>>;
-pub async fn get_state_aliases(pool: &sqlx::SqlitePool) -> StateMap {
+pub async fn get_state_aliases(pool: &SqlitePool) -> StateMap {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT entity_id, original_state, human_state FROM state_aliases")
             .fetch_all(pool)

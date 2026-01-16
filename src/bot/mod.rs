@@ -1,5 +1,9 @@
 mod models;
-mod handlers;
+pub(crate) mod handlers;
+mod utils;
+pub(crate) mod view;
+pub(crate) mod notification;
+mod keyboards;
 
 use std::sync::Arc;
 use teloxide::{
