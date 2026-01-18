@@ -1,13 +1,18 @@
 mod notification;
 pub(crate) mod maintenance;
+pub(crate) mod presentation;
+pub mod devices;
+pub(crate) mod types;
 
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 pub use notification::spawn_notification_processor;
 pub use maintenance::spawn_background_maintenance;
 use crate::db;
 use crate::models::{AppConfig, UserSession};
 
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct HeaderItem {
     pub icon: String,
     pub label: String,
@@ -16,50 +21,62 @@ pub struct HeaderItem {
 }
 
 impl AppConfig {
-
     pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
+        use crate::core::presentation::StateFormatter;
         let mut items = Vec::new();
 
-        // 1. Пытаемся получить агрегированные алерты за последние 30 минут
-        // Мы используем 30 минут как "окно актуальности", это можно вынести в конфиг
-        let window_mins = 30;
+        let window_mins = self.leak_time_notification_m;
 
+        // 1. Получаем активные алерты
         match db::device_event_log::EventLogger::fetch_active_alerts(&self.db, user_id, window_mins).await {
             Ok(alerts) => {
                 for alert in alerts {
-                    // Достаем человеческое имя из DashMap (память)
-                    let name = self.name_aliases
-                        .get(&alert.entity_id)
-                        .map(|s| s.clone())
+                    // А. Определяем домен и класс (для иконок)
+                    let domain = alert.entity_id.split('.').next().unwrap_or("");
+                    // В идеале alert должен содержать device_class из БД, если нет — используем ""
+                    let class = "";
+
+                    // Б. Получаем локализованное имя устройства (Алиас)
+                    let name = self.name_aliases.get(&alert.entity_id)
+                        .map(|r| r.value().clone())
                         .unwrap_or_else(|| alert.entity_id.clone());
 
-                    // Формируем счетчик, если событий > 1 (например: "Открыто (x3)")
+                    // В. Получаем префикс комнаты (Breadcrumbs)
+                    let room_prefix = if let Ok(Some(rid)) = db::devices::get_room_id_by_entity(&self.db, &alert.entity_id).await {
+                        if let Ok(Some(room)) = db::rooms::get_room_by_id(rid, &self.db).await {
+                            format!("{} • ", room.alias.as_deref().unwrap_or(&room.area))
+                        } else { "".to_string() }
+                    } else { "".to_string() };
+
+                    // Г. Форматируем состояние и иконку через ядро
+                    let icon = StateFormatter::get_icon(domain, class, &alert.last_state);
+                    let human_state = StateFormatter::format_state_value(domain, class, &alert.last_state);
+
+                    // Д. Форматируем мета-информацию (счетчик)
                     let count_suffix = if alert.event_count > 1 {
-                        format!(" (x{})", alert.event_count)
+                        format!(" [x{}]", alert.event_count)
                     } else {
                         "".to_string()
                     };
 
-                    // Создаем элемент шапки
+                    // Собираем элемент для шапки
                     items.push(HeaderItem {
-                        icon: "🔔".into(),
-                        label: name,
-                        value: format!("{}{}", alert.last_state, count_suffix),
+                        icon: icon.into(),
+                        label: format!("{}{}", room_prefix, name),
+                        value: format!("*{}*{}", human_state, count_suffix),
                         last_update: alert.last_updated,
                     });
                 }
             }
             Err(e) => {
-                // Если база данных временно недоступна, логируем ошибку,
-                // но не обрушиваем весь процесс рендеринга меню
                 error!("Ошибка БД при сборе данных для шапки: {}", e);
             }
         }
 
-        // 2. Если событий за 30 минут не было, выводим позитивный статус
+        // 2. Если событий не было — выводим "чистый" статус
         if items.is_empty() {
             items.push(HeaderItem {
-                icon: "🏠".into(),
+                icon: "✅".into(), // Сменил 🏠 на ✅ для лучшего контраста при алерте
                 label: "Система".into(),
                 value: "Все спокойно".into(),
                 last_update: Utc::now(),
@@ -68,6 +85,10 @@ impl AppConfig {
 
         items
     }
+}
+
+/// TODO realization pinned in future
+    // pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
 
     // pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
     //     let mut items = Vec::new();
@@ -110,23 +131,20 @@ impl AppConfig {
 
         // items
     // }
-}
+// }
 
 pub async fn update_user_state(config: &Arc<AppConfig>, user_id: u64, msg_id: i32, context: &str) {
     let context_owned = context.to_string();
 
-    // 1. МГНОВЕННО обновляем оперативную память (DashMap)
-    // Это гарантирует, что "Живая шапка" сразу увидит новые координаты пользователя
     config.sessions.insert(user_id, UserSession {
         last_menu_id: msg_id,
         current_context: context_owned.clone(),
-        // Сохраняем уже выбранные закрепленные сущности
         header_entities: config.sessions.get(&user_id)
             .map(|s| s.header_entities.clone())
             .unwrap_or_default(),
     });
 
-    // 2. АСИНХРОННО пишем в базу данных
+
     let pool = config.db.clone();
     let ctx = context_owned;
 

@@ -4,6 +4,7 @@ use crate::ha::HAClient;
 use dashmap::DashMap;
 use serde::Deserialize;
 
+
 pub struct UserSession {
     pub last_menu_id: i32,
     pub current_context: String,

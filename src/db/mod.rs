@@ -1,6 +1,8 @@
 mod user;
 pub(crate) mod device_event_log;
 mod models;
+pub(crate) mod rooms;
+pub(crate) mod devices;
 
 use std::collections::HashMap;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};

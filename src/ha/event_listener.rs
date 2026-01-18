@@ -76,12 +76,16 @@ async fn start_event_listener(
                         }
                         Some("event") => {
                             if v["event"]["event_type"] == "state_changed" {
+
+                                debug!("Event HA: {}, Data: {}", v["event"]["event_type"], v["event"]["data"]);
+
                                 let data = &v["event"]["data"];
                                 let event = super::models::NotifyEvent {
                                     entity_id: data["entity_id"].as_str().unwrap_or_default().to_string(),
                                     old_state: data["old_state"]["state"].as_str().unwrap_or_default().to_string(),
                                     new_state: data["new_state"]["state"].as_str().unwrap_or_default().to_string(),
                                     friendly_name: data["new_state"]["attributes"]["friendly_name"].as_str().unwrap_or("Устройство").to_string(),
+                                    device_class: data["new_state"]["attributes"]["device_class"].as_str().map(String::from)
                                 };
 
                                 let _ = tx.send(event).await;

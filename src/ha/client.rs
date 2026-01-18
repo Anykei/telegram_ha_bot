@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use chrono::{DateTime, Utc};
 use log::{debug, info};
 use reqwest::header;
+use crate::ha::models::Entity;
 
 pub struct HAClient {
     pub url: String,
@@ -134,5 +135,50 @@ impl HAClient {
 
         info!("Complete received {} points for {}", data.len(), entity_id);
         Ok(data)
+    }
+
+    pub async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Превращаем вектор ["light.bulb", "switch.plug"] в строку для Jinja:
+        // "['light.bulb', 'switch.plug']"
+        let ids_json = serde_json::to_string(entity_ids)?;
+
+        // Формируем шаблон динамически
+        let template = format!(
+            r#"
+            [
+              {{%- set items = {} -%}}
+              {{%- for eid in items -%}}
+              {{
+                "entity_id": "{{{{ eid }}}}",
+                "state": "{{{{ states(eid) }}}}",
+                "friendly_name": "{{{{ state_attr(eid, 'friendly_name') | default('', true) | replace('"', '\\"') }}}}",
+                "device_class": "{{{{ state_attr(eid, 'device_class') | default('', true) }}}}"
+              }} {{{{ "," if not loop.last }}}}
+              {{%- endfor -%}}
+            ]
+            "#,
+            ids_json
+        );
+
+        let url = format!("{}/api/template", self.url);
+        let res = self.client
+            .post(url)
+            .json(&json!({ "template": template }))
+            .send()
+            .await
+            .context("Failed to fetch custom states")?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("HA API Error: {} - {}", status, body));
+        }
+
+        let states: Vec<Entity> = res.json().await?;
+        Ok(states)
     }
 }

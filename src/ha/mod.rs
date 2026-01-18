@@ -1,5 +1,5 @@
-mod client;
-mod models;
+pub(crate) mod client;
+pub(crate) mod models;
 mod templates;
 mod event_listener;
 

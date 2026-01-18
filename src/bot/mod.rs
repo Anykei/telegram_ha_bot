@@ -1,9 +1,9 @@
-mod models;
 pub(crate) mod handlers;
 mod utils;
-pub(crate) mod view;
 pub(crate) mod notification;
-mod keyboards;
+pub(crate) mod models;
+mod screens;
+pub(crate) mod router;
 
 use std::sync::Arc;
 use teloxide::{
@@ -11,7 +11,7 @@ use teloxide::{
     prelude::*,
 };
 
-pub use models::{State};
+pub use models::State;
 
 pub fn init(token: String) -> Bot {
     Bot::new(token)
@@ -41,10 +41,14 @@ pub fn schema() -> UpdateHandler<anyhow::Error>  {
         .filter_command::<handlers::Command>()
         .endpoint(handlers::handle_command);
 
+    let callback_handler = Update::filter_callback_query()
+        .endpoint(handlers::handle_callback);
+
     dptree::entry()
         .enter_dialogue::<Update, InMemStorage<State>, State>()
         .chain(auth_filter)
         .branch(command_handler)
+        .branch(callback_handler)
         .endpoint(|update: Update| async move {
             warn!("No catch message: {:?}", update.id);
             Ok::<(), anyhow::Error>(())

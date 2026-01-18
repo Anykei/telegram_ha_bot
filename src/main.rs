@@ -6,13 +6,14 @@ use tokio_util::sync::CancellationToken;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
+use teloxide::types::InlineKeyboardMarkup;
 
 extern crate pretty_env_logger;
 #[macro_use] extern crate log;
 
 use crate::config::EnvPaths;
 use crate::options::AppOptions;
-use crate::models::AppConfig;
+use crate::models::{AppConfig};
 
 mod db;
 mod models;
@@ -54,7 +55,7 @@ async fn main() -> Result<()> {
         delete_help_messages_timeout_s: 30,
         delete_notification_messages_timeout_s: 5,
         delete_error_messages_timeout_s: 5,
-        leak_time_notification_m: 100,
+        leak_time_notification_m: 1,
         background_maintenance_interval_s:5,
 
         sessions: DashMap::new(),
@@ -76,9 +77,14 @@ async fn main() -> Result<()> {
     }
     info!("Restored {} action sessions.", app_config.sessions.len());
 
-    let names = db::get_aliases_map(&app_config.db).await;
-    for (eid, name) in names {
-        app_config.name_aliases.insert(eid, name);
+    match db::devices::get_all_display_names(&app_config.db).await {
+        Ok(names) => {
+            for (eid, name) in names {
+                app_config.name_aliases.insert(eid, name);
+            }
+            info!("Core: Cache primed with {} device names", app_config.name_aliases.len());
+        }
+        Err(e) => error!("Core: Failed to prime name aliases: {}", e),
     }
 
     let states = db::get_state_aliases(&app_config.db).await;

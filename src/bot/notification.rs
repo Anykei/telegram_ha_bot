@@ -1,8 +1,8 @@
 use std::sync::Arc;
+use anyhow::Result;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
 use crate::models::{AppConfig, NotificationData};
-use crate::bot::view;
 
 
 pub async fn send_notification_all_recipients(
@@ -10,7 +10,7 @@ pub async fn send_notification_all_recipients(
     config: Arc<AppConfig>,
     recipients: Vec<i64>,
     message: String
-) -> anyhow::Result<()> {
+) -> Result<()> {
     for recipient in recipients {
         send_notification_text_to_recipient(bot.clone(), config.clone(), recipient, message.clone()).await;
     }
@@ -34,18 +34,10 @@ pub async fn send_notification_text_to_recipient(bot: Bot,
     });
 }
 
-pub async fn send_notification(
-    bot: Bot,
-    config: Arc<AppConfig>,
-    data: NotificationData,
-) -> anyhow::Result<()> {
-    let message_text = view::format_notification(&data);
-    let shared_message = Arc::new(message_text);
-
+pub async fn send_notification(bot: Bot, config: Arc<AppConfig>, data: NotificationData) -> Result<()> {
     for user_id in data.recipients {
-        let m = Arc::clone(&shared_message);
-        send_notification_text_to_recipient(bot.clone(), config.clone(), user_id, m.to_string()).await;
+        let m = data.human_state.clone();
+        send_notification_text_to_recipient(bot.clone(), config.clone(), user_id, m).await;
     }
-
     Ok(())
 }
