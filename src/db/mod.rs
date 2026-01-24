@@ -3,6 +3,7 @@ pub(crate) mod device_event_log;
 mod models;
 pub(crate) mod rooms;
 pub(crate) mod devices;
+pub(crate) mod subscriptions;
 
 use std::collections::HashMap;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
@@ -73,14 +74,6 @@ pub async fn create_backup(pool: &SqlitePool, backup_path: &str) -> Result<()> {
 
     info!("✅ DB bacup successful: {}", backup_path);
     Ok(())
-}
-
-pub async fn get_subscribers(pool: &SqlitePool, entity_id: &str) -> Result<Vec<i64>> {
-    let rows = sqlx::query_as::<_, (i64,)>("SELECT user_id FROM subscriptions WHERE entity_id = ?")
-        .bind(entity_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
 pub async fn get_aliases_map(pool: &SqlitePool) -> HashMap<String, String> {

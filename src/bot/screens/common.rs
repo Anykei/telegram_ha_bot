@@ -3,11 +3,11 @@ use crate::bot::router::{Payload, RenderContext};
 use anyhow::Result;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
-pub async fn default_menu(ctx: RenderContext) -> Result<View> {
+pub async fn in_dev_menu(ctx: RenderContext, back: Payload) -> Result<View> {
     let rows = vec![
+        vec![back_button(back)],
         vec![main_menu_button()]
     ];
-
     let kb = InlineKeyboardMarkup::new(rows);
     let text= "В разработке".to_string();
 
@@ -15,7 +15,7 @@ pub async fn default_menu(ctx: RenderContext) -> Result<View> {
         notifications:ctx.notifications.clone(),
         text,
         kb,
-        payload: Payload::Home {},
+        payload: Payload::InDev {},
         ..Default::default()
     })
 }

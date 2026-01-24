@@ -134,6 +134,7 @@ impl AppConfig {
 // }
 
 pub async fn update_user_state(config: &Arc<AppConfig>, user_id: u64, msg_id: i32, context: &str) {
+    info!("UPDATE USER STATE: user: {}, context: {}", user_id, context);
     let context_owned = context.to_string();
 
     config.sessions.insert(user_id, UserSession {

@@ -11,7 +11,7 @@ use teloxide::{
     prelude::*,
 };
 
-pub use models::State;
+pub use router::State;
 
 pub fn init(token: String) -> Bot {
     Bot::new(token)
@@ -20,8 +20,9 @@ pub fn init(token: String) -> Bot {
 pub fn schema() -> UpdateHandler<anyhow::Error>  {
     use teloxide::dispatching::dialogue::InMemStorage;
     use teloxide::types::Update;
+
     use crate::models::AppConfig;
-    use crate::bot::models::State;
+    use crate::bot::router::State;
     use crate::db;
 
     let auth_filter = dptree::filter_async(|update: Update, config: Arc<AppConfig>| async move {
@@ -43,6 +44,23 @@ pub fn schema() -> UpdateHandler<anyhow::Error>  {
 
     let callback_handler = Update::filter_callback_query()
         .endpoint(handlers::handle_callback);
+
+    let message_dialogues = Update::filter_message()
+        .filter(|msg: Message| msg.text().map_or(true, |t| !t.starts_with('/')))
+        .branch(dptree::filter_map(|state: State| {
+            if let State::WaitingForName { device_id, room_id } = state { Some((device_id, room_id)) } else { None }
+        }).endpoint(handlers::handle_new_name))
+
+        // .branch(dptree::filter_map(|state: State| {
+        //     if let State::WaitingForStateAlias { device_id, original_state, room_id } = state
+        //     { Some((device_id, original_state, room_id)) } else { None }
+        // }).endpoint(handlers::handle_new_state_alias))
+
+        .branch(dptree::filter_map(|state: State| {
+            if let State::WaitingForGraphInterval { device_id, room_id } = state {
+                Some((device_id, room_id))
+            } else { None }
+        }).endpoint(handlers::handle_custom_interval));
 
     dptree::entry()
         .enter_dialogue::<Update, InMemStorage<State>, State>()

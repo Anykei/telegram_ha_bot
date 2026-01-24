@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
-use teloxide::types::InlineKeyboardMarkup;
 
 extern crate pretty_env_logger;
 #[macro_use] extern crate log;
@@ -22,6 +21,7 @@ mod config;
 mod options;
 mod bot;
 mod core;
+mod charts;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         delete_notification_messages_timeout_s: 5,
         delete_error_messages_timeout_s: 5,
         leak_time_notification_m: 1,
-        background_maintenance_interval_s:5,
+        background_maintenance_interval_s:15,
 
         sessions: DashMap::new(),
 

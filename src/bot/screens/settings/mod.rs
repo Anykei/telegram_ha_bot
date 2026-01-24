@@ -1,2 +1,1 @@
-mod room;
-mod device_settings;
+pub(crate) mod device_settings;

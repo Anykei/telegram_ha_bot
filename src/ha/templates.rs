@@ -6,7 +6,7 @@ pub const ROOMS_TEMPLATE: &str = r#"
     {%- set valid_entities = namespace(items=[]) -%}
     {%- for e in area_ents -%}
       {%- set d = e.split('.')[0] -%}
-      {%- if d in ['light', 'switch', 'sensor', 'binary_sensor'] -%}
+      {%- if d in ['light', 'switch', 'sensor', 'binary_sensor', 'number', 'climate'] -%}
         {%- set valid_entities.items = valid_entities.items + [e] -%}
       {%- endif -%}
     {%- endfor -%}

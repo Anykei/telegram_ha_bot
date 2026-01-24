@@ -49,7 +49,7 @@ async fn process_and_dispatch(bot: Bot, config: Arc<AppConfig>, event: NotifyEve
 
     let room_id_opt = db::devices::get_room_id_by_entity(&config.db, &event.entity_id).await.unwrap_or(None);
 
-    let recipients = db::get_subscribers(&config.db, &event.entity_id).await.unwrap_or_default();
+    let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await.unwrap_or_default();
 
     let recipients_set: std::collections::HashSet<u64> = recipients.iter().map(|&id| id as u64).collect();
 
@@ -75,7 +75,7 @@ async fn process_and_dispatch(bot: Bot, config: Arc<AppConfig>, event: NotifyEve
         }
     }
 
-    let recipients = db::get_subscribers(&config.db, &event.entity_id).await?;
+    let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await?;
     if !recipients.is_empty() {
         use crate::core::presentation::StateFormatter;
 
