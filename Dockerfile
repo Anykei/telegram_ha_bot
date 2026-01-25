@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y \
     libsqlite3-0 \
     libfreetype6 \
     libfontconfig1 \
+    libc6-dev \
     fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
