@@ -57,7 +57,7 @@ ENV RUST_LOG=info
 ENV MIGRATIONS_PATH="./migrations"
 
 ENV OPTIONS_PATH="/data/options.json"
-ENV DATABASE_URL="/data/bot_data.db"
+ENV DATABASE_PATH="/data/bot_data.db"
 
 # HA_TOKEN генерирует HA при запуске контейнера
 # ENV HA_TOKEN=""
