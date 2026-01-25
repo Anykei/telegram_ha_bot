@@ -46,6 +46,8 @@ WORKDIR /app
 # Копируем бинарник из билдера
 COPY --from=builder /app/target/release/telegram_ha_bot /app/bot
 
+COPY migrations /app/migrations
+
 # Создаем пользователя, чтобы не запускать от root (Security Best Practice)
 # При работе в HA контейнере надо выключать botuser
 # RUN useradd -m botuser
@@ -54,7 +56,7 @@ COPY --from=builder /app/target/release/telegram_ha_bot /app/bot
 # Переменные окружения для Rust логов и SQLite (путь /data критичен для HA)
 ENV RUST_LOG=info
 
-ENV MIGRATIONS_PATH="./migrations"
+ENV MIGRATIONS_PATH="/app/migrations"
 
 ENV OPTIONS_PATH="/data/options.json"
 ENV DATABASE_PATH="/data/bot_data.db"
