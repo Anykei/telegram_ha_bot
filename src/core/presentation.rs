@@ -65,37 +65,36 @@ impl StateFormatter {
         }
     }
 
-    pub fn format_state_value(domain: &str, class: &str, state: &str) -> String {
-        match domain {
-            "climate" => {
-                // Если состояние числовое (температура), добавляем градусы
-                // Если это режим (heat/off), переводим его
-                if state.chars().all(|c| c.is_digit(10) || c == '.') {
-                    format!("{}°C", state)
-                } else {
-                    Self::translate_state(state).to_string()
-                }
-            }
-            "sensor" => {
-                match class {
-                    "temperature" => format!("{}°C", state),
-                    "humidity" => format!("{}%", state),
-                    "battery" => format!("{}%", state),
-                    "illuminance" => format!("{} lx", state),
-                    _ => state.to_string(),
-                }
-            }
-            // Для всех остальных (свет, свичи и т.д.) просто переводим
-            _ => Self::translate_state(state).to_string(),
-        }
-    }
-
     /// Финальная сборка всей строки кнопки
     pub fn format_device_label(alias: &str, domain: &str, class: &str, state: &str) -> String {
         let icon = Self::get_icon(domain, class, state);
         format!("{} {}", icon, alias)
     }
 
+    pub fn format_state_value(domain: &str, class: &str, state: &str) -> String {
+        if let Ok(val) = state.parse::<f64>() {
+            let rounded = format!("{:.2}", val);
+
+            return match domain {
+                "climate" => format!("{}°C", rounded),
+                "sensor" => match class {
+                    "temperature" => format!("{}°C", rounded),
+                    "humidity" => format!("{}%", rounded),
+                    "battery" => format!("{}%", rounded),
+                    "power" => format!("{} W", rounded),
+                    "energy" => format!("{} kWh", rounded),
+                    "voltage" => format!("{} V", rounded),
+                    _ => rounded,
+                },
+                _ => rounded,
+            };
+        }
+
+        Self::translate_state(state).to_string()
+    }
+
+    /// Собирает итоговую строку для кнопки или уведомления.
+    /// Пример: "🌡 Кухня (22.50°C)"
     pub fn format_device_label_with_state(alias: &str, domain: &str, class: &str, state: &str) -> String {
         let icon = Self::get_icon(domain, class, state);
         let value = Self::format_state_value(domain, class, state);

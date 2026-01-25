@@ -51,11 +51,8 @@ async fn main() -> Result<()> {
         db: db_pool,
         root_user: options.root_user,
 
-        delete_chart_timeout_s: 600,
-        delete_help_messages_timeout_s: 30,
         delete_notification_messages_timeout_s: 5,
-        delete_error_messages_timeout_s: 5,
-        leak_time_notification_m: 1,
+        ttl_notifications: 60*12,
         background_maintenance_interval_s:15,
 
         sessions: DashMap::new(),

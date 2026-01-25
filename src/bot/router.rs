@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use crate::core::devices::{ChartParams, InteractionResult};
+use crate::core::devices::{ChartParams, InputIntent, InteractionResult};
 use crate::bot::models::View;
 use crate::bot::screens::room;
 use crate::core::{devices, HeaderItem};
@@ -10,6 +10,7 @@ use crate::models::AppConfig;
 
 use postcard;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 pub struct RenderContext {
     pub user_id: u64,
@@ -28,6 +29,20 @@ pub enum State {
     BackupDb { path: String },
     AddUser { user_id: i64 },
     DeleteUser { user_id: i64 },
+}
+
+impl State {
+    /// Создает стейт из интента, обогащая его необходимыми ID.
+    pub fn from_intent(intent: InputIntent, device_id: i64, room_id: i64) -> Self {
+        match intent {
+            InputIntent::DefineGraphInterval { .. } =>
+                State::WaitingForGraphInterval { device_id, room_id },
+            InputIntent::RenameDevice { .. } =>
+                State::WaitingForName { device_id, room_id },
+            InputIntent::SetStateAlias { original_state, .. } =>
+                State::WaitingForStateAlias { device_id, original_state, room_id },
+        }
+    }
 }
 
 impl From<devices::InputIntent> for State {
@@ -151,12 +166,15 @@ impl Payload {
         }
     }
 
-    pub fn from_string(s: &str) -> Option<Self> {
-        let bin = B64.decode(s).ok()?;
+    pub fn from_string(s: &str) -> Result<Self, anyhow::Error> {
+        let bin = B64.decode(s).map_err(|e| {
+            anyhow::anyhow!("Base64 decode failed for '{}': {}", s, e)
+        })?;
+
         postcard::from_bytes(&bin).map_err(|e| {
-            log::error!("Deserialization failed: {}", e);
-            e
-        }).ok()
+            // Google Standard: Детальный лог ошибки десериализации
+            anyhow::anyhow!("Binary decode failed. Bytes: {:?}, Error: {}", bin, e)
+        })
     }
 }
 
@@ -206,7 +224,6 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
 
             let result = devices::handle_device_interaction(&ctx.config, device, action).await?;
 
-            // Роутер только решает, какой экран показать на основе результата
             match result {
                 InteractionResult::Processed => {
                     Ok(room::render(ctx, room, RoomViewMode::Control).await?)
@@ -214,14 +231,15 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
                 InteractionResult::RequiresDetail => {
                     Ok(super::screens::control::device_control::render(ctx, room, device, cmd).await?)
                 }
+                InteractionResult::RequiresInput(intent) => {
+                    let state = State::from_intent(intent, device, room);
+                    Ok(super::screens::control::sensor_view::render_manual_input(room, device, state))
+                }
                 InteractionResult::Error { error: e } => {
                     Ok(View{
                         alert: Option::from(e),
                         ..Default::default()
                     })
-                }
-                _=> {
-                    Ok(super::screens::common::in_dev_menu(ctx, Payload::Control(ControlPayload::RoomDetail {room})).await?)
                 }
             }
         }
@@ -256,37 +274,81 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
 
 #[cfg(test)]
 mod tests {
+    use dashmap::DashMap;
+    use crate::{db, ha};
+    use crate::config::EnvPaths;
     use super::*;
 
-    /// Проверяет, что сериализованный Payload укладывается в лимит Telegram (64 байта)
-    /// и корректно восстанавливается без потерь.
     #[test]
     fn test_payload_integrity_and_size() {
-        // 1. Подготовка данных (используем граничные значения ID)
         let original = Payload::Control(ControlPayload::QuickAction {
             room: 1_000_000,
             device: 2_000_000,
             cmd: DeviceCmd::ShowChart { h: 168, o: -168 },
         });
 
-        // 2. Действие: Сериализация
         let encoded = original.to_string();
         let len = encoded.len();
 
-        // 3. Логирование для отладки (в Google мы предпочитаем структурированный вывод)
         println!("Binary/B64 Buffer use: {}/64 bytes", len);
         println!("Encoded String: {}", encoded);
 
-        // 4. Утверждение: Проверка лимитов
         assert!(len > 0, "Encoded string should not be empty");
         assert!(len <= 64, "🛑 Payload overflow: {} bytes used. Max is 64.", len);
 
-        // 5. Действие: Десериализация (Roundtrip)
         let restored = Payload::from_string(&encoded)
             .expect("Failed to decode payload from Base64/Binary");
 
-        // 6. Утверждение: Целостность данных
-        // Используем assert_eq! для проверки того, что данные идентичны
         assert_eq!(restored, original, "Data corruption: restored payload differs from original");
+    }
+
+    #[tokio::test]
+    async fn test_sensor_render_preserves_payload_context() -> anyhow::Result<()> {
+        let encoded_input = "AQMENAUYAA";
+        let original_payload = Payload::from_string(encoded_input)
+            .expect("Failed to decode test payload");
+
+        let paths = EnvPaths::load()
+            .validate()
+            .context("Error checking env variables.")?;
+
+        let db_pool = db::init(&paths.db_url(), paths.migrations.to_str().context("Путь к миграциям не валиден")?)
+            .await
+            .context("Error initializing database pool.")?;
+
+        let ha_client = Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
+
+        let app_config = Arc::new(AppConfig {
+            ha_client: ha_client.clone(),
+            db: db_pool,
+            root_user: 0,
+
+            // delete_chart_timeout_s: 600,
+            // delete_help_messages_timeout_s: 30,
+            delete_notification_messages_timeout_s: 5,
+            // delete_error_messages_timeout_s: 5,
+            ttl_notifications: 1,
+            background_maintenance_interval_s:15,
+
+            sessions: DashMap::new(),
+
+            name_aliases: DashMap::new(),
+
+            state_aliases: DashMap::new(),
+        });
+
+        let user_id = 219791289;
+
+        let view = router(original_payload.clone(), user_id, app_config).await?;
+
+        assert_eq!(
+            view.payload,
+            original_payload,
+            "Context mismatch! The screen 'downgraded' the navigation state.\nExpected: {:?}\nActual: {:?}",
+            original_payload,
+            view.payload
+        );
+
+        Ok(())
     }
 }

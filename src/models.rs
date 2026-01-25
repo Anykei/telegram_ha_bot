@@ -16,11 +16,11 @@ pub struct AppConfig {
     pub db: sqlx::SqlitePool,
     pub root_user: u64,
 
-    pub delete_chart_timeout_s: u64,
-    pub delete_help_messages_timeout_s: u64,
+    // pub delete_chart_timeout_s: u64,
+    // pub delete_help_messages_timeout_s: u64,
     pub delete_notification_messages_timeout_s: u64,
-    pub delete_error_messages_timeout_s: u64,
-    pub leak_time_notification_m:u64,
+    // pub delete_error_messages_timeout_s: u64,
+    pub ttl_notifications: u64,
     pub background_maintenance_interval_s:u64,
 
     pub sessions: DashMap<u64, UserSession>,

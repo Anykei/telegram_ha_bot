@@ -1,13 +1,13 @@
 use anyhow::Context;
-use chrono::{Duration, Local};
+use chrono::Local;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 use crate::bot::models::View;
 use crate::bot::router::{ControlPayload, DeviceCmd, Payload, RenderContext};
-use crate::core::HeaderItem;
+use crate::bot::State;
 use crate::core::devices::{ChartParams, SmartDevice};
 use crate::core::types::Device;
-use crate::core::presentation::StateFormatter;
+use crate::core::HeaderItem;
 
 // Константа глубины истории в HA (обычно 10 дней)
 const MAX_HISTORY_DAYS: i32 = 10;
@@ -163,4 +163,23 @@ pub async fn render(
         payload: current_state_payload,
         ..Default::default()
     })
+}
+
+pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
+    let cancel_payload = Payload::Control(ControlPayload::QuickAction {
+        room: room_id,
+        device: device_id,
+        cmd: DeviceCmd::Toggle
+    });
+
+    View {
+        header: Some("⌨️ Ввод данных".into()),
+        text: "Введите количество часов для отображения на графике (целое число).\n\n\
+               Например: `48` для двух суток.".into(),
+        kb: InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("❌ Отмена", cancel_payload.to_string())
+        ]]),
+        next_state: Some(state),
+        ..View::default()
+    }
 }

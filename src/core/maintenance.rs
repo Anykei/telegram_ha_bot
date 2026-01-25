@@ -40,7 +40,7 @@ pub async fn start_background_maintenance(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let ttl = config.leak_time_notification_m;
+                let ttl = config.ttl_notifications;
                 match db::device_event_log::EventLogger::purge_old_events(&config.db, ttl).await {
                     Ok(count) => if count > 0 { debug!("Maintenance: удалено {} старых записей лога", count); },
                     Err(e) => error!("Maintenance error: {}", e),

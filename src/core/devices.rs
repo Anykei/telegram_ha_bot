@@ -160,8 +160,12 @@ impl SmartEntity for SmartDevice {
             }
             Self::Sensor(_) | Self::BinarySensor(_) => {
                 match action {
-                    DeviceAction::GenerateChart(_) | DeviceAction::EnterManualInput => {
-                        InteractionResult::RequiresDetail
+                    DeviceAction::GenerateChart(_) => InteractionResult::RequiresDetail,
+                    DeviceAction::EnterManualInput => {
+                        InteractionResult::RequiresInput(InputIntent::DefineGraphInterval {
+                            device_id: 0,
+                            room_id: 0
+                        })
                     }
                     _ => InteractionResult::RequiresDetail,
                 }

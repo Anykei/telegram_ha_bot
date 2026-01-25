@@ -25,7 +25,7 @@ impl AppConfig {
         use crate::core::presentation::StateFormatter;
         let mut items = Vec::new();
 
-        let window_mins = self.leak_time_notification_m;
+        let window_mins = self.ttl_notifications;
 
         // 1. Получаем активные алерты
         match db::device_event_log::EventLogger::fetch_active_alerts(&self.db, user_id, window_mins).await {

@@ -121,27 +121,38 @@ fn render_binary<B: DrawingBackend>(
 
     draw_date_separators(&mut chart, start_time, end_time, y_min, y_max)?;
 
+    let total_duration_secs = (end_time - start_time).num_seconds();
+    let min_visible_duration = Duration::seconds(total_duration_secs / 500); // берем 2 пикселя ширины
+
+    // Отрисовка фона (OFF) одним слоем для производительности
+    chart.draw_series(std::iter::once(Rectangle::new(
+        [(start_time, 30), (end_time, 70)],
+        HA_BIN_OFF.filled(),
+    )))?;
+
     for i in 0..data.len() {
         let t_start = data[i].0;
         let is_on = is_state_on(&data[i].1);
         let t_end = if i + 1 < data.len() { data[i+1].0 } else { end_time };
 
         let actual_ts = t_start.max(start_time);
-        let actual_te = t_end.min(end_time);
+        let mut actual_te = t_end.min(end_time);
 
-        if actual_te > actual_ts {
-            let color = if is_on { HA_BIN_ON } else { HA_BIN_OFF };
+        if actual_te > actual_ts && is_on {
+
+            if actual_te - actual_ts < min_visible_duration {
+                actual_te = (actual_ts + min_visible_duration).min(end_time);
+            }
+
             chart.draw_series(std::iter::once(Rectangle::new(
                 [(actual_ts, 30), (actual_te, 70)],
-                color.filled(),
+                HA_BIN_ON.filled(),
             )))?;
 
-            if is_on {
-                chart.draw_series(std::iter::once(PathElement::new(
-                    vec![(actual_ts, 30), (actual_te, 30)],
-                    HA_BLUE.stroke_width(2),
-                )))?;
-            }
+            chart.draw_series(std::iter::once(PathElement::new(
+                vec![(actual_ts, 30), (actual_te, 30)],
+                HA_BLUE.stroke_width(2),
+            )))?;
         }
     }
     Ok(())

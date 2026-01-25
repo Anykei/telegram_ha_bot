@@ -28,6 +28,10 @@ pub async fn render(ctx: RenderContext, room_id: i64, mode: RoomViewMode) -> Res
     let mut rows = vec![];
 
     for db_dev in db_devices {
+        if db::subscriptions::is_hidden(db_dev.entity_id.as_str(), &ctx.config.db).await{
+            continue;
+        }
+
         if let Some(ha_ent) = ha_entities.iter().find(|e| e.entity_id == db_dev.entity_id) {
 
             let smart_dev = SmartDevice::new(ha_ent.clone());
