@@ -52,8 +52,15 @@ COPY --from=builder /app/target/release/telegram_ha_bot /app/bot
 
 # Переменные окружения для Rust логов и SQLite (путь /data критичен для HA)
 ENV RUST_LOG=info
-ENV DATABASE_URL=sqlite:///data/bot.db
+
+ENV MIGRATIONS_PATH="./migrations"
+
+ENV OPTIONS_PATH="/data/options.json"
+ENV DATABASE_URL="/data/bot_data.db"
+
+# HA_TOKEN генерирует HA при запуске контейнера
+# ENV HA_TOKEN=""
+ENV HA_URL="http://supervisor/core"
 
 # Используем tini как точку входа.
-# "--" отделяет параметры tini от аргументов твоего приложения.
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/bot"]
