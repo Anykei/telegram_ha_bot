@@ -26,3 +26,10 @@ dashmap = "7.0.0-rc2"
 async-trait = "0.1.89"
 postcard = { version = "1.0", features = ["alloc"] }
 base64 = "0.22"
+
+[profile.release]
+opt-level = 'z'     # Оптимизация по размеру
+lto = true          # Link Time Optimization (удаляет неиспользуемый код)
+codegen-units = 1   # Позволяет LTO работать лучше
+panic = 'abort'     # Удаляет развертывание стека (уменьшает размер)
+strip = true        # Автоматически удаляет отладочную информацию
