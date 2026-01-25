@@ -31,7 +31,7 @@ impl EnvPaths {
             ha_url: env::var("HA_URL")
                 .unwrap_or_else(|_| "http://supervisor/core".to_string()),
 
-            ha_token: env::var("HA_TOKEN").unwrap_or_default(),
+            ha_token: env::var("SUPERVISOR_TOKEN").unwrap_or_default(),
         }
     }
 
