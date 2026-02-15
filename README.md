@@ -1,4 +1,4 @@
-# Home Assistant Telegram Bot 🏠📱
+219791289# Home Assistant Telegram Bot 🏠📱
 
 A high-performance asynchronous Telegram bot powered by Rust that provides seamless integration with Home Assistant, enabling real-time control and monitoring of smart home devices through Telegram.
 
@@ -275,7 +275,7 @@ DEBUG: Received empty WebSocket frame (heartbeat)
 
 ### Permission Denied
 ```
-Error: User 219791289 not in whitelist
+Error: User 123456789 not in whitelist
 ```
 **Solution:** Add user to database or set as `root_user` in `options.json`.
 
