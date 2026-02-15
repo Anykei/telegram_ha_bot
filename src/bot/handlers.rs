@@ -7,7 +7,7 @@ use teloxide::prelude::*;
 use teloxide::types::{InputFile, InputMedia, InputMediaPhoto, MessageId, ParseMode};
 use teloxide::{RequestError, Bot};
 
-use crate::bot::router::{router, ControlPayload, DeviceCmd, Payload};
+use crate::bot::router::{router, Payload}; 
 use crate::bot::State;
 use crate::models::{AppConfig};
 use super::models::View;

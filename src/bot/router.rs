@@ -10,7 +10,7 @@ use crate::models::AppConfig;
 
 use postcard;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+use teloxide::types::InlineKeyboardMarkup;
 
 pub struct RenderContext {
     pub user_id: u64,

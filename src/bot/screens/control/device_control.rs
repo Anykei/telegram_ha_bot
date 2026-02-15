@@ -2,7 +2,7 @@ use crate::bot::models::View;
 use crate::bot::router::{DeviceCmd, Payload, RenderContext};
 use anyhow::Context;
 
-use crate::core::devices::{ChartParams, SmartDevice};
+use crate::core::devices::SmartDevice;
 
 pub async fn render(
     ctx: RenderContext,

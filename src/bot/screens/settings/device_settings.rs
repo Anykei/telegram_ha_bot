@@ -1,5 +1,5 @@
-use crate::bot::models::{View};
-use crate::bot::router::{AdminPayload, ControlPayload, Payload, RenderContext, SettingsPayload};
+use crate::bot::models::View;
+use crate::bot::router::{Payload, RenderContext, SettingsPayload};
 
 use anyhow::{Context, Result};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
@@ -11,13 +11,12 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
     let dev = db::devices::get_device_by_id(device_id, db).await?
         .context("Device not found")?;
 
-    let subscribed = db::subscriptions::is_subscribed(ctx.user_id as i64, &dev.entity_id, db).await;
-    let hidden = db::subscriptions::is_hidden(&dev.entity_id, db).await;
+    let subscribed = db::subscriptions::is_subscribed(ctx.user_id as i64, &dev.entity_id, db).await.unwrap_or(false);
+    let hidden = db::subscriptions::is_hidden(&dev.entity_id, db).await.unwrap_or(false);
 
     let ha_ent = ctx.config.ha_client.fetch_states_by_ids(&[dev.entity_id.clone()]).await?
         .into_iter().next().context("HA offline")?;
 
-    let domain = dev.entity_id.split('.').next().unwrap_or("");
     let status_text = crate::core::presentation::StateFormatter::translate_state(&ha_ent.state);
 
     let text = format!(

@@ -72,7 +72,7 @@ async fn refresh_system_data(config: &Arc<AppConfig>) {
 
 async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Result<()> {
     for room in rooms {
-        match db::rooms::sync_rooms_from_ha(&config.db, &room.id, &room.name).await {
+        match db::rooms::sync_rooms_from_ha(&room.id, &room.name, &config.db).await {
             Ok(_) => {
                 if let Err(e) = refresh_entities(&room.id, &room.entities, config).await {
                     error!("Failed to refresh entities for room {}: {}", room.id, e);

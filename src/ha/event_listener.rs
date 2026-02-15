@@ -1,7 +1,9 @@
 use futures_util::{SinkExt, StreamExt};
-use log::{error, info};
+use log::{info, warn, debug};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use std::cmp::min;
+use std::time::Duration;
 
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_util::sync::CancellationToken;
@@ -33,6 +35,8 @@ async fn start_event_listener(
     tx: mpsc::Sender<super::models::NotifyEvent>
 ) {
     let ws_url = ha_url.replace("http", "ws").trim_end_matches('/').to_string() + "/api/websocket";
+    let mut backoff = Duration::from_millis(500);
+    let max_backoff = Duration::from_secs(30);
 
     loop {
         if cancel_token.is_cancelled() { return; }
@@ -40,11 +44,17 @@ async fn start_event_listener(
         info!("Connect WebSocket HA: {}", ws_url);
 
         let (ws_stream, _) = match connect_async(&ws_url).await {
-            Ok(s) => s,
+            Ok(s) => {
+                backoff = Duration::from_millis(500); // Reset on successful connection
+                s
+            }
             Err(e) => {
-                error!("Connection to WS failed: {}. throw 5 sec...", e);
+                warn!("Connection to WS failed: {}. Retrying in {:?}...", e, backoff);
+                let sleep_for = backoff;
+                backoff = min(backoff.saturating_mul(2), max_backoff);
+                
                 tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => continue,
+                    _ = tokio::time::sleep(sleep_for) => continue,
                     _ = cancel_token.cancelled() => return,
                 }
             }
@@ -59,7 +69,20 @@ async fn start_event_listener(
                     let Some(Ok(msg)) = msg else { break; }; // Если ошибка коннекта - идем на реконнект
 
                     let text = msg.to_text().unwrap_or("");
-                    let v: Value = serde_json::from_str(text).unwrap_or_default();
+                    
+                    // Skip empty messages (heartbeat/ping frames)
+                    if text.is_empty() {
+                        debug!("Received empty WebSocket frame (heartbeat)");
+                        continue;
+                    }
+                    
+                    let v: Value = match serde_json::from_str(text) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            debug!("Failed to parse WebSocket message: {}. Payload: {}", e, text);
+                            continue;
+                        }
+                    };
 
                     match v["type"].as_str() {
                         Some("auth_required") => {
@@ -101,8 +124,11 @@ async fn start_event_listener(
             }
         }
 
+        let sleep_for = backoff;
+        backoff = min(backoff.saturating_mul(2), max_backoff);
+        
         tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+            _ = tokio::time::sleep(sleep_for) => {},
             _ = cancel_token.cancelled() => return,
         }
     }
