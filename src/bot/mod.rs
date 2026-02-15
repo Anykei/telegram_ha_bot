@@ -38,7 +38,7 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         }
 
         // Проверка наличия пользователя в белом списке БД.
-        db::user_exists(&config.db, user_id).await
+        db::user_exists(user_id, &config.db).await
     });
 
     // 2. Ветка команд: обрабатывает системные команды (начинающиеся с /).

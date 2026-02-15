@@ -28,7 +28,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, mode: RoomViewMode) -> Res
     let mut rows = vec![];
 
     for db_dev in db_devices {
-        if db::subscriptions::is_hidden(db_dev.entity_id.as_str(), &ctx.config.db).await{
+        if db::subscriptions::is_hidden(db_dev.entity_id.as_str(), &ctx.config.db).await.unwrap_or(false) && mode == RoomViewMode::Control {
             continue;
         }
 

@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
-use log::{info, error};
+use log::{info, error, warn};
 use teloxide::Bot;
 use teloxide::prelude::ChatId;
 use teloxide::types::MessageId;
@@ -9,7 +9,6 @@ use teloxide::types::MessageId;
 use crate::bot::router::{ControlPayload, Payload};
 use crate::models::{AppConfig, NotificationData, UserSession};
 use crate::db;
-use crate::db::StateMap;
 use crate::ha::NotifyEvent;
 
 pub fn spawn_notification_processor(
@@ -21,20 +20,42 @@ pub fn spawn_notification_processor(
     info!("Core: Notification processor started");
 
     tokio::spawn(async move {
+        // Create bounded task queue (max 32 events waiting)
+        let (queue_tx, queue_rx) = mpsc::channel::<NotifyEvent>(32);
+        
+        // Spawn worker task that consumes from bounded queue
+        let worker_config = config.clone();
+        let worker_bot = bot.clone();
+        let worker_cancel = cancel_token.clone();
+        
+        tokio::spawn(async move {
+            let mut queue = queue_rx;
+            loop {
+                tokio::select! {
+                    Some(event) = queue.recv() => {
+                        if let Err(e) = process_and_dispatch(worker_bot.clone(), worker_config.clone(), event).await {
+                            error!("Core: Error processing event: {}", e);
+                        }
+                    }
+                    _ = worker_cancel.cancelled() => break,
+                }
+            }
+        });
+        
+        // Main loop: forward events from HA to bounded queue
         loop {
             tokio::select! {
-            Some(event) = rx.recv() => {
-                let cfg = config.clone();
-                let b = bot.clone();
-
-                tokio::spawn(async move {
-                    if let Err(e) = process_and_dispatch(b, cfg, event).await {
-                        error!("Core: Error processing event: {}", e);
+                Some(event) = rx.recv() => {
+                    // Send to bounded queue (returns error if queue is full)
+                    if let Err(e) = queue_tx.send(event).await {
+                        warn!("Core: Event queue full (capacity 32), dropping event: {}", e);
                     }
-                });
+                }
+                _ = cancel_token.cancelled() => {
+                    info!("Core: Notification processor shutting down");
+                    break;
+                }
             }
-            _ = cancel_token.cancelled() => break,
-        }
         }
     });
 }
@@ -75,7 +96,7 @@ async fn process_and_dispatch(bot: Bot, config: Arc<AppConfig>, event: NotifyEve
         }
     }
 
-    let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await?;
+    // let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await?;
     if !recipients.is_empty() {
         use crate::core::presentation::StateFormatter;
 

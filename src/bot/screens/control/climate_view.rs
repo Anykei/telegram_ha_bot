@@ -2,9 +2,8 @@
 use crate::ha::models::Entity;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 use crate::bot::models::View;
-use crate::bot::router::{ControlPayload, DeviceCmd, Payload, RenderContext, SettingsPayload};
-use crate::core::HeaderItem;
-use crate::core::types::{Device, RoomViewMode};
+use crate::bot::router::{ControlPayload, DeviceCmd, Payload, RenderContext};
+use crate::core::types::Device;
 
 pub async fn render(ctx: RenderContext, room_id: i64, dev: Device, entity: Entity) -> anyhow::Result<View> {
     // Извлекаем атрибуты климата

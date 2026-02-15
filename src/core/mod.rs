@@ -149,5 +149,5 @@ pub async fn update_user_state(config: &Arc<AppConfig>, user_id: u64, msg_id: i3
     let pool = config.db.clone();
     let ctx = context_owned;
 
-    crate::db::save_user_session(&pool, user_id, msg_id, &ctx).await;
+    crate::db::save_user_session(user_id, msg_id, &ctx, &pool).await;
 }
