@@ -41,7 +41,7 @@ pub async fn start_background_maintenance(
         tokio::select! {
             _ = interval.tick() => {
                 let ttl = config.ttl_notifications;
-                match db::device_event_log::EventLogger::purge_old_events(&config.db, ttl).await {
+                match db::device_event_log::EventLogger::purge_old_events(ttl, &config.db).await {
                     Ok(count) => if count > 0 { debug!("Maintenance: удалено {} старых записей лога", count); },
                     Err(e) => error!("Maintenance error: {}", e),
                 }
@@ -71,9 +71,16 @@ async fn refresh_system_data(config: &Arc<AppConfig>) {
 }
 
 async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Result<()> {
+    let mut all_synced_entity_ids = Vec::new();
+
     for room in rooms {
         match db::rooms::sync_rooms_from_ha(&room.id, &room.name, &config.db).await {
             Ok(_) => {
+                // Собираем все entity_id, которые были синхронизированы
+                for entity in &room.entities {
+                    all_synced_entity_ids.push(entity.entity_id.clone());
+                }
+
                 if let Err(e) = refresh_entities(&room.id, &room.entities, config).await {
                     error!("Failed to refresh entities for room {}: {}", room.id, e);
                 }
@@ -81,6 +88,14 @@ async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Res
             Err(e) => error!("Failed to sync room {}: {}", room.id, e),
         }
     }
+
+    // После синхронизации всех устройств архивируем те, которых больше нет
+    match db::devices::archive_missing_devices(&all_synced_entity_ids, &config.db).await {
+        Ok(count) if count > 0 => info!("Архивировано {} устройств", count),
+        Err(e) => error!("Failed to archive missing devices: {}", e),
+        _ => {}
+    }
+
     Ok(())
 }
 
@@ -91,11 +106,11 @@ async fn refresh_entities(area_id: &str, entities: &Vec<Entity>, config: &Arc<Ap
             .unwrap_or("undefined");
 
         if let Err(e) = db::devices::sync_device(
-            &config.db,
             &ent.entity_id,
             area_id,
             &ent.name,
             device_class,
+            &config.db,
         ).await {
             error!("Failed to sync device {}: {}", ent.entity_id, e);
         }

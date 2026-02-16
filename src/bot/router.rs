@@ -257,13 +257,13 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
         SettingsPayload::DeviceDetail {room, device} => Ok(super::screens::settings::device_settings::render(ctx, room, device).await?),
         SettingsPayload::ToggleNotify { room, device } => {
             let dev = db::devices::get_device_by_id(device, &ctx.config.db).await?.context("Device not found")?;
-            db::subscriptions::toggle_subscription(&ctx.config.db, ctx.user_id as i64, &dev.entity_id).await?;
+            db::subscriptions::toggle_subscription(ctx.user_id as i64, &dev.entity_id, &ctx.config.db).await?;
             super::screens::settings::device_settings::render(ctx, room, device).await
         }
 
         SettingsPayload::ToggleHide { room, device } => {
             let dev = db::devices::get_device_by_id(device, &ctx.config.db).await?.context("Device not found")?;
-            db::subscriptions::toggle_hidden(&ctx.config.db, &dev.entity_id).await?;
+            db::subscriptions::toggle_hidden(&dev.entity_id, &ctx.config.db).await?;
             super::screens::settings::device_settings::render(ctx, room, device).await
         }
         _ => {

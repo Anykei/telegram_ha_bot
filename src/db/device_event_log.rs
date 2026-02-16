@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 pub struct EventLogger;
 
 impl EventLogger {
-    pub async fn record_event(pool: &SqlitePool, eid: &str, state: &str) -> Result<()> {
+    pub async fn record_event(eid: &str, state: &str, pool: &SqlitePool, ) -> Result<()> {
         sqlx::query("INSERT INTO device_event_log (entity_id, state, created_at) VALUES (?, ?, ?)")
             .bind(eid)
             .bind(state)
@@ -18,9 +18,9 @@ impl EventLogger {
     }
 
     pub async fn fetch_active_alerts(
-        pool: &SqlitePool,
         user_id: u64,
-        window_mins: u64
+        window_mins: u64,
+        pool: &SqlitePool,
     ) -> Result<Vec<AggregatedAlert>> {
         let now = Utc::now();
         let limit = now - chrono::Duration::minutes(window_mins as i64);
@@ -48,7 +48,7 @@ impl EventLogger {
         Ok(rows)
     }
 
-    pub async fn purge_old_events(pool: &SqlitePool, minutes: u64) -> Result<u64> {
+    pub async fn purge_old_events(minutes: u64, pool: &SqlitePool) -> Result<u64> {
         let horizon = Utc::now() - chrono::Duration::minutes(minutes as i64);
         let result = sqlx::query(
             "DELETE FROM device_event_log WHERE DATETIME(created_at) < DATETIME(?)"

@@ -64,7 +64,7 @@ fn prepare_db_dir(uri: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn create_backup(pool: &SqlitePool, backup_path: &str) -> Result<()> {
+pub async fn create_backup(backup_path: &str, pool: &SqlitePool, ) -> Result<()> {
     let _ = std::fs::remove_file(backup_path);
 
     sqlx::query(&format!("VACUUM INTO '{}'", backup_path))

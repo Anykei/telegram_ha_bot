@@ -19,11 +19,11 @@ use crate::core::types::Device;
 ///
 /// Returns a `Result<()>` indicating success or failure of the operation
 pub async fn sync_device(
-    pool: &sqlx::SqlitePool,
     ha_entity_id: &str,
     ha_area_id: &str,
     friendly_name: &str,
     device_class: &str,
+    pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<()> {
     let domain = ha_entity_id
         .split_once('.')
@@ -32,19 +32,21 @@ pub async fn sync_device(
 
     sqlx::query(
         r#"
-        INSERT INTO devices (room_id, entity_id, alias, device_class, device_domain)
+        INSERT INTO devices (room_id, entity_id, alias, device_class, device_domain, archived)
         VALUES (
             (SELECT id FROM rooms WHERE area = ?1),
             ?2,
             ?3,
             ?4,
-            ?5
+            ?5,
+            0
         )
         ON CONFLICT(entity_id) DO UPDATE SET
             room_id = (SELECT id FROM rooms WHERE area = ?1),
             device_class = ?4,
             device_domain = ?5,
-            alias = COALESCE(alias, ?3)
+            alias = COALESCE(alias, ?3),
+            archived = 0
         "#
     )
     .bind(ha_area_id)
@@ -82,7 +84,7 @@ pub async fn get_devices_by_room(
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Vec<Device>> {
     let rows = sqlx::query(
-        "SELECT id, room_id, entity_id, alias, device_class, device_domain FROM devices WHERE room_id = ?"
+        "SELECT id, room_id, entity_id, alias, device_class, device_domain, archived FROM devices WHERE room_id = ? AND archived = 0"
     )
     .bind(room_id)
     .fetch_all(pool)
@@ -97,6 +99,7 @@ pub async fn get_devices_by_room(
             alias: row.get("alias"),
             device_class: row.get("device_class"),
             device_domain: row.get("device_domain"),
+            archived: row.get("archived"),
         });
     }
 
@@ -118,7 +121,7 @@ pub async fn get_device_by_id(
     pool: &sqlx::SqlitePool,
 ) -> sqlx::Result<Option<Device>> {
     sqlx::query_as::<_, Device>(
-        "SELECT id, room_id, entity_id, alias, device_class, device_domain FROM devices WHERE id = ?"
+        "SELECT id, room_id, entity_id, alias, device_class, device_domain, archived FROM devices WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -136,8 +139,8 @@ pub async fn get_device_by_id(
 ///
 /// Returns a `Result<Option<i64>>` containing the room ID if found, or None if not found
 pub async fn get_room_id_by_entity(
-    pool: &sqlx::SqlitePool,
     entity_id: &str,
+    pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Option<i64>> {
     let row = sqlx::query("SELECT room_id FROM devices WHERE entity_id = ?")
         .bind(entity_id)
@@ -166,7 +169,7 @@ pub async fn get_all_display_names(
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let rows = sqlx::query(
-        "SELECT entity_id, COALESCE(alias, entity_id) as display_name FROM devices"
+        "SELECT entity_id, COALESCE(alias, entity_id) as display_name FROM devices WHERE archived = 0"
     )
     .fetch_all(pool)
     .await?;
@@ -177,4 +180,46 @@ pub async fn get_all_display_names(
         .collect();
 
     Ok(mapping)
+}
+
+/// Archives devices that no longer exist in Home Assistant.
+///
+/// This function should be called after a full sync to mark devices
+/// that were not updated during the sync as archived.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the SQLite connection pool
+/// * `synced_entity_ids` - A list of entity IDs that were synced
+///
+/// # Returns
+///
+/// Returns a `Result<usize>` with the number of archived devices
+pub async fn archive_missing_devices(
+    synced_entity_ids: &[String],
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<usize> {
+    if synced_entity_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Build placeholders for IN clause
+    let placeholders = synced_entity_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let query_str = format!(
+        "UPDATE devices SET archived = 1 WHERE entity_id NOT IN ({}) AND archived = 0",
+        placeholders
+    );
+
+    let mut query = sqlx::query(&query_str);
+    for entity_id in synced_entity_ids {
+        query = query.bind(entity_id);
+    }
+
+    let result = query.execute(pool).await?;
+    Ok(result.rows_affected() as usize)
 }

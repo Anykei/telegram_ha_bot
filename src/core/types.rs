@@ -12,4 +12,5 @@ pub struct Device {
     pub alias: Option<String>,
     pub device_class: String,
     pub device_domain: String,
+    pub archived: i64,
 }
