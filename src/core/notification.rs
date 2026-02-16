@@ -66,11 +66,11 @@ async fn process_and_dispatch(bot: Bot, config: Arc<AppConfig>, event: NotifyEve
     }
     info!("Core: New state change {}", event.entity_id, );
 
-    db::device_event_log::EventLogger::record_event(&config.db, &event.entity_id, &event.new_state).await?;
+    db::device_event_log::EventLogger::record_event(&event.entity_id, &event.new_state, &config.db, ).await?;
 
-    let room_id_opt = db::devices::get_room_id_by_entity(&config.db, &event.entity_id).await.unwrap_or(None);
+    let room_id_opt = db::devices::get_room_id_by_entity(&event.entity_id, &config.db).await.unwrap_or(None);
 
-    let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await.unwrap_or_default();
+    let recipients = db::subscriptions::get_subscribers(&event.entity_id, &config.db).await.unwrap_or_default();
 
     let recipients_set: std::collections::HashSet<u64> = recipients.iter().map(|&id| id as u64).collect();
 

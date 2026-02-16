@@ -28,7 +28,7 @@ impl AppConfig {
         let window_mins = self.ttl_notifications;
 
         // 1. Получаем активные алерты
-        match db::device_event_log::EventLogger::fetch_active_alerts(&self.db, user_id, window_mins).await {
+        match db::device_event_log::EventLogger::fetch_active_alerts(user_id, window_mins, &self.db).await {
             Ok(alerts) => {
                 for alert in alerts {
                     // А. Определяем домен и класс (для иконок)
@@ -42,7 +42,7 @@ impl AppConfig {
                         .unwrap_or_else(|| alert.entity_id.clone());
 
                     // В. Получаем префикс комнаты (Breadcrumbs)
-                    let room_prefix = if let Ok(Some(rid)) = db::devices::get_room_id_by_entity(&self.db, &alert.entity_id).await {
+                    let room_prefix = if let Ok(Some(rid)) = db::devices::get_room_id_by_entity(&alert.entity_id, &self.db).await {
                         if let Ok(Some(room)) = db::rooms::get_room_by_id(rid, &self.db).await {
                             format!("{} • ", room.alias.as_deref().unwrap_or(&room.area))
                         } else { "".to_string() }

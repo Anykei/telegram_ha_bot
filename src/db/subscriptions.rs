@@ -21,7 +21,7 @@ pub async fn is_hidden(entity_id: &str, pool: &SqlitePool) -> anyhow::Result<boo
     Ok(hide_value.map_or(false, |val| val != 0))
 }
 
-pub async fn get_subscribers(pool: &SqlitePool, entity_id: &str) -> anyhow::Result<Vec<i64>> {
+pub async fn get_subscribers(entity_id: &str, pool: &SqlitePool) -> anyhow::Result<Vec<i64>> {
     let rows = sqlx::query_as::<_, (i64,)>("SELECT user_id FROM subscriptions WHERE entity_id = ?")
         .bind(entity_id)
         .fetch_all(pool)
@@ -31,9 +31,9 @@ pub async fn get_subscribers(pool: &SqlitePool, entity_id: &str) -> anyhow::Resu
 
 /// Toggles subscription for user to entity. Returns true if now subscribed, false if unsubscribed.
 pub async fn toggle_subscription(
-    pool: &SqlitePool,
     user_id: i64,
     entity_id: &str,
+    pool: &SqlitePool,
 ) -> anyhow::Result<bool> {
     // 1. Check if subscription exists
     let exists: bool = sqlx::query_scalar(
@@ -76,8 +76,8 @@ pub async fn entity_exists(entity_id: &str, pool: &SqlitePool) -> anyhow::Result
 /// Toggles the hidden flag for an entity. If entity doesn't exist, creates it with hide=1.
 /// Returns true if entity is now hidden (hide=1), false if visible (hide=0).
 pub async fn toggle_hidden(
-    pool: &SqlitePool,
     entity_id: &str,
+    pool: &SqlitePool,
 ) -> anyhow::Result<bool> {
     // Step 1: Check current state
     let current_hide: Option<i64> = sqlx::query_scalar(
