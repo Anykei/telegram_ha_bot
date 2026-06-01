@@ -1,15 +1,17 @@
 use std::sync::Arc;
-use tokio::time::{interval, Duration, MissedTickBehavior};
-use tokio_util::sync::CancellationToken;
+
+use chrono::{Duration as ChronoDuration, Utc};
+use log::{debug, error, info};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, MessageId};
-use log::{info, debug, error};
+use tokio::time::{interval, Duration, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
 
-use crate::models::AppConfig;
+use crate::bot::handlers::refresh_current_view;
 use crate::db;
-use crate::bot::handlers::render_current_view;
 use crate::ha::models::Entity;
 use crate::ha::Room;
+use crate::models::AppConfig;
 
 pub fn spawn_background_maintenance(
     bot: Bot,
@@ -19,11 +21,7 @@ pub fn spawn_background_maintenance(
     info!("Core: Notification processor started");
 
     tokio::spawn(async move {
-        start_background_maintenance(
-            bot,
-            config,
-            cancel_token
-        ).await;
+        start_background_maintenance(bot, config, cancel_token).await;
     });
 }
 
@@ -32,7 +30,9 @@ pub async fn start_background_maintenance(
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
 ) {
-    let mut interval = interval(Duration::from_secs(config.background_maintenance_interval_s));
+    let mut interval = interval(Duration::from_secs(
+        config.background_maintenance_interval_s,
+    ));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     info!("⚙️ Core: Worker Heartbeat View and Clear alerts started");
@@ -40,12 +40,15 @@ pub async fn start_background_maintenance(
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                record_maintenance_tick(&config).await;
+
                 let ttl = config.ttl_notifications;
                 match db::device_event_log::EventLogger::purge_old_events(ttl, &config.db).await {
                     Ok(count) => if count > 0 { debug!("Maintenance: удалено {} старых записей лога", count); },
                     Err(e) => error!("Maintenance error: {}", e),
                 }
 
+                cleanup_expired_sessions(&config).await;
                 refresh_all_active_sessions(&bot, &config).await;
                 refresh_system_data(&config).await;
             }
@@ -59,15 +62,34 @@ pub async fn start_background_maintenance(
 
 async fn refresh_system_data(config: &Arc<AppConfig>) {
     match config.ha_client.fetch_rooms().await {
-        Ok(rooms) => {
-            if let Err(e) = refresh_room(&rooms, config).await {
-                error!("Background sync error: {}", e);
+        Ok(rooms) => match refresh_room(&rooms, config).await {
+            Ok(()) => record_ha_sync_success(config).await,
+            Err(e) => {
+                let message = e.to_string();
+                error!("Background sync error: {}", message);
+                record_ha_sync_error(config, message).await;
             }
-        }
+        },
         Err(e) => {
-            error!("Failed to fetch rooms from HA: {}", e);
+            let message = e.to_string();
+            error!("Failed to fetch rooms from HA: {}", message);
+            record_ha_sync_error(config, message).await;
         }
     }
+}
+
+async fn record_maintenance_tick(config: &Arc<AppConfig>) {
+    config.runtime_status.write().await.last_maintenance_tick_at = Some(Utc::now());
+}
+
+async fn record_ha_sync_success(config: &Arc<AppConfig>) {
+    let mut status = config.runtime_status.write().await;
+    status.last_ha_sync_at = Some(Utc::now());
+    status.last_ha_sync_error = None;
+}
+
+async fn record_ha_sync_error(config: &Arc<AppConfig>, error: String) {
+    config.runtime_status.write().await.last_ha_sync_error = Some(error);
 }
 
 async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Result<()> {
@@ -99,23 +121,54 @@ async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Res
     Ok(())
 }
 
-async fn refresh_entities(area_id: &str, entities: &Vec<Entity>, config: &Arc<AppConfig>) -> anyhow::Result<()> {
+async fn refresh_entities(
+    area_id: &str,
+    entities: &Vec<Entity>,
+    config: &Arc<AppConfig>,
+) -> anyhow::Result<()> {
     for ent in entities {
-        let device_class = ent.device_class
-            .as_deref()
-            .unwrap_or("undefined");
+        let device_class = ent.device_class.as_deref().unwrap_or("undefined");
 
-        if let Err(e) = db::devices::sync_device(
-            &ent.entity_id,
-            area_id,
-            &ent.name,
-            device_class,
-            &config.db,
-        ).await {
+        if let Err(e) =
+            db::devices::sync_device(&ent.entity_id, area_id, &ent.name, device_class, &config.db)
+                .await
+        {
             error!("Failed to sync device {}: {}", ent.entity_id, e);
         }
     }
     Ok(())
+}
+
+async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
+    let ttl_hours = i64::try_from(config.session_ttl_hours).unwrap_or(i64::MAX);
+    let cutoff = Utc::now() - ChronoDuration::hours(ttl_hours);
+
+    let expired_user_ids: Vec<u64> = config
+        .sessions
+        .iter()
+        .filter_map(|entry| {
+            if entry.value().last_seen_at < cutoff {
+                Some(*entry.key())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if expired_user_ids.is_empty() {
+        return;
+    }
+
+    for user_id in expired_user_ids {
+        config.sessions.remove(&user_id);
+        config.ui_locks.remove(&user_id);
+
+        if let Err(e) = db::clear_user_session(user_id, &config.db).await {
+            error!("Failed to clear expired session {}: {}", user_id, e);
+        } else {
+            debug!("Maintenance: cleared expired session {}", user_id);
+        }
+    }
 }
 
 async fn refresh_all_active_sessions(bot: &Bot, config: &Arc<AppConfig>) {
@@ -123,10 +176,20 @@ async fn refresh_all_active_sessions(bot: &Bot, config: &Arc<AppConfig>) {
         return;
     }
 
-    debug!("Heartbeat: refresh {} active session", config.sessions.len());
+    debug!(
+        "Heartbeat: refresh {} active session",
+        config.sessions.len()
+    );
+
+    let now = Utc::now();
 
     for entry in config.sessions.iter() {
         let (user_id, session) = entry.pair();
+
+        if session.is_ui_refresh_blocked(now) {
+            continue;
+        }
+
         let bot_clone = bot.clone();
         let config_clone = config.clone();
 
@@ -135,14 +198,16 @@ async fn refresh_all_active_sessions(bot: &Bot, config: &Arc<AppConfig>) {
         let ctx = session.current_context.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = render_current_view(
+            if let Err(e) = refresh_current_view(
                 &bot_clone,
                 &config_clone,
                 uid,
                 ChatId(uid as i64),
                 mid,
-                &ctx
-            ).await {
+                &ctx,
+            )
+            .await
+            {
                 debug!("Fail update screen {}: {}", uid, e);
             }
         });

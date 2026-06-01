@@ -1,11 +1,11 @@
+use super::Room;
+use crate::ha::models::Entity;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::{header, Client};
 use serde::Deserialize;
 use serde_json::json;
 use urlencoding::encode;
-use crate::ha::models::Entity;
-use super::Room;
 
 #[derive(Deserialize)]
 struct HaHistoryItemFull {
@@ -24,12 +24,38 @@ pub struct HistoryResult {
     pub end_time: DateTime<Utc>,
 }
 
+#[async_trait::async_trait]
+pub trait HomeAssistantClient: Send + Sync {
+    async fn health_check(&self) -> Result<()>;
+
+    async fn fetch_rooms(&self) -> Result<Vec<Room>>;
+
+    async fn fetch_history(
+        &self,
+        entity_id: &str,
+        hours: u32,
+        offset: i32,
+    ) -> Result<HistoryResult>;
+
+    async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>>;
+
+    async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()>;
+
+    async fn call_service_with_data(
+        &self,
+        domain: &str,
+        service: &str,
+        entity_id: &str,
+        data: serde_json::Value,
+    ) -> Result<()>;
+}
+
 impl HAClient {
     pub fn new(url: String, token: String, timeout_secs: u64, connect_timeout: u64) -> Self {
         let mut headers = header::HeaderMap::new();
         let auth_header = format!("Bearer {}", token);
-        let mut auth_val = header::HeaderValue::from_str(&auth_header)
-            .expect("Invalid token format");
+        let mut auth_val =
+            header::HeaderValue::from_str(&auth_header).expect("Invalid token format");
         auth_val.set_sensitive(true);
         headers.insert(header::AUTHORIZATION, auth_val);
 
@@ -47,7 +73,8 @@ impl HAClient {
     /// Вспомогательный метод для выполнения запросов к Template API (Google Standard: DRY)
     async fn post_template<T: serde::de::DeserializeOwned>(&self, template: &str) -> Result<T> {
         let url = format!("{}/api/template", self.url);
-        let res = self.client
+        let res = self
+            .client
             .post(&url)
             .json(&json!({ "template": template }))
             .send()
@@ -60,11 +87,29 @@ impl HAClient {
             return Err(anyhow::anyhow!("HA API Error {}: {}", status, body));
         }
 
-        res.json::<T>().await.context("Failed to parse template response")
+        res.json::<T>()
+            .await
+            .context("Failed to parse template response")
     }
 
     pub async fn fetch_rooms(&self) -> Result<Vec<Room>> {
         self.post_template(super::templates::ROOMS_TEMPLATE).await
+    }
+
+    pub async fn health_check(&self) -> Result<()> {
+        let url = format!("{}/api/", self.url);
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to call HA health endpoint {}", url))?;
+
+        if !res.status().is_success() {
+            return Err(anyhow::anyhow!("HA health check failed: {}", res.status()));
+        }
+
+        Ok(())
     }
 
     pub async fn fetch_history(
@@ -88,7 +133,12 @@ impl HAClient {
             entity_id
         );
 
-        let res = self.client.get(&url).send().await.context("HA History API failure")?;
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("HA History API failure")?;
 
         if !res.status().is_success() {
             return Err(anyhow::anyhow!("HA API returned error: {}", res.status()));
@@ -102,7 +152,10 @@ impl HAClient {
             .collect();
 
         if points.is_empty() {
-            debug!("Gap detected for {}. Fetching last known state before {}", entity_id, start_iso);
+            debug!(
+                "Gap detected for {}. Fetching last known state before {}",
+                entity_id, start_iso
+            );
 
             let backfill_url = format!("{}/api/states/{}", self.url, entity_id);
             if let Ok(resp) = self.client.get(&backfill_url).send().await {
@@ -118,7 +171,13 @@ impl HAClient {
             points.push((end_time, last_state));
         }
 
-        debug!("Fetched {} points for {} [{} -> {}]", points.len(), entity_id, start_iso, end_iso);
+        debug!(
+            "Fetched {} points for {} [{} -> {}]",
+            points.len(),
+            entity_id,
+            start_iso,
+            end_iso
+        );
 
         Ok(HistoryResult {
             points,
@@ -128,7 +187,9 @@ impl HAClient {
     }
 
     pub async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
-        if entity_ids.is_empty() { return Ok(vec![]); }
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
 
         let ids_json = serde_json::to_string(entity_ids)?;
         let template = format!(
@@ -151,7 +212,9 @@ impl HAClient {
 
     pub async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()> {
         let url = format!("{}/api/services/{}/{}", self.url, domain, service);
-        let res = self.client.post(&url)
+        let res = self
+            .client
+            .post(&url)
             .json(&json!({ "entity_id": entity_id }))
             .send()
             .await?;
@@ -167,7 +230,7 @@ impl HAClient {
         domain: &str,
         service: &str,
         entity_id: &str,
-        data: serde_json::Value
+        data: serde_json::Value,
     ) -> Result<()> {
         let url = format!("{}/api/services/{}/{}", self.url, domain, service);
 
@@ -175,7 +238,9 @@ impl HAClient {
         let mut body = data;
         body["entity_id"] = serde_json::json!(entity_id);
 
-        let res = self.client.post(&url)
+        let res = self
+            .client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -187,5 +252,43 @@ impl HAClient {
             return Err(anyhow::anyhow!("HA API Error {}: {}", status, body));
         }
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl HomeAssistantClient for HAClient {
+    async fn health_check(&self) -> Result<()> {
+        HAClient::health_check(self).await
+    }
+
+    async fn fetch_rooms(&self) -> Result<Vec<Room>> {
+        HAClient::fetch_rooms(self).await
+    }
+
+    async fn fetch_history(
+        &self,
+        entity_id: &str,
+        hours: u32,
+        offset: i32,
+    ) -> Result<HistoryResult> {
+        HAClient::fetch_history(self, entity_id, hours, offset).await
+    }
+
+    async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
+        HAClient::fetch_states_by_ids(self, entity_ids).await
+    }
+
+    async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()> {
+        HAClient::call_service(self, domain, service, entity_id).await
+    }
+
+    async fn call_service_with_data(
+        &self,
+        domain: &str,
+        service: &str,
+        entity_id: &str,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        HAClient::call_service_with_data(self, domain, service, entity_id, data).await
     }
 }

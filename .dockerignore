@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.continue
+
+target
+data
+sqlite:
+.sqlx
+
+.env
+*.db
+*.db-shm
+*.db-wal
+
+store_repo
+Dockerfile.local
