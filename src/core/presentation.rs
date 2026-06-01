@@ -1,5 +1,5 @@
-use chrono::{DateTime, Duration, Local, Utc};
 use crate::db::rooms::Room;
+use chrono::{DateTime, Duration, Local, Utc};
 
 pub struct StateFormatter;
 
@@ -95,7 +95,12 @@ impl StateFormatter {
 
     /// Собирает итоговую строку для кнопки или уведомления.
     /// Пример: "🌡 Кухня (22.50°C)"
-    pub fn format_device_label_with_state(alias: &str, domain: &str, class: &str, state: &str) -> String {
+    pub fn format_device_label_with_state(
+        alias: &str,
+        domain: &str,
+        class: &str,
+        state: &str,
+    ) -> String {
         let icon = Self::get_icon(domain, class, state);
         let value = Self::format_state_value(domain, class, state);
 
@@ -119,37 +124,10 @@ impl StateFormatter {
     pub fn get_rooms_header(mode: &super::types::RoomViewMode) -> &'static str {
         match mode {
             super::types::RoomViewMode::Control => "🎮 *Управление*\nВыберите комнату:",
-            super::types::RoomViewMode::Settings => "⚙️ *Настройки*\nВыберите комнату для настройки:",
+            super::types::RoomViewMode::Settings => {
+                "⚙️ *Настройки*\nВыберите комнату для настройки:"
+            }
         }
-    }
-
-    pub fn format_event_line(
-        room_name: Option<&str>,
-        alias: &str,
-        domain: &str,
-        class: &str,
-        state: &str,
-        count: i32,
-        seconds_ago: i64,
-    ) -> String {
-        let icon = Self::get_icon(domain, class, state);
-        let human_state = Self::format_state_value(domain, class, state);
-
-        // Хлебные крошки (комната)
-        let room_part = room_name.map(|n| format!("*{}* • ", n)).unwrap_or_default();
-
-        // Мета-информация (повторы и время)
-        let mut meta = Vec::new();
-        if count > 1 { meta.push(format!("⟲{}", count)); }
-        if seconds_ago > 0 { meta.push(format!("{}с", seconds_ago)); }
-
-        let meta_str = if meta.is_empty() {
-            String::new()
-        } else {
-            format!(" _{}_", meta.join(" "))
-        };
-
-        format!("{}{} {}: *{}*{}", icon, room_part, alias, human_state, meta_str)
     }
 
     pub fn format_last_update(dt: DateTime<Utc>) -> String {

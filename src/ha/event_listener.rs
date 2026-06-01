@@ -1,21 +1,20 @@
 use futures_util::{SinkExt, StreamExt};
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 use std::cmp::min;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_util::sync::CancellationToken;
 use tungstenite::Utf8Bytes;
 
-
 pub fn spawn_event_listener(
     url: String,
     token: String,
     cancel_token: CancellationToken,
-    tx: mpsc::Sender<super::models::NotifyEvent>) {
-
+    tx: mpsc::Sender<super::models::NotifyEvent>,
+) {
     tokio::spawn(async move {
         tokio::select! {
             _ = start_event_listener(url, token, cancel_token.clone(), tx) => {
@@ -32,14 +31,20 @@ async fn start_event_listener(
     ha_url: String,
     ha_token: String,
     cancel_token: CancellationToken,
-    tx: mpsc::Sender<super::models::NotifyEvent>
+    tx: mpsc::Sender<super::models::NotifyEvent>,
 ) {
-    let ws_url = ha_url.replace("http", "ws").trim_end_matches('/').to_string() + "/api/websocket";
+    let ws_url = ha_url
+        .replace("http", "ws")
+        .trim_end_matches('/')
+        .to_string()
+        + "/api/websocket";
     let mut backoff = Duration::from_millis(500);
     let max_backoff = Duration::from_secs(30);
 
     loop {
-        if cancel_token.is_cancelled() { return; }
+        if cancel_token.is_cancelled() {
+            return;
+        }
 
         info!("Connect WebSocket HA: {}", ws_url);
 
@@ -49,10 +54,13 @@ async fn start_event_listener(
                 s
             }
             Err(e) => {
-                warn!("Connection to WS failed: {}. Retrying in {:?}...", e, backoff);
+                warn!(
+                    "Connection to WS failed: {}. Retrying in {:?}...",
+                    e, backoff
+                );
                 let sleep_for = backoff;
                 backoff = min(backoff.saturating_mul(2), max_backoff);
-                
+
                 tokio::select! {
                     _ = tokio::time::sleep(sleep_for) => continue,
                     _ = cancel_token.cancelled() => return,
@@ -69,13 +77,13 @@ async fn start_event_listener(
                     let Some(Ok(msg)) = msg else { break; }; // Если ошибка коннекта - идем на реконнект
 
                     let text = msg.to_text().unwrap_or("");
-                    
+
                     // Skip empty messages (heartbeat/ping frames)
                     if text.is_empty() {
                         debug!("Received empty WebSocket frame (heartbeat)");
                         continue;
                     }
-                    
+
                     let v: Value = match serde_json::from_str(text) {
                         Ok(val) => val,
                         Err(e) => {
@@ -126,7 +134,7 @@ async fn start_event_listener(
 
         let sleep_for = backoff;
         backoff = min(backoff.saturating_mul(2), max_backoff);
-        
+
         tokio::select! {
             _ = tokio::time::sleep(sleep_for) => {},
             _ = cancel_token.cancelled() => return,

@@ -32,11 +32,16 @@ pub fn draw_ha_chart(
     }
 
     let width = 1000;
-    let height = if matches!(style, ChartStyle::Binary) { 400 } else { 600 };
+    let height = if matches!(style, ChartStyle::Binary) {
+        400
+    } else {
+        600
+    };
     let mut buffer = vec![0u8; width * height * 3];
 
     {
-        let root = BitMapBackend::with_buffer(&mut buffer, (width as u32, height as u32)).into_drawing_area();
+        let root = BitMapBackend::with_buffer(&mut buffer, (width as u32, height as u32))
+            .into_drawing_area();
         root.fill(&HA_BG)?;
 
         match style {
@@ -54,29 +59,47 @@ fn render_numeric<B: DrawingBackend>(
     title: &str,
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
-) -> Result<()> where B::ErrorType: 'static {
+) -> Result<()>
+where
+    B::ErrorType: 'static,
+{
     // Безопасный парсинг данных
-    let parsed_data: Vec<(DateTime<Utc>, f64)> = data.iter()
+    let parsed_data: Vec<(DateTime<Utc>, f64)> = data
+        .iter()
         .filter_map(|(t, s)| s.parse::<f64>().ok().map(|v| (*t, v)))
         .collect();
 
-    if parsed_data.is_empty() { return Err(anyhow!("Ошибка парсинга числовых данных")); }
+    if parsed_data.is_empty() {
+        return Err(anyhow!("Ошибка парсинга числовых данных"));
+    }
 
     // Расчет Y-оси
-    let min_val = parsed_data.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
-    let max_val = parsed_data.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
+    let min_val = parsed_data
+        .iter()
+        .map(|x| x.1)
+        .fold(f64::INFINITY, f64::min);
+    let max_val = parsed_data
+        .iter()
+        .map(|x| x.1)
+        .fold(f64::NEG_INFINITY, f64::max);
     let range = (max_val - min_val).max(1.0);
     let y_min = min_val - range * 0.2;
     let y_max = max_val + range * 0.2;
 
     let mut chart = ChartBuilder::on(root)
         .caption(title, ("sans-serif", 25).into_font().color(&HA_TEXT))
-        .margin(30).x_label_area_size(80).y_label_area_size(60)
+        .margin(30)
+        .x_label_area_size(80)
+        .y_label_area_size(60)
         .build_cartesian_2d(start_time..end_time, y_min..y_max)?;
 
-    chart.configure_mesh()
-        .x_labels(8).y_labels(6).disable_x_mesh()
-        .axis_style(HA_GRID).label_style(("sans-serif", 15).into_font().color(&HA_TEXT))
+    chart
+        .configure_mesh()
+        .x_labels(8)
+        .y_labels(6)
+        .disable_x_mesh()
+        .axis_style(HA_GRID)
+        .label_style(("sans-serif", 15).into_font().color(&HA_TEXT))
         .x_label_formatter(&|x| x.with_timezone(&Local).format("%H:%M").to_string())
         .draw()?;
 
@@ -87,7 +110,7 @@ fn render_numeric<B: DrawingBackend>(
     if !parsed_data.is_empty() {
         for i in 0..parsed_data.len() - 1 {
             stepped.push((parsed_data[i].0, parsed_data[i].1));
-            stepped.push((parsed_data[i+1].0, parsed_data[i].1));
+            stepped.push((parsed_data[i + 1].0, parsed_data[i].1));
         }
         if let Some(&last) = parsed_data.last() {
             stepped.push(last);
@@ -105,16 +128,24 @@ fn render_binary<B: DrawingBackend>(
     title: &str,
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
-) -> Result<()> where B::ErrorType: 'static {
+) -> Result<()>
+where
+    B::ErrorType: 'static,
+{
     let (y_min, y_max) = (0i32, 100i32);
 
     let mut chart = ChartBuilder::on(root)
         .caption(title, ("sans-serif", 20).into_font().color(&HA_TEXT))
-        .margin(20).x_label_area_size(80)
+        .margin(20)
+        .x_label_area_size(80)
         .build_cartesian_2d(start_time..end_time, y_min..y_max)?;
 
-    chart.configure_mesh()
-        .disable_y_axis().disable_y_mesh().axis_style(HA_GRID).x_labels(8)
+    chart
+        .configure_mesh()
+        .disable_y_axis()
+        .disable_y_mesh()
+        .axis_style(HA_GRID)
+        .x_labels(8)
         .label_style(("sans-serif", 14).into_font().color(&HA_TEXT))
         .x_label_formatter(&|x| x.with_timezone(&Local).format("%H:%M").to_string())
         .draw()?;
@@ -133,13 +164,16 @@ fn render_binary<B: DrawingBackend>(
     for i in 0..data.len() {
         let t_start = data[i].0;
         let is_on = is_state_on(&data[i].1);
-        let t_end = if i + 1 < data.len() { data[i+1].0 } else { end_time };
+        let t_end = if i + 1 < data.len() {
+            data[i + 1].0
+        } else {
+            end_time
+        };
 
         let actual_ts = t_start.max(start_time);
         let mut actual_te = t_end.min(end_time);
 
         if actual_te > actual_ts && is_on {
-
             if actual_te - actual_ts < min_visible_duration {
                 actual_te = (actual_ts + min_visible_duration).min(end_time);
             }
@@ -174,7 +208,14 @@ where
 {
     let mut curr = start.with_timezone(&Local);
     while curr <= end.with_timezone(&Local) {
-        let midnight = curr.with_hour(0).unwrap().with_minute(0).unwrap().with_second(0).unwrap().with_timezone(&Utc);
+        let midnight = curr
+            .with_hour(0)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap()
+            .with_timezone(&Utc);
 
         if midnight > start && midnight < end {
             chart.draw_series(std::iter::once(PathElement::new(
@@ -187,7 +228,10 @@ where
                 chart.draw_series(std::iter::once(Text::new(
                     curr.format("%d %b").to_string(),
                     (label_time, y_min.clone()),
-                    ("sans-serif", 15).into_font().color(&HA_TEXT).pos(Pos::new(HPos::Center, VPos::Top)),
+                    ("sans-serif", 15)
+                        .into_font()
+                        .color(&HA_TEXT)
+                        .pos(Pos::new(HPos::Center, VPos::Top)),
                 )))?;
             }
         }

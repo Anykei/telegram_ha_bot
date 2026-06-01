@@ -1,299 +1,346 @@
-# Home Assistant Telegram Bot 🏠📱
+# Telegram HA Bot
 
-A high-performance asynchronous Telegram bot powered by Rust that provides seamless integration with Home Assistant, enabling real-time control and monitoring of smart home devices through Telegram.
+Telegram HA Bot - это Telegram-бот для управления Home Assistant из чата. Он
+показывает комнаты и устройства, умеет обновлять открытые экраны, отправлять
+уведомления, строить графики датчиков, работать с короткими клипами камер и
+ограничивать доступ разным пользователям.
 
-## Features
+Проект рассчитан на сценарий, где Home Assistant и камеры доступны боту в
+локальной сети, а пользователь управляет домом через Telegram из любой точки.
 
-### 🔌 Home Assistant Integration
-- **WebSocket Connection** (tokio-tungstenite) for real-time event streaming
-- **REST API** (reqwest) for device control and state queries
-- **Persistent Connection** with exponential backoff reconnection logic
-- **Auto-discovery** of devices from HA with configurable visibility
+## Возможности
 
-### 📱 Telegram Interface
-- **Interactive Buttons** for multi-modal room and device control
-- **Live State Updates** — UI refreshes when HA devices change state
-- **Session Management** — persistent user state and menu history
-- **Settings Panel** — user-customizable device visibility and notifications
+- Управление устройствами Home Assistant по комнатам.
+- Отдельные экраны для света, сенсоров, климата, числовых сущностей и настроек.
+- Уведомления по изменениям состояний Home Assistant.
+- Графики истории для датчиков.
+- Админка в Telegram: пользователи, профили доступа, камеры, статус системы,
+  резервная копия базы.
+- Персональные профили: разные пользователи могут видеть разные комнаты и
+  устройства.
+- Раздел камер без внешнего HTTPS-сервера: снимок и короткое видео по RTSP или
+  HTTP-потоку.
+- Восстановление активных UI-сессий после перезапуска.
+- Защита от отката интерфейса при фоновых обновлениях: меню пользователя
+  редактируются последовательно и проверяют текущий контекст перед обновлением.
 
-### 📊 Analytics & Visualization
-- **Sensor History Charts** — plotters-based PNG rendering of sensor data over time
-- **Event Logging** — SQLite database tracking device state changes
-- **Activity Timestamps** — track user interactions and device events
+## Как это устроено
 
-### 🎥 Video Processing (Extensible)
-- **FFmpeg Integration** — `tokio::process` for video stream management
-- **H.264 Encoding** — Telegram-optimized MP4 output
-- **Concurrency Control** — bounded task queue prevents resource exhaustion
+Бот синхронизируется с Home Assistant через REST API и WebSocket events. Список
+комнат, устройств, подписок, пользовательских прав и камер хранится в SQLite.
 
-### ⚡ Performance & Reliability
-- **Bounded Event Queue** (capacity=32) — prevents unbounded task spawning
-- **Worker Pool Pattern** — fixed number of async workers processing notifications
-- **Type-Safe Database** (sqlx) — compile-time SQL validation
-- **Graceful Degradation** — full/queue events are logged, not silently dropped
+Основные части:
 
-### 🔒 Security & Access Control
-- **User Whitelist** — database-driven permission model
-- **Root Admin** — designated super-user with unrestricted access
-- **Entity Subscriptions** — per-user notification subscriptions
-- **Hidden Entities** — user controls device visibility in Control mode
+- `src/bot` - Telegram handlers, router и экраны.
+- `src/core` - фоновое обслуживание, уведомления, камеры, представление данных.
+- `src/db` - SQLite-репозитории и правила доступа.
+- `src/ha` - клиент Home Assistant и WebSocket listener.
+- `migrations` - схема базы данных.
+- `data/options.json` - локальная конфигурация бота, обычно не коммитится.
 
-## Architecture
+## Требования
 
-```
-telegram_ha_bot/
-├── src/
-│   ├── main.rs                 # Application entry point & setup
-│   ├── models.rs               # AppConfig, shared state types
-│   ├── config.rs               # Environment variable loading
-│   ├── options.rs              # options.json parsing
-│   │
-│   ├── ha/                      # Home Assistant integration
-│   │   ├── client.rs           # REST API wrapper (history, template, service calls)
-│   │   ├── event_listener.rs   # WebSocket real-time event stream
-│   │   └── models.rs           # HA data structures (Entity, NotifyEvent)
-│   │
-│   ├── bot/                     # Telegram bot layer (teloxide)
-│   │   ├── handlers.rs         # Command & callback handlers
-│   │   ├── router.rs           # Payload encoding/routing logic
-│   │   ├── models.rs           # UI View structure
-│   │   ├── notification.rs     # Notification dispatcher
-│   │   └── screens/            # UI screen renderers
-│   │       ├── home.rs
-│   │       ├── room.rs
-│   │       ├── control/
-│   │       ├── settings/
-│   │       └── admin/
-│   │
-│   ├── core/                    # Business logic & orchestration
-│   │   ├── devices.rs          # Device control, state logic
-│   │   ├── notification.rs     # Event processing & task distribution (bounded queue)
-│   │   ├── presentation.rs     # State formatting & localization
-│   │   ├── maintenance.rs      # Background tasks (cache updates)
-│   │   └── types.rs            # Domain types
-│   │
-│   ├── db/                      # SQLite data layer (sqlx)
-│   │   ├── devices.rs
-│   │   ├── rooms.rs
-│   │   ├── subscriptions.rs    # Visibility & notification settings
-│   │   ├── user.rs
-│   │   ├── device_event_log.rs
-│   │   └── models.rs
-│   │
-│   ├── charts/                  # Data visualization (plotters)
-│   │   └── mod.rs
-│   │
-│   └── video_engine/            # Video processing (FFmpeg)
-│       └── mod.rs              # VideoProcessor, concurrency control
-│
-├── migrations/                  # SQLx database migrations
-│   ├── 20260109120000_init.sql
-│   ├── 20260109120001_add_table_rooms.sql
-│   ├── 20260109120002_add_table_devices.sql
-│   └── 20260115140000_add_hide_column.sql
-│
-├── Dockerfile                   # Container configuration
-├── Cargo.toml                   # Dependencies
-└── .env                         # Configuration (tokens, URLs)
-```
+- Rust 1.87+.
+- SQLite.
+- Home Assistant с long-lived access token или Supervisor token.
+- Telegram bot token от BotFather.
+- Для камер: доступный для бота RTSP/HTTP-поток.
+- Для сборки с камерами: системные библиотеки FFmpeg/LibAV.
 
-## Tech Stack
+На Debian/Ubuntu для локальной сборки обычно нужны:
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Async Runtime** | tokio 1.0 | Non-blocking I/O, task spawning |
-| **WebSocket** | tokio-tungstenite 0.28 | HA real-time event stream |
-| **HTTP Client** | reqwest 0.13 | HA REST API calls |
-| **Telegram Bot** | teloxide 0.17 | Bot framework & API |
-| **State Management** | dashmap 7.0 | Thread-safe in-memory cache |
-| **Database** | sqlx 0.8 + SQLite | Type-safe SQL, migrations |
-| **Serialization** | serde 1.0 | JSON/binary encoding |
-| **Visualization** | plotters 0.3 | Chart rendering |
-| **Error Handling** | anyhow 1.0 | Ergonomic error propagation |
-
-## Installation & Setup
-
-### Prerequisites
-- Rust 1.70+
-- Home Assistant instance with API token
-- Telegram Bot token (from [@BotFather](https://t.me/botfather))
-- FFmpeg (for video processing)
-
-### 1. Clone Repository
 ```bash
-git clone https://github.com/yourusername/telegram_ha_bot.git
-cd telegram_ha_bot
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config clang libclang-dev libssl-dev libsqlite3-dev \
+  libfreetype6-dev libfontconfig1-dev \
+  libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
 ```
 
-### 2. Configure Environment
+На macOS удобнее поставить зависимости через Homebrew:
 
-Create `.env` file:
 ```bash
+brew install ffmpeg pkg-config sqlite openssl
+```
+
+## Конфигурация
+
+Бот читает пути и Home Assistant из переменных окружения:
+
+```env
+OPTIONS_PATH=data/options.json
+DATABASE_PATH=data/bot_data.db
+MIGRATIONS_PATH=./migrations
+
+HA_URL=http://homeassistant.local:8123
+HA_TOKEN=your_home_assistant_long_lived_token
+
 RUST_LOG=info
-OPTIONS_PATH="data/options.json"
-MIGRATIONS_PATH="./migrations"
-DATABASE_PATH="data/bot_data.db"
-HA_TOKEN="your_ha_long_lived_token_here"
-HA_URL="http://homeassistant.local:8123/"
 ```
 
-Create `data/options.json`:
+В Home Assistant Add-on окружении вместо `HA_TOKEN` может использоваться
+`SUPERVISOR_TOKEN`, а `HA_URL` по умолчанию равен `http://supervisor/core`.
+
+`options.json`:
+
 ```json
 {
-  "bot_token": "your_telegram_bot_token_here",
-  "root_user": "your_telegram_user_id"
+  "bot_token": "123456:telegram_bot_token",
+  "root_user": "219791289",
+  "background_maintenance_interval_s": 15,
+  "event_refresh_min_interval_s": 5,
+  "session_ttl_hours": 24,
+  "telegram_retry_after_extra_delay_s": 1,
+  "camera_clip_intervals_s": [5, 10, 15, 30],
+  "camera_default_clip_s": 10
 }
 ```
 
-### 3. Build & Run
+Поля `background_maintenance_interval_s`, `event_refresh_min_interval_s`,
+`session_ttl_hours`, `telegram_retry_after_extra_delay_s`,
+`camera_clip_intervals_s` и `camera_default_clip_s` имеют значения по умолчанию.
 
-**Development:**
+Камеры в `options.json` не добавляются. Они создаются через Telegram-админку и
+хранятся в SQLite.
+
+## Запуск локально
+
 ```bash
 cargo run
 ```
 
-**Release (optimized):**
+При первом запуске применяются миграции из `MIGRATIONS_PATH`, создается или
+обновляется SQLite-база, затем бот подключается к Home Assistant.
+
+Для проверки перед запуском:
+
 ```bash
-cargo build --release
-./target/release/telegram_ha_bot
+cargo fmt --check
+cargo check
+cargo test
 ```
 
-**Docker:**
+## Запуск в Docker
+
+Сборка:
+
 ```bash
 docker build -t telegram-ha-bot .
-docker run --env-file .env -v $(pwd)/data:/app/data telegram-ha-bot
 ```
 
-## Usage
-
-### Bot Commands
-| Command | Description |
-|---------|-------------|
-| `/start` | Show main menu (rooms/devices) |
-
-### Navigation
-1. **Home** → Select a room
-2. **Room View** (Control mode) → Toggle devices, view state
-3. **Room View** (Settings mode) → Configure notifications, visibility
-4. **Device Settings** → Rename, hide/show, subscribe to events
-
-### Device Visibility
-- **New devices** auto-hidden by default (user must explicitly enable)
-- **Control Mode** → Shows only visible devices for quick toggling
-- **Settings Mode** → All devices visible for configuration
-- **Toggle Hide** → Easy one-click visibility switching
-
-### Notifications
-- **Per-Device Subscription** — users choose which state changes trigger alerts
-- **Live UI Refresh** — watching users see real-time state updates
-- **Event Queue** — bounded (capacity=32) prevents memory exhaustion
-- **Graceful Degradation** — full queue events logged, not silently dropped
-
-## Performance & Reliability
-
-### Event Processing
-- **Bounded Queue**: Max 32 queued events (prevents unbounded task growth)
-- **Worker Pool**: Single async worker processes events sequentially
-- **Backpressure**: Overfull queue events logged with `warn!` level
-- **Example**: 100 HA events/sec → queue fills → new events dropped + logged
-
-### WebSocket Reconnection
-- **Exponential Backoff**: 500ms → 1s → 2s → ... → 30s (max)
-- **Reset on Success**: Backoff resets after successful connection
-- **Heartbeat Handling**: Empty frames logged as `debug`, not `warn`
-
-### Database
-- **Type-Safe Queries**: sqlx compile-time validation prevents SQL errors
-- **Migrations**: Automatic schema management on startup
-- **Error Handling**: Explicit `Result<bool>` instead of `unwrap()` hiding errors
-
-## Configuration
-
-### Hidden Entities (Visibility Control)
-
-**Default behavior:**
-```sql
--- New device discovered
-INSERT INTO hidden_entities (entity_id, hide) VALUES ('light.kitchen', 1);
--- hide=1 → hidden in Control mode
-```
-
-**User toggle:**
-```rust
-await toggle_hidden(pool, "light.kitchen")
-// If hide=1 → UPDATE to hide=0 (visible)
-// If hide=0 → UPDATE to hide=1 (hidden)
-```
-
-### Notification Subscriptions
-
-**Per-entity subscriber list:**
-```sql
-SELECT user_id FROM subscriptions WHERE entity_id = 'sensor.temperature';
-```
-
-**Toggle subscription:**
-```rust
-await toggle_subscription(pool, user_id, entity_id)
-// If subscribed → DELETE (unsubscribe)
-// If not subscribed → INSERT (subscribe)
-```
-
-## Logging
-
-Set via `RUST_LOG` environment variable:
+Пример запуска:
 
 ```bash
-# Info level (default)
+docker run --rm \
+  --name telegram-ha-bot \
+  -e OPTIONS_PATH=/data/options.json \
+  -e DATABASE_PATH=/data/bot_data.db \
+  -e MIGRATIONS_PATH=/app/migrations \
+  -e HA_URL=http://homeassistant.local:8123 \
+  -e HA_TOKEN=your_home_assistant_token \
+  -e RUST_LOG=info \
+  -v "$PWD/data:/data" \
+  telegram-ha-bot
+```
+
+Если контейнер не резолвит `homeassistant.local`, укажите IP Home Assistant,
+настройте DNS или используйте подходящий Docker network mode.
+
+## Первый запуск
+
+1. Создайте Telegram-бота через BotFather.
+2. Укажите `bot_token` и `root_user` в `options.json`.
+3. Укажите `HA_URL` и `HA_TOKEN` в `.env` или окружении контейнера.
+4. Запустите бота.
+5. Напишите боту `/start` от пользователя `root_user`.
+6. В админке добавьте остальных пользователей.
+
+`root_user` всегда имеет полный доступ и видит админку.
+
+## Профили доступа
+
+Профили нужны, чтобы разные люди видели разные части дома. Например:
+
+- взрослый пользователь видит все комнаты и устройства;
+- ребенок не видит котел или серверную;
+- гость видит только свет в гостиной.
+
+В админке доступны:
+
+- список пользователей;
+- профиль пользователя;
+- смена роли;
+- сброс доступов;
+- настройка доступа к комнатам;
+- настройка доступа к устройствам внутри комнаты;
+- включение и отключение уведомлений по устройствам.
+
+Режимы доступа:
+
+- `полный` - видно и можно управлять;
+- `просмотр` - видно, но управление запрещено;
+- `скрыто` - не видно в меню и недоступно по callback.
+
+Роли переключаются по кругу:
+
+```text
+user -> child -> guest -> user
+```
+
+Для `child` и `guest` комнаты по умолчанию закрываются, после чего админ
+открывает нужные комнаты и устройства вручную.
+
+## Камеры
+
+Раздел камер работает без Telegram Mini App и без внешнего HTTPS-сервера. Бот
+получает кадр или короткий клип сам и отправляет его в чат как фото или видео.
+
+Пользователь видит только камеры тех комнат, к которым у него есть доступ.
+
+Админский путь добавления:
+
+```text
+Админка -> Камеры -> выбрать комнату -> Добавить камеру
+```
+
+Формат ввода:
+
+```text
+Название
+RTSP URL
+Интервал видео в секундах
+Snapshot URL необязательно
+```
+
+Пример для IP-камеры:
+
+```text
+Вход
+rtsp://user:password@192.168.1.50:554/stream1
+10
+http://192.168.1.50/snapshot.jpg
+```
+
+Можно вводить одной строкой через `;`:
+
+```text
+Вход; rtsp://user:password@192.168.1.50:554/stream1; 10; http://192.168.1.50/snapshot.jpg
+```
+
+Если `Snapshot URL` не указан, бот попробует взять кадр из видеопотока. Если
+камера или go2rtc умеет отдавать JPEG snapshot, лучше указать отдельный
+snapshot URL: это быстрее и стабильнее.
+
+Настройка доступных длительностей роликов:
+
+```json
+{
+  "camera_clip_intervals_s": [5, 10, 15, 30],
+  "camera_default_clip_s": 10
+}
+```
+
+Значения должны быть от 1 до 120 секунд.
+
+### go2rtc
+
+Если камера заведена в go2rtc, можно добавить поток так:
+
+```text
+USB камера
+rtsp://homeassistant.local:8554/usb_camera
+10
+http://homeassistant.local:1984/api/frame.jpeg?src=usb_camera
+```
+
+Пример stream в go2rtc:
+
+```yaml
+streams:
+  usb_camera: ffmpeg:device?video=/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0&input_format=mjpeg&video_size=1920x1080&framerate=30#video=h264#raw=-preset ultrafast -tune zerolatency
+```
+
+Для коротких MP4-клипов желательно, чтобы поток уже был H.264. Для MJPEG/USB
+камер удобнее делать H.264 в go2rtc и отдавать боту RTSP-поток go2rtc.
+
+### Ограничения камер
+
+- Telegram Bot API не дает встроить настоящий live RTSP-плеер прямо в чат.
+- Для настоящего live-просмотра обычно нужен внешний HTTPS-адрес, Mini App или
+  отдельная веб-страница.
+- Текущая реализация делает снимок или короткий MP4-клип.
+- Обработка видео выполняется через `ffmpeg-next` и системные LibAV/FFmpeg
+  библиотеки, без запуска внешней `ffmpeg` команды.
+- Задачи камер ограничены по параллельности и выполняются в отдельных OS
+  threads, чтобы не блокировать Tokio runtime.
+
+## Уведомления и графики
+
+Бот слушает события Home Assistant через WebSocket. При изменении состояния он
+может отправлять уведомления подписанным пользователям, но учитывает доступы:
+если устройство скрыто или уведомления отключены для пользователя, событие не
+будет отправлено.
+
+Для датчиков доступен просмотр истории и графики. В Docker-образ добавлены
+шрифты и библиотеки, нужные для генерации изображений графиков.
+
+## Админка
+
+Админка доступна только `root_user`.
+
+Основные разделы:
+
+- пользователи;
+- профили доступа;
+- камеры по комнатам;
+- настройки комнат и устройств;
+- статус системы;
+- backup SQLite-базы.
+
+Экран статуса показывает:
+
+- состояние Home Assistant;
+- последний heartbeat фонового worker;
+- результат последней синхронизации HA;
+- число пользователей, комнат, устройств, подписок и событий;
+- активные UI-сессии;
+- паузы live refresh после Telegram rate limit.
+
+## Безопасность
+
+- Не коммитьте `.env`, `data/options.json` и SQLite-базу.
+- Если токен Telegram или Home Assistant попал в чат, логи или репозиторий,
+  перевыпустите его.
+- `root_user` должен быть вашим Telegram user id, не username.
+- Камеры могут содержать логин и пароль прямо в RTSP URL. Относитесь к базе и
+  backup-файлам как к секретам.
+
+## Отладка
+
+Включите подробные логи:
+
+```env
 RUST_LOG=info
-
-# Debug level (verbose)
-RUST_LOG=debug
-
-# Module-specific
-RUST_LOG=telegram_ha_bot::ha=debug,telegram_ha_bot::bot=info
 ```
 
-## Troubleshooting
+Частые проблемы:
 
-### WebSocket Connection Issues
-```
-WARNING: Connection to WS failed: Connection refused. Retrying in 500ms...
-```
-**Solution:** Ensure HA instance is running and `HA_URL` is correct.
+- `HA_TOKEN not set` - не задан `HA_TOKEN` или `SUPERVISOR_TOKEN`.
+- `homeassistant.local` не открывается из Docker - используйте IP адрес,
+  настройте DNS или сетевой режим контейнера.
+- Камера не отдает клип - проверьте, что RTSP URL доступен именно с машины или
+  контейнера, где запущен бот.
+- Клип не воспроизводится в Telegram - попробуйте H.264 поток через go2rtc.
+- Снимок с камеры медленный - добавьте отдельный `Snapshot URL`.
+- Telegram временно ограничивает редактирование сообщений - бот ставит live
+  refresh на паузу и показывает это в статусе системы.
 
-### Empty WebSocket Frames
-```
-DEBUG: Received empty WebSocket frame (heartbeat)
-```
-**Expected behavior** — HA sends heartbeat pings to keep connection alive.
+## Лицензия
 
-### All Devices Hidden
-1. Check `hidden_entities` table: `SELECT * FROM hidden_entities;`
-2. Run `UPDATE hidden_entities SET hide = 0;` to unhide all
-3. Toggle individual devices in Settings mode
+Код проекта распространяется под Apache License 2.0. Полный текст находится в
+файле `LICENSE`.
 
-### Permission Denied
-```
-Error: User 219791289 not in whitelist
-```
-**Solution:** Add user to database or set as `root_user` in `options.json`.
-
-## Contributing
-
-Contributions welcome! Please:
-1. Fork repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
-
-## License
-
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE) file for details.
-
----
-
-**Made with ❤️ for Home Assistant enthusiasts**
-
-Questions? Issues? Open a GitHub issue or contact the maintainers.
+Проект использует `ffmpeg-next`, который линкуется с системными библиотеками
+FFmpeg/LibAV. Если вы распространяете готовый бинарник или Docker-образ,
+проверьте лицензионные обязательства используемой сборки FFmpeg/LibAV и
+включенных кодеков.

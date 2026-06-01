@@ -18,16 +18,24 @@ pub async fn render(
     room_id: i64,
     dev: Device,
     entity: crate::ha::models::Entity,
-    cmd: DeviceCmd
+    cmd: DeviceCmd,
 ) -> anyhow::Result<View> {
     // 1. Извлекаем параметры из команды или ставим дефолт
     let params = match cmd {
-        DeviceCmd::ShowChart { h, o } => ChartParams { period_hours: h, offset_hours: o },
-        _ => ChartParams { period_hours: 24, offset_hours: 0 },
+        DeviceCmd::ShowChart { h, o } => ChartParams {
+            period_hours: h,
+            offset_hours: o,
+        },
+        _ => ChartParams {
+            period_hours: 24,
+            offset_hours: 0,
+        },
     };
 
     // 2. Получаем историю
-    let history = ctx.config.ha_client
+    let history = ctx
+        .config
+        .ha_client
         .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
         .await?;
 
@@ -38,15 +46,19 @@ pub async fn render(
     let start_local = history.start_time.with_timezone(&Local);
     let end_local = history.end_time.with_timezone(&Local);
 
-    notifications.insert(0, HeaderItem {
-        icon: "📅".into(),
-        label: "Период".into(),
-        value: format!("`{} — {}`",
-                       start_local.format("%d.%m %H:%M"),
-                       end_local.format("%H:%M")
-        ),
-        last_update: chrono::Utc::now(),
-    });
+    notifications.insert(
+        0,
+        HeaderItem {
+            icon: "📅".into(),
+            label: "Период".into(),
+            value: crate::bot::utils::md::code(&format!(
+                "{} — {}",
+                start_local.format("%d.%m %H:%M"),
+                end_local.format("%H:%M")
+            )),
+            last_update: chrono::Utc::now(),
+        },
+    );
 
     // 4. Отрисовка графика
     let style = match SmartDevice::new(entity.clone()) {
@@ -61,8 +73,9 @@ pub async fn render(
         device_name,
         history.start_time,
         history.end_time,
-        style
-    ).context("Drawing failed")?;
+        style,
+    )
+    .context("Drawing failed")?;
 
     // 5. Логика кнопок навигации
     let mut nav_row = vec![];
@@ -72,60 +85,85 @@ pub async fn render(
         nav_row.push(InlineKeyboardButton::callback(
             "⏪ -24ч",
             Payload::Control(ControlPayload::QuickAction {
-                room: room_id, device: dev.id,
-                cmd: DeviceCmd::ShowChart { h: params.period_hours, o: params.offset_hours - 24 }
-            }).to_string()
+                room: room_id,
+                device: dev.id,
+                cmd: DeviceCmd::ShowChart {
+                    h: params.period_hours,
+                    o: params.offset_hours - 24,
+                },
+            })
+            .to_string(),
         ));
     }
 
     nav_row.push(InlineKeyboardButton::callback(
         "🔄 Текущее",
         Payload::Control(ControlPayload::QuickAction {
-            room: room_id, device: dev.id,
-            cmd: DeviceCmd::ShowChart { h: 24, o: 0 }
-        }).to_string()
+            room: room_id,
+            device: dev.id,
+            cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+        })
+        .to_string(),
     ));
 
     // Кнопка ВПЕРЕД (только если мы в прошлом)
     if params.offset_hours < 0 {
         nav_row.push(InlineKeyboardButton::callback(
-            "24ч ⏩",
+            "⏩ +24ч",
             Payload::Control(ControlPayload::QuickAction {
-                room: room_id, device: dev.id,
+                room: room_id,
+                device: dev.id,
                 cmd: DeviceCmd::ShowChart {
                     h: params.period_hours,
-                    o: (params.offset_hours + 24).min(0)
-                }
-            }).to_string()
+                    o: (params.offset_hours + 24).min(0),
+                },
+            })
+            .to_string(),
         ));
     }
 
     let mut rows = vec![nav_row];
 
     // 6. Интервалы (Пресеты)
-    let intervals = [("12ч", 12), ("24ч", 24), ("3д", 72), ("7д", 168)];
-    rows.push(intervals.iter().map(|(label, h)| {
-        InlineKeyboardButton::callback(
-            *label,
-            Payload::Control(ControlPayload::QuickAction {
-                room: room_id, device: dev.id,
-                cmd: DeviceCmd::ShowChart { h: *h, o: params.offset_hours }
-            }).to_string()
-        )
-    }).collect());
+    let intervals = [
+        ("🕒 12ч", 12),
+        ("🕒 24ч", 24),
+        ("📅 3д", 72),
+        ("📅 7д", 168),
+    ];
+    rows.push(
+        intervals
+            .iter()
+            .map(|(label, h)| {
+                InlineKeyboardButton::callback(
+                    *label,
+                    Payload::Control(ControlPayload::QuickAction {
+                        room: room_id,
+                        device: dev.id,
+                        cmd: DeviceCmd::ShowChart {
+                            h: *h,
+                            o: params.offset_hours,
+                        },
+                    })
+                    .to_string(),
+                )
+            })
+            .collect(),
+    );
 
     // 7. Утилиты и Навигация
-    rows.push(vec![
-        InlineKeyboardButton::callback(
-            "⌨️ Свой интервал",
-            Payload::Control(ControlPayload::QuickAction {
-                room: room_id, device: dev.id, cmd: DeviceCmd::EnterManualInput
-            }).to_string()
-        )
-    ]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        "⌨️ Свой интервал",
+        Payload::Control(ControlPayload::QuickAction {
+            room: room_id,
+            device: dev.id,
+            cmd: DeviceCmd::EnterManualInput,
+        })
+        .to_string(),
+    )]);
 
     rows.push(vec![crate::bot::screens::common::back_button(
-        Payload::Control(ControlPayload::RoomDetail { room: room_id })
+        Payload::Control(ControlPayload::RoomDetail { room: room_id }),
     )]);
 
     // 8. Текст описания
@@ -136,14 +174,16 @@ pub async fn render(
         if days_ago > 0 {
             format!("за {}ч ({} дн. назад)", params.period_hours, days_ago)
         } else {
-            format!("за {}ч (сдвиг {}ч)", params.period_hours, params.offset_hours)
+            format!(
+                "за {}ч (сдвиг {}ч)",
+                params.period_hours, params.offset_hours
+            )
         }
     };
 
     let text = format!(
         "📊 *{}*\nОтображение: {}\n\nВыберите масштаб или используйте навигацию:",
-        device_name,
-        time_desc
+        device_name, time_desc
     );
 
     let current_state_payload = Payload::Control(ControlPayload::QuickAction {
@@ -151,7 +191,7 @@ pub async fn render(
         device: dev.id,
         cmd: DeviceCmd::ShowChart {
             h: params.period_hours,
-            o: params.offset_hours
+            o: params.offset_hours,
         },
     });
 
@@ -169,16 +209,18 @@ pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
     let cancel_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: device_id,
-        cmd: DeviceCmd::Toggle
+        cmd: DeviceCmd::Toggle,
     });
 
     View {
         header: Some("⌨️ Ввод данных".into()),
         text: "Введите количество часов для отображения на графике (целое число).\n\n\
-               Например: `48` для двух суток.".into(),
-        kb: InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("❌ Отмена", cancel_payload.to_string())
-        ]]),
+               Например: `48` для двух суток."
+            .into(),
+        kb: InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+            "❌ Отмена",
+            cancel_payload.to_string(),
+        )]]),
         next_state: Some(state),
         ..View::default()
     }

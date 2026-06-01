@@ -7,7 +7,6 @@ pub struct Entity {
     pub name: String,
     pub state: String,
     pub device_class: Option<String>,
-    pub friendly_name: Option<String>, 
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -23,5 +22,5 @@ pub struct NotifyEvent {
     pub old_state: String,
     pub new_state: String,
     pub friendly_name: String,
-    pub device_class: Option<String>
+    pub device_class: Option<String>,
 }

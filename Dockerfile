@@ -12,10 +12,20 @@ COPY --from=planner /app/recipe.json recipe.json
 # Устанавливаем зависимости для компиляции (включая шрифты и ssl)
 RUN apt-get update && apt-get install -y \
     pkg-config \
+    clang \
+    libclang-dev \
     libssl-dev \
     libsqlite3-dev \
     libfreetype6-dev \
     libfontconfig1-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libavfilter-dev \
+    libavdevice-dev \
+    libpostproc-dev \
+    libswscale-dev \
+    libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Сборка кэша зависимостей
@@ -37,6 +47,14 @@ RUN apt-get update && apt-get install -y \
     libsqlite3-0 \
     libfreetype6 \
     libfontconfig1 \
+    libavformat59 \
+    libavcodec59 \
+    libavutil57 \
+    libavfilter8 \
+    libavdevice59 \
+    libpostproc56 \
+    libswscale6 \
+    libswresample4 \
     libc6-dev \
     fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*

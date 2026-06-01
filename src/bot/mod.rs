@@ -1,20 +1,20 @@
 pub(crate) mod handlers;
-mod utils;
-pub(crate) mod notification;
 pub(crate) mod models;
-mod screens;
+pub(crate) mod notification;
 pub(crate) mod router;
+mod screens;
+pub(crate) mod utils;
 
+pub(crate) use crate::bot::router::State;
+use crate::db;
+use crate::models::AppConfig;
 use std::sync::Arc;
+use teloxide::types::UpdateKind;
 use teloxide::{
     dispatching::{dialogue::InMemStorage, UpdateHandler},
     prelude::*,
     types::Update,
 };
-use teloxide::types::UpdateKind;
-pub(crate) use crate::bot::router::State;
-use crate::models::AppConfig;
-use crate::db;
 
 /// Инициализирует экземпляр бота.
 pub fn init(token: String) -> Bot {
@@ -47,8 +47,7 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         .endpoint(handlers::handle_command);
 
     // 3. Ветка Callback-запросов: обрабатывает нажатия инлайн-кнопок.
-    let callback_handler = Update::filter_callback_query()
-        .endpoint(handlers::handle_callback);
+    let callback_handler = Update::filter_callback_query().endpoint(handlers::handle_callback);
 
     // 4. Ветка Диалогов: обрабатывает текстовый ввод в зависимости от состояния.
     let message_dialogues = Update::filter_message()
@@ -66,17 +65,37 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 State::WaitingForGraphInterval { device_id, room_id } => Some((device_id, room_id)),
                 _ => None,
             })
-                .endpoint(handlers::handle_custom_interval),
+            .endpoint(handlers::handle_custom_interval),
+        )
+        .branch(
+            dptree::filter(|state: State| matches!(state, State::AddUser { .. }))
+                .endpoint(handlers::handle_add_user_input),
+        )
+        .branch(
+            dptree::filter(|state: State| matches!(state, State::DeleteUser { .. }))
+                .endpoint(handlers::handle_delete_user_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::AddCamera { room_id } => Some(room_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_camera_input),
         )
         // Поглощаем сообщения в состоянии Idle, чтобы они не падали в Unhandled Update.
         .branch(
-            dptree::filter(|state: State| matches!(state, State::Idle))
-                .endpoint(|bot: Bot, msg: Message| async move {
-                    log::info!("Ignored junk message from user {}: {:?}", msg.chat.id, msg.text());
+            dptree::filter(|state: State| matches!(state, State::Idle)).endpoint(
+                |bot: Bot, msg: Message| async move {
+                    log::info!(
+                        "Ignored junk message from user {}: {:?}",
+                        msg.chat.id,
+                        msg.text()
+                    );
                     // Опционально: подчищаем чат за пользователем.
                     let _ = bot.delete_message(msg.chat.id, msg.id).await;
                     Ok(())
-                })
+                },
+            ),
         );
 
     // 5. Итоговое дерево (Main Entry Point)

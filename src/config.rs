@@ -1,7 +1,7 @@
+use anyhow::{ensure, Result};
+use log::{info, warn};
 use std::env;
 use std::path::PathBuf;
-use anyhow::{Result, ensure};
-use log::{info, warn};
 
 pub struct EnvPaths {
     pub options: PathBuf,
@@ -28,8 +28,7 @@ impl EnvPaths {
                 .unwrap_or_else(|_| "./migrations".to_string())
                 .into(),
 
-            ha_url: env::var("HA_URL")
-                .unwrap_or_else(|_| "http://supervisor/core".to_string()),
+            ha_url: env::var("HA_URL").unwrap_or_else(|_| "http://supervisor/core".to_string()),
 
             ha_token: env::var("SUPERVISOR_TOKEN")
                 .unwrap_or(env::var("HA_TOKEN").unwrap_or_default()),
@@ -44,9 +43,9 @@ impl EnvPaths {
         info!("🔗 HA URL: {}", self.ha_url);
 
         ensure!(
-                !self.ha_token.is_empty(),
-                "Critical Error: HA_TOKEN not set!"
-            );
+            !self.ha_token.is_empty(),
+            "Critical Error: HA_TOKEN not set!"
+        );
 
         if !self.migrations.exists() {
             warn!("⚠️ Folder migration not found {:?}", self.migrations);

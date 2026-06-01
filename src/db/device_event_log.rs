@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 pub struct EventLogger;
 
 impl EventLogger {
-    pub async fn record_event(eid: &str, state: &str, pool: &SqlitePool, ) -> Result<()> {
+    pub async fn record_event(eid: &str, state: &str, pool: &SqlitePool) -> Result<()> {
         sqlx::query("INSERT INTO device_event_log (entity_id, state, created_at) VALUES (?, ?, ?)")
             .bind(eid)
             .bind(state)
@@ -38,24 +38,23 @@ impl EventLogger {
           AND DATETIME(log.created_at) >= DATETIME(?)
         GROUP BY log.entity_id
         ORDER BY last_updated DESC
-        "#
+        "#,
         )
-            .bind(user_id as i64)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?;
+        .bind(user_id as i64)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
         Ok(rows)
     }
 
     pub async fn purge_old_events(minutes: u64, pool: &SqlitePool) -> Result<u64> {
         let horizon = Utc::now() - chrono::Duration::minutes(minutes as i64);
-        let result = sqlx::query(
-            "DELETE FROM device_event_log WHERE DATETIME(created_at) < DATETIME(?)"
-        )
-            .bind(horizon)
-            .execute(pool)
-            .await?;
+        let result =
+            sqlx::query("DELETE FROM device_event_log WHERE DATETIME(created_at) < DATETIME(?)")
+                .bind(horizon)
+                .execute(pool)
+                .await?;
 
         Ok(result.rows_affected())
     }

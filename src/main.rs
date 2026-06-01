@@ -1,27 +1,28 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
 use dashmap::DashMap;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 extern crate pretty_env_logger;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 
 use crate::config::EnvPaths;
+use crate::models::{AppConfig, RuntimeStatus};
 use crate::options::AppOptions;
-use crate::models::{AppConfig};
 
-mod db;
-mod models;
-mod ha;
-mod config;
-mod options;
 mod bot;
-mod core;
 mod charts;
+mod config;
+mod core;
+mod db;
+mod ha;
+mod models;
+mod options;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,14 +38,20 @@ async fn main() -> Result<()> {
         .validate()
         .context("Error checking env variables.")?;
 
-    let options = AppOptions::load(&paths.options)
-        .context("Error load options.json.")?;
+    let options = AppOptions::load(&paths.options).context("Error load options.json.")?;
 
-    let db_pool = db::init(&paths.db_url(), paths.migrations.to_str().context("Путь к миграциям не валиден")?)
-        .await
-        .context("Error initializing database pool.")?;
+    let db_pool = db::init(
+        &paths.db_url(),
+        paths
+            .migrations
+            .to_str()
+            .context("Путь к миграциям не валиден")?,
+    )
+    .await
+    .context("Error initializing database pool.")?;
 
-    let ha_client = Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
+    let ha_client: Arc<dyn ha::HomeAssistantClient> =
+        Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
 
     let app_config = Arc::new(AppConfig {
         ha_client: ha_client.clone(),
@@ -52,25 +59,38 @@ async fn main() -> Result<()> {
         root_user: options.root_user,
 
         delete_notification_messages_timeout_s: 5,
-        ttl_notifications: 60*12,
-        background_maintenance_interval_s:15,
+        ttl_notifications: 60 * 12,
+        background_maintenance_interval_s: options.background_maintenance_interval_s,
+        event_refresh_min_interval_s: options.event_refresh_min_interval_s,
+        session_ttl_hours: options.session_ttl_hours,
+        telegram_retry_after_extra_delay_s: options.telegram_retry_after_extra_delay_s,
+        camera_default_clip_s: options.camera_default_clip_s,
+        camera_clip_intervals_s: options.camera_clip_intervals_s.clone(),
 
         sessions: DashMap::new(),
+        ui_locks: DashMap::new(),
 
         name_aliases: DashMap::new(),
 
         state_aliases: DashMap::new(),
+        runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
     });
 
     info!("Load Backup sessions from database...");
     let active_sessions = db::get_all_active_sessions(&app_config.db).await?;
 
-    for (uid, mid, context) in active_sessions {
-        app_config.sessions.insert(uid as u64, crate::models::UserSession {
-            last_menu_id: mid,
-            current_context: context,
-            header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
-        });
+    for (uid, mid, context, last_seen_at) in active_sessions {
+        app_config.sessions.insert(
+            uid as u64,
+            crate::models::UserSession {
+                last_menu_id: mid,
+                current_context: context,
+                header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
+                last_ui_refresh_at: None,
+                ui_refresh_blocked_until: None,
+                last_seen_at,
+            },
+        );
     }
     info!("Restored {} action sessions.", app_config.sessions.len());
 
@@ -79,7 +99,10 @@ async fn main() -> Result<()> {
             for (eid, name) in names {
                 app_config.name_aliases.insert(eid, name);
             }
-            info!("Core: Cache primed with {} device names", app_config.name_aliases.len());
+            info!(
+                "Core: Cache primed with {} device names",
+                app_config.name_aliases.len()
+            );
         }
         Err(e) => error!("Core: Failed to prime name aliases: {}", e),
     }
@@ -90,13 +113,20 @@ async fn main() -> Result<()> {
     }
 
     let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
-    ha::spawn_event_listener(paths.ha_url.clone(), paths.ha_token.clone(), cancel_token.clone(), tx);
+    ha::spawn_event_listener(
+        paths.ha_url.clone(),
+        paths.ha_token.clone(),
+        cancel_token.clone(),
+        tx,
+    );
 
     info!("✅ Run Dispatcher...");
 
     tokio::spawn(async move {
         // Wait Ctrl+C or SIGTERM Docker/OS
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for ctrl+c");
         info!("Received SIGTERM");
         main_cancel_token.cancel();
     });

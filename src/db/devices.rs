@@ -1,5 +1,5 @@
-use sqlx::Row;
 use crate::core::types::Device;
+use sqlx::Row;
 
 /// Synchronizes a device with the database.
 ///
@@ -47,7 +47,7 @@ pub async fn sync_device(
             device_domain = ?5,
             alias = COALESCE(alias, ?3),
             archived = 0
-        "#
+        "#,
     )
     .bind(ha_area_id)
     .bind(ha_entity_id)
@@ -59,12 +59,10 @@ pub async fn sync_device(
 
     // Auto-hide newly discovered devices (user must explicitly unhide them)
     // Uses INSERT OR IGNORE to only add if device doesn't exist in hidden_entities yet
-    sqlx::query(
-        "INSERT OR IGNORE INTO hidden_entities (entity_id, hide) VALUES (?, 1)"
-    )
-    .bind(ha_entity_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT OR IGNORE INTO hidden_entities (entity_id, hide) VALUES (?, 1)")
+        .bind(ha_entity_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -83,9 +81,51 @@ pub async fn get_devices_by_room(
     room_id: i64,
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Vec<Device>> {
+    let rows =
+        sqlx::query("SELECT id, entity_id, alias FROM devices WHERE room_id = ? AND archived = 0")
+            .bind(room_id)
+            .fetch_all(pool)
+            .await?;
+
+    let mut devices = Vec::with_capacity(rows.len());
+    for row in rows {
+        devices.push(Device {
+            id: row.get("id"),
+            entity_id: row.get("entity_id"),
+            alias: row.get("alias"),
+        });
+    }
+
+    Ok(devices)
+}
+
+/// Retrieves devices in a room that are visible to a specific user.
+pub async fn get_devices_by_room_for_user(
+    user_id: u64,
+    is_admin: bool,
+    room_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Vec<Device>> {
+    if is_admin {
+        return get_devices_by_room(room_id, pool).await;
+    }
+
     let rows = sqlx::query(
-        "SELECT id, room_id, entity_id, alias, device_class, device_domain, archived FROM devices WHERE room_id = ? AND archived = 0"
+        r#"
+        SELECT d.id, d.entity_id, d.alias
+        FROM devices d
+        JOIN rooms r ON r.id = d.room_id
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
+        WHERE d.room_id = ?
+          AND d.archived = 0
+          AND r.hide = 0
+          AND COALESCE(uda.can_view, ura.can_view, 1) != 0
+        ORDER BY d.id
+        "#,
     )
+    .bind(user_id as i64)
+    .bind(user_id as i64)
     .bind(room_id)
     .fetch_all(pool)
     .await?;
@@ -94,12 +134,8 @@ pub async fn get_devices_by_room(
     for row in rows {
         devices.push(Device {
             id: row.get("id"),
-            room_id: row.get("room_id"),
             entity_id: row.get("entity_id"),
             alias: row.get("alias"),
-            device_class: row.get("device_class"),
-            device_domain: row.get("device_domain"),
-            archived: row.get("archived"),
         });
     }
 
@@ -116,16 +152,11 @@ pub async fn get_devices_by_room(
 /// # Returns
 ///
 /// Returns a `Result<Option<Device>>` containing the device if found, or None if not found
-pub async fn get_device_by_id(
-    id: i64,
-    pool: &sqlx::SqlitePool,
-) -> sqlx::Result<Option<Device>> {
-    sqlx::query_as::<_, Device>(
-        "SELECT id, room_id, entity_id, alias, device_class, device_domain, archived FROM devices WHERE id = ?"
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
+pub async fn get_device_by_id(id: i64, pool: &sqlx::SqlitePool) -> sqlx::Result<Option<Device>> {
+    sqlx::query_as::<_, Device>("SELECT id, entity_id, alias FROM devices WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// Retrieves the room ID associated with a device entity.
