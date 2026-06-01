@@ -1,4 +1,4 @@
-# Telegram HA Bot
+219791289# Home Assistant Telegram Bot 🏠📱
 
 Telegram HA Bot - это Telegram-бот для управления Home Assistant из чата. Он
 показывает комнаты и устройства, умеет обновлять открытые экраны, отправлять
@@ -252,12 +252,7 @@ rtsp://homeassistant.local:8554/usb_camera
 10
 http://homeassistant.local:1984/api/frame.jpeg?src=usb_camera
 ```
-
-Пример stream в go2rtc:
-
-```yaml
-streams:
-  usb_camera: ffmpeg:device?video=/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0&input_format=mjpeg&video_size=1920x1080&framerate=30#video=h264#raw=-preset ultrafast -tune zerolatency
+Error: User 123456789 not in whitelist
 ```
 
 Для коротких MP4-клипов желательно, чтобы поток уже был H.264. Для MJPEG/USB
