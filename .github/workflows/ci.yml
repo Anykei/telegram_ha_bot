@@ -42,6 +42,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup component add rustfmt --toolchain "$RUST_TOOLCHAIN"
           rustup default "$RUST_TOOLCHAIN"
 
       - name: Cache cargo
