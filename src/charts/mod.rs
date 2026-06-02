@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Duration, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, Timelike, Utc};
 use image::{ExtendedColorType, ImageEncoder};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
@@ -226,7 +226,7 @@ where
             let label_time = midnight + Duration::hours(12);
             if label_time >= start && label_time <= end {
                 chart.draw_series(std::iter::once(Text::new(
-                    curr.format("%d %b").to_string(),
+                    format_ru_day_month(curr),
                     (label_time, y_min.clone()),
                     ("sans-serif", 15)
                         .into_font()
@@ -235,9 +235,31 @@ where
                 )))?;
             }
         }
-        curr = curr + Duration::days(1);
+        curr += Duration::days(1);
     }
     Ok(())
+}
+
+fn short_month_ru(month: u32) -> &'static str {
+    match month {
+        1 => "янв",
+        2 => "фев",
+        3 => "мар",
+        4 => "апр",
+        5 => "мая",
+        6 => "июн",
+        7 => "июл",
+        8 => "авг",
+        9 => "сен",
+        10 => "окт",
+        11 => "ноя",
+        12 => "дек",
+        _ => "",
+    }
+}
+
+fn format_ru_day_month(dt: DateTime<Local>) -> String {
+    format!("{:02} {}", dt.day(), short_month_ru(dt.month()))
 }
 
 fn is_state_on(state: &str) -> bool {

@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
+use teloxide::error_handlers::LoggingErrorHandler;
+use teloxide::update_listeners::Polling;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +24,7 @@ mod config;
 mod core;
 mod db;
 mod ha;
+mod i18n;
 mod models;
 mod options;
 
@@ -53,6 +57,8 @@ async fn main() -> Result<()> {
     let ha_client: Arc<dyn ha::HomeAssistantClient> =
         Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
 
+    let (recording_tx, recording_rx) = mpsc::channel::<core::camera_recording::RecordingJob>(32);
+
     let app_config = Arc::new(AppConfig {
         ha_client: ha_client.clone(),
         db: db_pool,
@@ -64,15 +70,23 @@ async fn main() -> Result<()> {
         event_refresh_min_interval_s: options.event_refresh_min_interval_s,
         session_ttl_hours: options.session_ttl_hours,
         telegram_retry_after_extra_delay_s: options.telegram_retry_after_extra_delay_s,
+        default_language: options.default_language,
         camera_default_clip_s: options.camera_default_clip_s,
         camera_clip_intervals_s: options.camera_clip_intervals_s.clone(),
+        camera_recording_max_tail_seconds: options.camera_recording_max_tail_seconds,
+        camera_recording_max_segment_seconds: options.camera_recording_max_segment_seconds,
+        camera_recording_max_parallel_jobs: options.camera_recording_max_parallel_jobs,
+        camera_recording_storage_root: options.camera_recording_storage_root.clone(),
+        camera_recording_tx: recording_tx,
 
         sessions: DashMap::new(),
         ui_locks: DashMap::new(),
+        recording_sends_in_progress: DashMap::new(),
 
         name_aliases: DashMap::new(),
 
         state_aliases: DashMap::new(),
+        ui_background_cache: tokio::sync::Mutex::new(None),
         runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
     });
 
@@ -142,9 +156,23 @@ async fn main() -> Result<()> {
     };
 
     core::spawn_notification_processor(rx, _bot.clone(), app_config.clone(), cancel_token.clone());
+    core::camera_recording::spawn_recording_worker(
+        recording_rx,
+        _bot.clone(),
+        app_config.clone(),
+        cancel_token.clone(),
+    );
     core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
 
-    let bot_task = dispatcher.dispatch();
+    let update_listener = Polling::builder(_bot.clone())
+        .timeout(Duration::from_secs(30))
+        .delete_webhook()
+        .await
+        .build();
+    let bot_task = dispatcher.dispatch_with_listener(
+        update_listener,
+        LoggingErrorHandler::with_custom_text("An error from the update listener"),
+    );
 
     tokio::select! {
         _ = bot_task => info!("Bot task completed successfully."),

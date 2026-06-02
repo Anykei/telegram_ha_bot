@@ -347,7 +347,7 @@ pub async fn get_device_notify_access(
     .fetch_optional(pool)
     .await?;
 
-    Ok(can_notify.map_or(true, |value| value != 0))
+    Ok(can_notify != Some(0))
 }
 
 pub async fn toggle_device_access_mode(
@@ -440,7 +440,7 @@ pub async fn can_view_room(
     .fetch_optional(pool)
     .await?;
 
-    Ok(can_view.map_or(false, |value| value != 0))
+    Ok(can_view.is_some_and(|value| value != 0))
 }
 
 pub async fn can_view_device(
@@ -492,7 +492,7 @@ pub async fn can_notify_entity(user_id: u64, entity_id: &str, pool: &SqlitePool)
     .fetch_optional(pool)
     .await?;
 
-    Ok(can_notify.map_or(true, |value| value != 0))
+    Ok(can_notify != Some(0))
 }
 
 pub async fn can_notify_entity_for_device_id(

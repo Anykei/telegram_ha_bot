@@ -20,6 +20,8 @@ Telegram HA Bot - это Telegram-бот для управления Home Assist
   устройства.
 - Раздел камер без внешнего HTTPS-сервера: снимок и короткое видео по RTSP или
   HTTP-потоку.
+- Камера вместо стоковой UI-картинки: в админке можно выбрать камеру для фона
+  интерфейса и интервал обновления кадра.
 - Восстановление активных UI-сессий после перезапуска.
 - Защита от отката интерфейса при фоновых обновлениях: меню пользователя
   редактируются последовательно и проверяют текущий контекст перед обновлением.
@@ -91,6 +93,7 @@ RUST_LOG=info
   "event_refresh_min_interval_s": 5,
   "session_ttl_hours": 24,
   "telegram_retry_after_extra_delay_s": 1,
+  "default_language": "ru",
   "camera_clip_intervals_s": [5, 10, 15, 30],
   "camera_default_clip_s": 10
 }
@@ -98,7 +101,11 @@ RUST_LOG=info
 
 Поля `background_maintenance_interval_s`, `event_refresh_min_interval_s`,
 `session_ttl_hours`, `telegram_retry_after_extra_delay_s`,
-`camera_clip_intervals_s` и `camera_default_clip_s` имеют значения по умолчанию.
+`default_language`, `camera_clip_intervals_s` и `camera_default_clip_s` имеют
+значения по умолчанию.
+
+`default_language` поддерживает `ru` и `en`. Персональный язык пользователя
+меняется в админке: пользователи → профиль → язык.
 
 Камеры в `options.json` не добавляются. Они создаются через Telegram-админку и
 хранятся в SQLite.

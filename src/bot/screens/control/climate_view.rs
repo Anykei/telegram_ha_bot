@@ -28,34 +28,31 @@ pub async fn render(
         entity.state.to_uppercase()
     );
 
-    let mut rows = vec![];
-
-    // Кнопки температуры
-    rows.push(vec![
-        InlineKeyboardButton::callback(
-            "➖ 0.5°",
-            Payload::Control(ControlPayload::QuickAction {
-                room: room_id,
-                device: dev.id,
-                cmd: DeviceCmd::SetTemp((target_temp - 0.5) as f32),
-            })
-            .to_string(),
-        ),
-        InlineKeyboardButton::callback(
-            "➕ 0.5°",
-            Payload::Control(ControlPayload::QuickAction {
-                room: room_id,
-                device: dev.id,
-                cmd: DeviceCmd::SetTemp((target_temp + 0.5) as f32),
-            })
-            .to_string(),
-        ),
-    ]);
-
-    // Кнопка назад
-    rows.push(vec![crate::bot::screens::common::back_button(
-        Payload::Control(ControlPayload::RoomDetail { room: room_id }),
-    )]);
+    let rows = vec![
+        vec![
+            InlineKeyboardButton::callback(
+                "➖ 0.5°",
+                Payload::Control(ControlPayload::QuickAction {
+                    room: room_id,
+                    device: dev.id,
+                    cmd: DeviceCmd::SetTemp(target_temp - 0.5),
+                })
+                .to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                "➕ 0.5°",
+                Payload::Control(ControlPayload::QuickAction {
+                    room: room_id,
+                    device: dev.id,
+                    cmd: DeviceCmd::SetTemp(target_temp + 0.5),
+                })
+                .to_string(),
+            ),
+        ],
+        vec![crate::bot::screens::common::back_button(Payload::Control(
+            ControlPayload::RoomDetail { room: room_id },
+        ))],
+    ];
 
     Ok(View {
         header: Some("🌡 Термостат".into()),

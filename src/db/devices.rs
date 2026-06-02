@@ -1,5 +1,6 @@
 use crate::core::types::Device;
 use sqlx::Row;
+use std::collections::HashMap;
 
 /// Synchronizes a device with the database.
 ///
@@ -253,4 +254,106 @@ pub async fn archive_missing_devices(
 
     let result = query.execute(pool).await?;
     Ok(result.rows_affected() as usize)
+}
+
+pub async fn is_state_inverted(entity_id: &str, pool: &sqlx::SqlitePool) -> anyhow::Result<bool> {
+    let value: i64 =
+        sqlx::query_scalar("SELECT COALESCE(state_inverted, 0) FROM devices WHERE entity_id = ?")
+            .bind(entity_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0);
+
+    Ok(value != 0)
+}
+
+pub async fn toggle_state_inversion(
+    device_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<bool> {
+    sqlx::query(
+        r#"
+        UPDATE devices
+        SET state_inverted = CASE WHEN COALESCE(state_inverted, 0) = 0 THEN 1 ELSE 0 END
+        WHERE id = ?
+        "#,
+    )
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+
+    let value: i64 =
+        sqlx::query_scalar("SELECT COALESCE(state_inverted, 0) FROM devices WHERE id = ?")
+            .bind(device_id)
+            .fetch_one(pool)
+            .await?;
+
+    Ok(value != 0)
+}
+
+pub async fn get_state_alias(
+    entity_id: &str,
+    original_state: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Option<String>> {
+    let alias = sqlx::query_scalar(
+        "SELECT human_state FROM state_aliases WHERE entity_id = ? AND original_state = ?",
+    )
+    .bind(entity_id)
+    .bind(original_state)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(alias)
+}
+
+pub async fn get_state_aliases_for_entity(
+    entity_id: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<HashMap<String, String>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT original_state, human_state FROM state_aliases WHERE entity_id = ? ORDER BY original_state",
+    )
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().collect())
+}
+
+pub async fn set_state_alias(
+    entity_id: &str,
+    original_state: &str,
+    human_state: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO state_aliases (entity_id, original_state, human_state)
+        VALUES (?, ?, ?)
+        ON CONFLICT(entity_id, original_state) DO UPDATE SET
+            human_state = excluded.human_state
+        "#,
+    )
+    .bind(entity_id)
+    .bind(original_state)
+    .bind(human_state)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn delete_state_alias(
+    entity_id: &str,
+    original_state: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM state_aliases WHERE entity_id = ? AND original_state = ?")
+        .bind(entity_id)
+        .bind(original_state)
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }

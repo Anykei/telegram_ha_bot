@@ -1,9 +1,12 @@
+pub(crate) mod camera_recording;
+pub(crate) mod camera_recording_matcher;
 pub(crate) mod cameras;
 pub mod devices;
 pub(crate) mod maintenance;
 mod notification;
 pub(crate) mod presentation;
 pub(crate) mod types;
+pub(crate) mod ui_background;
 
 use crate::db;
 use crate::models::{AppConfig, UserSession};
@@ -11,6 +14,7 @@ use chrono::{DateTime, Utc};
 pub use maintenance::spawn_background_maintenance;
 pub use notification::spawn_notification_processor;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
@@ -25,11 +29,78 @@ impl AppConfig {
     pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
         use crate::bot::utils::md;
         use crate::core::presentation::StateFormatter;
+        use crate::i18n::t;
         let mut items = Vec::new();
+        let lang = db::get_user_language(user_id, &self.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(self.default_language);
 
         let window_mins = self.ttl_notifications;
 
-        // 1. Получаем активные алерты
+        // 1. Показываем активные записи камер как глобальный статус.
+        match db::cameras::list_accessible_cameras(user_id, user_id == self.root_user, &self.db)
+            .await
+        {
+            Ok(cameras) => {
+                let camera_ids = cameras.iter().map(|camera| camera.id).collect::<Vec<_>>();
+                match db::camera_recording_sessions::list_active_sessions_for_cameras(
+                    &camera_ids,
+                    &self.db,
+                )
+                .await
+                {
+                    Ok(sessions) => {
+                        let mut active_by_camera = HashMap::new();
+                        for session in sessions {
+                            active_by_camera.entry(session.camera_id).or_insert(session);
+                        }
+
+                        for camera in cameras {
+                            if let Some(session) = active_by_camera.get(&camera.id) {
+                                let remaining = session
+                                    .stop_after_at
+                                    .signed_duration_since(Utc::now())
+                                    .num_seconds()
+                                    .max(0);
+                                let remaining =
+                                    crate::core::camera_recording::format_recording_duration(
+                                        remaining,
+                                    );
+
+                                items.push(HeaderItem {
+                                    icon: "🔴".into(),
+                                    label: format!(
+                                        "{} · {}",
+                                        t(lang, "recording.header"),
+                                        camera.name
+                                    ),
+                                    value: format!(
+                                        "{} · {}",
+                                        md::bold(t(lang, "recording.active")),
+                                        md::plain(&format!(
+                                            "{} {}",
+                                            t(lang, "recording.remaining"),
+                                            remaining
+                                        ))
+                                    ),
+                                    last_update: session.last_event_at,
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Ошибка БД при сборе активных записей для шапки: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Ошибка БД при сборе камер для шапки: {}", e);
+            }
+        }
+
+        // 2. Получаем активные алерты
         match db::device_event_log::EventLogger::fetch_active_alerts(user_id, window_mins, &self.db)
             .await
         {
@@ -61,9 +132,20 @@ impl AppConfig {
                     };
 
                     // Г. Форматируем состояние и иконку через ядро
-                    let icon = StateFormatter::get_icon(domain, class, &alert.last_state);
-                    let human_state =
-                        StateFormatter::format_state_value(domain, class, &alert.last_state);
+                    let inverted = db::devices::is_state_inverted(&alert.entity_id, &self.db)
+                        .await
+                        .unwrap_or(false);
+                    let logical_state = StateFormatter::logical_state(&alert.last_state, inverted);
+                    let state_alias =
+                        self.state_alias_for_display(&alert.entity_id, &alert.last_state, inverted);
+                    let icon = StateFormatter::get_icon(domain, class, &logical_state);
+                    let human_state = StateFormatter::format_state_value_with_alias(
+                        domain,
+                        class,
+                        &alert.last_state,
+                        inverted,
+                        state_alias.as_deref(),
+                    );
 
                     // Д. Форматируем мета-информацию (счетчик)
                     let count_suffix = if alert.event_count > 1 {
@@ -86,12 +168,12 @@ impl AppConfig {
             }
         }
 
-        // 2. Если событий не было — выводим "чистый" статус
+        // 3. Если событий не было — выводим "чистый" статус
         if items.is_empty() {
             items.push(HeaderItem {
                 icon: "✅".into(), // Сменил 🏠 на ✅ для лучшего контраста при алерте
                 label: "Система".into(),
-                value: "Все спокойно".into(),
+                value: t(lang, "system.ok").into(),
                 last_update: Utc::now(),
             });
         }
@@ -100,7 +182,7 @@ impl AppConfig {
     }
 }
 
-/// TODO realization pinned in future
+// TODO realization pinned in future
 // pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
 
 // pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {

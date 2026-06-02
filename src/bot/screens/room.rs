@@ -47,7 +47,31 @@ pub async fn render(ctx: RenderContext, room_id: i64, mode: RoomViewMode) -> Res
             let alias = db_dev.alias.as_deref().unwrap_or(&db_dev.entity_id);
 
             let text = match mode {
-                RoomViewMode::Control => smart_dev.render_button_text_with_state(alias),
+                RoomViewMode::Control => {
+                    let domain = db_dev.entity_id.split('.').next().unwrap_or("");
+                    let class = ha_ent.device_class.as_deref().unwrap_or("");
+                    let inverted =
+                        db::devices::is_state_inverted(&db_dev.entity_id, &ctx.config.db)
+                            .await
+                            .unwrap_or(false);
+                    let state_alias = ctx.config.state_alias_for_display(
+                        &db_dev.entity_id,
+                        &ha_ent.state,
+                        inverted,
+                    );
+
+                    crate::core::presentation::StateFormatter::format_device_label_with_state_alias(
+                        alias,
+                        domain,
+                        class,
+                        &ha_ent.state,
+                        inverted,
+                        state_alias.as_deref(),
+                    )
+                }
+                RoomViewMode::Settings if ctx.is_admin => {
+                    format!("#{} {}", db_dev.id, smart_dev.render_button_text(alias))
+                }
                 RoomViewMode::Settings => smart_dev.render_button_text(alias),
             };
 

@@ -23,7 +23,7 @@ pub async fn is_hidden(entity_id: &str, pool: &SqlitePool) -> anyhow::Result<boo
             .await?;
 
     // Return true only if hide = 1, false if hide = 0 or row doesn't exist
-    Ok(hide_value.map_or(false, |val| val != 0))
+    Ok(hide_value.is_some_and(|val| val != 0))
 }
 
 pub async fn get_subscribers(entity_id: &str, pool: &SqlitePool) -> anyhow::Result<Vec<i64>> {
