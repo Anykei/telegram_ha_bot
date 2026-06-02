@@ -1,6 +1,7 @@
 use crate::bot::router::Payload;
 use crate::bot::State;
 use crate::core::HeaderItem;
+use crate::i18n::{t, Language};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use teloxide::types::InlineKeyboardMarkup;
@@ -14,7 +15,9 @@ pub struct View {
     pub payload: Payload,
     pub next_state: Option<State>,
     pub alert: Option<String>,
+    pub notice: Option<String>,
     pub image: Option<Vec<u8>>,
+    pub lang: Language,
 }
 
 impl View {
@@ -23,7 +26,7 @@ impl View {
             .header
             .as_deref()
             .map(super::utils::md::plain)
-            .unwrap_or_else(|| format!("🏠 {}", super::utils::md::bold("HA Telegram Bot")));
+            .unwrap_or_else(|| format!("🏠 {}", super::utils::md::bold(t(self.lang, "app.title"))));
         let separator = "────────────────────";
 
         let mut status_lines = Vec::new();
@@ -45,10 +48,18 @@ impl View {
 
         let mut body_parts = Vec::new();
 
+        if let Some(notice_msg) = &self.notice {
+            body_parts.push(format!(
+                "✅ {}\n{}",
+                super::utils::md::bold(t(self.lang, "common.notice")),
+                super::utils::md::italic(notice_msg)
+            ));
+        }
+
         if let Some(alert_msg) = &self.alert {
             body_parts.push(format!(
                 "⚠️ {}\n{}",
-                super::utils::md::bold("ОШИБКА:"),
+                super::utils::md::bold(t(self.lang, "common.error")),
                 super::utils::md::italic(alert_msg)
             ));
         }
@@ -75,7 +86,7 @@ impl View {
         final_parts.push(separator.to_string());
         final_parts.push(format!(
             "{} {}",
-            super::utils::md::plain("Обновлено:"),
+            super::utils::md::plain(t(self.lang, "common.updated")),
             super::utils::md::italic(&refreshed_at)
         ));
 
@@ -92,5 +103,17 @@ mod tests {
         let text = View::default().get_text();
 
         assert!(text.contains("Обновлено:"));
+    }
+
+    #[test]
+    fn notice_is_not_rendered_as_error() {
+        let text = View {
+            notice: Some("Язык пользователя изменен".to_string()),
+            ..Default::default()
+        }
+        .get_text();
+
+        assert!(text.contains("ГОТОВО:"));
+        assert!(!text.contains("ОШИБКА:"));
     }
 }

@@ -19,7 +19,7 @@ pub async fn render(
     let ha_ent = ctx
         .config
         .ha_client
-        .fetch_states_by_ids(&[dev_db.entity_id.clone()])
+        .fetch_states_by_ids(std::slice::from_ref(&dev_db.entity_id))
         .await?
         .into_iter()
         .next()

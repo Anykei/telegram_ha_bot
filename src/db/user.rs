@@ -2,6 +2,7 @@
 //!
 //! This module handles user existence checks and session management.
 
+use crate::i18n::Language;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
@@ -44,6 +45,42 @@ pub async fn add_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+pub async fn get_user_language(user_id: u64, pool: &SqlitePool) -> Result<Option<Language>> {
+    let raw: Option<String> = sqlx::query_scalar("SELECT language FROM users WHERE id = ?")
+        .bind(user_id as i64)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(raw.as_deref().and_then(Language::parse))
+}
+
+pub async fn set_user_language(user_id: u64, language: Language, pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO users (id, language)
+        VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET language = excluded.language
+        "#,
+    )
+    .bind(user_id as i64)
+    .bind(language.code())
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn cycle_user_language(
+    user_id: u64,
+    fallback: Language,
+    pool: &SqlitePool,
+) -> Result<Language> {
+    let current = get_user_language(user_id, pool).await?.unwrap_or(fallback);
+    let next = current.next();
+    set_user_language(user_id, next, pool).await?;
+    Ok(next)
 }
 
 pub async fn delete_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
@@ -212,6 +249,39 @@ mod tests {
         clear_user_session(42, &pool).await?;
 
         assert!(get_all_active_sessions(&pool).await?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn user_language_can_be_saved_and_cycled() -> Result<()> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                language TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        assert_eq!(get_user_language(42, &pool).await?, None);
+
+        add_user(7, &pool).await?;
+        assert_eq!(get_user_language(7, &pool).await?, None);
+
+        set_user_language(42, Language::En, &pool).await?;
+        assert_eq!(get_user_language(42, &pool).await?, Some(Language::En));
+
+        let next = cycle_user_language(42, Language::Ru, &pool).await?;
+        assert_eq!(next, Language::Ru);
+        assert_eq!(get_user_language(42, &pool).await?, Some(Language::Ru));
+
+        let next = cycle_user_language(7, Language::En, &pool).await?;
+        assert_eq!(next, Language::Ru);
+        assert_eq!(get_user_language(7, &pool).await?, Some(Language::Ru));
 
         Ok(())
     }

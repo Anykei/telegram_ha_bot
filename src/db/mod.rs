@@ -1,9 +1,17 @@
 pub(crate) mod access;
+pub(crate) mod activity_log;
+pub(crate) mod camera_health;
+pub(crate) mod camera_recording_rule_conditions;
+pub(crate) mod camera_recording_rule_groups;
+pub(crate) mod camera_recording_rules;
+pub(crate) mod camera_recording_segments;
+pub(crate) mod camera_recording_sessions;
 pub(crate) mod cameras;
 pub(crate) mod device_event_log;
 pub(crate) mod devices;
 mod models;
 pub(crate) mod rooms;
+pub(crate) mod settings;
 pub(crate) mod subscriptions;
 mod user;
 
@@ -22,6 +30,7 @@ pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(db_url)
         .context("Unsupported format DATABASE_URL")?
         .create_if_missing(true)
+        .foreign_keys(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .busy_timeout(std::time::Duration::from_secs(5));
 
@@ -45,6 +54,14 @@ pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
     }
 
     Ok(pool)
+}
+
+pub(crate) fn sanitize_error(error: &str) -> String {
+    let mut value = error.replace('\n', " ");
+    if value.len() > 500 {
+        value.truncate(500);
+    }
+    value
 }
 
 fn prepare_db_dir(uri: &str) -> Result<()> {

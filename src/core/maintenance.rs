@@ -49,6 +49,8 @@ pub async fn start_background_maintenance(
                 }
 
                 cleanup_expired_sessions(&config).await;
+                cleanup_activity_log(&config).await;
+                cleanup_camera_recordings(&config).await;
                 refresh_all_active_sessions(&bot, &config).await;
                 refresh_system_data(&config).await;
             }
@@ -57,6 +59,26 @@ pub async fn start_background_maintenance(
                 break;
             }
         }
+    }
+}
+
+async fn cleanup_activity_log(config: &Arc<AppConfig>) {
+    let retention_days =
+        db::settings::get_i64(db::settings::ACTIVITY_LOG_RETENTION_DAYS, &config.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(30);
+
+    if retention_days <= 0 {
+        return;
+    }
+
+    let cutoff = Utc::now() - ChronoDuration::days(retention_days);
+    match db::activity_log::purge_older_than(cutoff, &config.db).await {
+        Ok(count) if count > 0 => debug!("Maintenance: removed {} old activity log rows", count),
+        Err(e) => error!("Activity log cleanup error: {}", e),
+        _ => {}
     }
 }
 
@@ -167,6 +189,79 @@ async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
             error!("Failed to clear expired session {}: {}", user_id, e);
         } else {
             debug!("Maintenance: cleared expired session {}", user_id);
+        }
+    }
+}
+
+async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
+    match db::camera_recording_sessions::find_expired_sessions(&config.db).await {
+        Ok(sessions) => {
+            for session in sessions {
+                if let Err(error) = crate::core::camera_recording::delete_recording_session_files(
+                    config, session.id,
+                )
+                .await
+                {
+                    error!(
+                        "Maintenance: failed to delete expired recording session {}: {}",
+                        session.id, error
+                    );
+                }
+            }
+        }
+        Err(error) => error!("Maintenance: failed to list expired recordings: {}", error),
+    }
+
+    let quota_mb = db::settings::get_i64(db::settings::CAMERA_RECORDING_MAX_STORAGE_MB, &config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if quota_mb <= 0 {
+        return;
+    }
+
+    let quota_bytes = quota_mb.saturating_mul(1024 * 1024);
+    loop {
+        let size = match db::camera_recording_segments::sum_ready_size_bytes(&config.db).await {
+            Ok(size) => size,
+            Err(error) => {
+                error!(
+                    "Maintenance: failed to calculate recording quota: {}",
+                    error
+                );
+                return;
+            }
+        };
+
+        if size <= quota_bytes {
+            break;
+        }
+
+        let sessions = match db::camera_recording_segments::list_deletable_sessions_for_quota(
+            &config.db,
+        )
+        .await
+        {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                error!("Maintenance: failed to list quota recordings: {}", error);
+                return;
+            }
+        };
+
+        let Some(session) = sessions.first() else {
+            break;
+        };
+
+        if let Err(error) =
+            crate::core::camera_recording::delete_recording_session_files(config, session.id).await
+        {
+            error!(
+                "Maintenance: failed to delete quota recording session {}: {}",
+                session.id, error
+            );
+            break;
         }
     }
 }

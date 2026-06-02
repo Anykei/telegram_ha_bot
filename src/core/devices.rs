@@ -39,7 +39,6 @@ pub struct ChartParams {
 pub trait SmartEntity {
     fn get_info(&self) -> (&Entity, &str);
     fn render_button_text(&self, alias: &str) -> String;
-    fn render_button_text_with_state(&self, alias: &str) -> String;
     // Выполняет логику при нажатии (QuickAction)
     async fn on_click(
         &self,
@@ -95,18 +94,6 @@ impl SmartEntity for SmartDevice {
         let class = entity.device_class.as_deref().unwrap_or("");
 
         crate::core::presentation::StateFormatter::format_device_label(
-            alias,
-            domain,
-            class,
-            &entity.state,
-        )
-    }
-
-    fn render_button_text_with_state(&self, alias: &str) -> String {
-        let (entity, domain) = self.get_info();
-        let class = entity.device_class.as_deref().unwrap_or("");
-
-        crate::core::presentation::StateFormatter::format_device_label_with_state(
             alias,
             domain,
             class,
@@ -341,6 +328,8 @@ mod tests {
             calls: calls.clone(),
         });
 
+        let (recording_tx, _recording_rx) =
+            tokio::sync::mpsc::channel::<crate::core::camera_recording::RecordingJob>(1);
         let config = Arc::new(crate::models::AppConfig {
             ha_client,
             db: test_pool().await?,
@@ -351,12 +340,20 @@ mod tests {
             event_refresh_min_interval_s: 5,
             session_ttl_hours: 24,
             telegram_retry_after_extra_delay_s: 1,
+            default_language: crate::i18n::Language::Ru,
             camera_default_clip_s: 10,
             camera_clip_intervals_s: vec![5, 10, 15],
+            camera_recording_max_tail_seconds: 300,
+            camera_recording_max_segment_seconds: 300,
+            camera_recording_max_parallel_jobs: 4,
+            camera_recording_storage_root: "data/recordings".to_string(),
+            camera_recording_tx: recording_tx,
             sessions: DashMap::<u64, UserSession>::new(),
             ui_locks: DashMap::new(),
+            recording_sends_in_progress: DashMap::new(),
             name_aliases: DashMap::new(),
             state_aliases: DashMap::<String, HashMap<String, String>>::new(),
+            ui_background_cache: tokio::sync::Mutex::new(None),
             runtime_status: tokio::sync::RwLock::new(crate::models::RuntimeStatus::default()),
         });
 

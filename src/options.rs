@@ -1,3 +1,4 @@
+use crate::i18n::Language;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Deserializer};
 use std::fs;
@@ -29,6 +30,10 @@ pub struct AppOptions {
     #[serde(default = "default_telegram_retry_after_extra_delay_s")]
     pub telegram_retry_after_extra_delay_s: u64,
 
+    /// Язык интерфейса по умолчанию для пользователей без персональной настройки.
+    #[serde(default)]
+    pub default_language: Language,
+
     /// Доступные длительности коротких видео с камер.
     #[serde(default = "default_camera_clip_intervals_s")]
     pub camera_clip_intervals_s: Vec<u32>,
@@ -36,6 +41,22 @@ pub struct AppOptions {
     /// Длительность ролика по умолчанию для камеры, если она не задана у самой камеры.
     #[serde(default = "default_camera_default_clip_s")]
     pub camera_default_clip_s: u32,
+
+    /// Максимальное продление событийной записи после последнего события.
+    #[serde(default = "default_camera_recording_max_tail_seconds")]
+    pub camera_recording_max_tail_seconds: u32,
+
+    /// Максимальная длительность одного архивного видеофайла.
+    #[serde(default = "default_camera_recording_max_segment_seconds")]
+    pub camera_recording_max_segment_seconds: u32,
+
+    /// Максимум событийных записей, которые пишутся одновременно.
+    #[serde(default = "default_camera_recording_max_parallel_jobs")]
+    pub camera_recording_max_parallel_jobs: usize,
+
+    /// Корневая папка локального архива записей.
+    #[serde(default = "default_camera_recording_storage_root")]
+    pub camera_recording_storage_root: String,
 }
 
 impl AppOptions {
@@ -88,6 +109,22 @@ impl AppOptions {
             (1..=120).contains(&options.camera_default_clip_s),
             "camera_default_clip_s must be between 1 and 120 seconds"
         );
+        ensure!(
+            (5..=3600).contains(&options.camera_recording_max_tail_seconds),
+            "camera_recording_max_tail_seconds must be between 5 and 3600 seconds"
+        );
+        ensure!(
+            (30..=3600).contains(&options.camera_recording_max_segment_seconds),
+            "camera_recording_max_segment_seconds must be between 30 and 3600 seconds"
+        );
+        ensure!(
+            (1..=16).contains(&options.camera_recording_max_parallel_jobs),
+            "camera_recording_max_parallel_jobs must be between 1 and 16"
+        );
+        ensure!(
+            !options.camera_recording_storage_root.trim().is_empty(),
+            "camera_recording_storage_root cannot be empty"
+        );
 
         Ok(options)
     }
@@ -115,6 +152,22 @@ fn default_camera_clip_intervals_s() -> Vec<u32> {
 
 fn default_camera_default_clip_s() -> u32 {
     10
+}
+
+fn default_camera_recording_max_tail_seconds() -> u32 {
+    300
+}
+
+fn default_camera_recording_max_segment_seconds() -> u32 {
+    300
+}
+
+fn default_camera_recording_max_parallel_jobs() -> usize {
+    4
+}
+
+fn default_camera_recording_storage_root() -> String {
+    "data/recordings".to_string()
 }
 
 /// Гибкий десериализатор для u64.
@@ -154,7 +207,26 @@ mod tests {
         assert_eq!(options.event_refresh_min_interval_s, 5);
         assert_eq!(options.session_ttl_hours, 24);
         assert_eq!(options.telegram_retry_after_extra_delay_s, 1);
+        assert_eq!(options.default_language, Language::Ru);
         assert_eq!(options.camera_clip_intervals_s, vec![5, 10, 15, 30]);
         assert_eq!(options.camera_default_clip_s, 10);
+        assert_eq!(options.camera_recording_max_tail_seconds, 300);
+        assert_eq!(options.camera_recording_max_segment_seconds, 300);
+        assert_eq!(options.camera_recording_max_parallel_jobs, 4);
+        assert_eq!(options.camera_recording_storage_root, "data/recordings");
+    }
+
+    #[test]
+    fn options_accept_english_default_language() {
+        let options: AppOptions = serde_json::from_str(
+            r#"{
+                "bot_token": "token",
+                "root_user": 42,
+                "default_language": "en"
+            }"#,
+        )
+        .expect("options should parse");
+
+        assert_eq!(options.default_language, Language::En);
     }
 }

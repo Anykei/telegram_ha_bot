@@ -76,6 +76,12 @@ async fn process_and_dispatch(
     db::device_event_log::EventLogger::record_event(&event.entity_id, &event.new_state, &config.db)
         .await?;
 
+    if let Err(error) =
+        crate::core::camera_recording_matcher::process_event(config.clone(), &event).await
+    {
+        error!("Core: camera recording matcher failed: {}", error);
+    }
+
     let room_id_opt = db::devices::get_room_id_by_entity(&event.entity_id, &config.db)
         .await
         .unwrap_or(None);
@@ -94,7 +100,7 @@ async fn process_and_dispatch(
         let user_id = *entry.key();
         let session = entry.value();
 
-        let is_watching = room_id_opt.map_or(false, |rid| is_user_watching_room(session, rid));
+        let is_watching = room_id_opt.is_some_and(|rid| is_user_watching_room(session, rid));
 
         let is_subscriber = recipients_set.contains(&user_id);
 
@@ -153,8 +159,20 @@ async fn process_and_dispatch(
         let class = event.device_class.as_deref().unwrap_or("");
 
         // Используем наше ядро для красоты
-        let icon = StateFormatter::get_icon(domain, class, &event.new_state);
-        let human_state = StateFormatter::format_state_value(domain, class, &event.new_state);
+        let inverted = db::devices::is_state_inverted(&event.entity_id, &config.db)
+            .await
+            .unwrap_or(false);
+        let logical_state = StateFormatter::logical_state(&event.new_state, inverted);
+        let state_alias =
+            config.state_alias_for_display(&event.entity_id, &event.new_state, inverted);
+        let icon = StateFormatter::get_icon(domain, class, &logical_state);
+        let human_state = StateFormatter::format_state_value_with_alias(
+            domain,
+            class,
+            &event.new_state,
+            inverted,
+            state_alias.as_deref(),
+        );
 
         let display_name = config
             .name_aliases

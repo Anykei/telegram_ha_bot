@@ -46,6 +46,7 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup component add rustfmt --toolchain "$RUST_TOOLCHAIN"
+          rustup component add clippy --toolchain "$RUST_TOOLCHAIN"
           rustup default "$RUST_TOOLCHAIN"
 
       - name: Cache cargo
@@ -67,6 +68,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   release:
     needs: validate

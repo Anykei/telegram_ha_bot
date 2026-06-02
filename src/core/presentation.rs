@@ -1,5 +1,5 @@
 use crate::db::rooms::Room;
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, Utc};
 
 pub struct StateFormatter;
 
@@ -21,6 +21,87 @@ impl Room {
 }
 
 impl StateFormatter {
+    fn short_month_ru(month: u32) -> &'static str {
+        match month {
+            1 => "янв",
+            2 => "фев",
+            3 => "мар",
+            4 => "апр",
+            5 => "мая",
+            6 => "июн",
+            7 => "июл",
+            8 => "авг",
+            9 => "сен",
+            10 => "окт",
+            11 => "ноя",
+            12 => "дек",
+            _ => "",
+        }
+    }
+
+    fn format_ru_day_month_time(dt: DateTime<Local>) -> String {
+        format!(
+            "{} {} {}",
+            dt.format("%d"),
+            Self::short_month_ru(dt.month()),
+            dt.format("%H:%M")
+        )
+    }
+
+    pub fn invert_state(state: &str) -> String {
+        match state {
+            "on" => "off",
+            "off" => "on",
+            "true" => "false",
+            "false" => "true",
+            "open" => "closed",
+            "closed" => "open",
+            "locked" => "unlocked",
+            "unlocked" => "locked",
+            _ => state,
+        }
+        .to_string()
+    }
+
+    pub fn logical_state(state: &str, inverted: bool) -> String {
+        if inverted {
+            Self::invert_state(state)
+        } else {
+            state.to_string()
+        }
+    }
+
+    pub fn format_state_value_with_alias(
+        domain: &str,
+        class: &str,
+        state: &str,
+        inverted: bool,
+        alias: Option<&str>,
+    ) -> String {
+        if let Some(alias) = alias {
+            return alias.to_string();
+        }
+
+        let logical_state = Self::logical_state(state, inverted);
+        Self::format_state_value(domain, class, &logical_state)
+    }
+
+    pub fn format_device_label_with_state_alias(
+        alias: &str,
+        domain: &str,
+        class: &str,
+        state: &str,
+        inverted: bool,
+        state_alias: Option<&str>,
+    ) -> String {
+        let logical_state = Self::logical_state(state, inverted);
+        let icon = Self::get_icon(domain, class, &logical_state);
+        let value =
+            Self::format_state_value_with_alias(domain, class, state, inverted, state_alias);
+
+        format!("{} {} ({})", icon, alias, value)
+    }
+
     /// Возвращает иконку устройства на основе его домена, класса и текущего состояния.
     pub fn get_icon(domain: &str, class: &str, state: &str) -> &'static str {
         match (domain, state) {
@@ -93,20 +174,6 @@ impl StateFormatter {
         Self::translate_state(state).to_string()
     }
 
-    /// Собирает итоговую строку для кнопки или уведомления.
-    /// Пример: "🌡 Кухня (22.50°C)"
-    pub fn format_device_label_with_state(
-        alias: &str,
-        domain: &str,
-        class: &str,
-        state: &str,
-    ) -> String {
-        let icon = Self::get_icon(domain, class, state);
-        let value = Self::format_state_value(domain, class, state);
-
-        format!("{} {} ({})", icon, alias, value)
-    }
-
     pub fn get_room_icon(name: &str) -> &'static str {
         match name.to_lowercase().as_str() {
             "кухня" => "🍳",
@@ -151,7 +218,7 @@ impl StateFormatter {
         if local_dt.date_naive() == Local::now().date_naive() {
             local_dt.format("%H:%M").to_string()
         } else {
-            local_dt.format("%d %b %H:%M").to_string()
+            Self::format_ru_day_month_time(local_dt)
         }
     }
 }
