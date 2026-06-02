@@ -33,10 +33,11 @@ pub async fn sync_device(
 
     sqlx::query(
         r#"
-        INSERT INTO devices (room_id, entity_id, alias, device_class, device_domain, archived)
+        INSERT INTO devices (room_id, entity_id, alias, ha_name, device_class, device_domain, archived)
         VALUES (
             (SELECT id FROM rooms WHERE area = ?1),
             ?2,
+            ?3,
             ?3,
             ?4,
             ?5,
@@ -44,9 +45,17 @@ pub async fn sync_device(
         )
         ON CONFLICT(entity_id) DO UPDATE SET
             room_id = (SELECT id FROM rooms WHERE area = ?1),
+            alias = CASE
+                WHEN alias IS NULL
+                  OR TRIM(alias) = ''
+                  OR alias = entity_id
+                  OR alias = COALESCE(ha_name, alias)
+                THEN ?3
+                ELSE alias
+            END,
+            ha_name = ?3,
             device_class = ?4,
             device_domain = ?5,
-            alias = COALESCE(alias, ?3),
             archived = 0
         "#,
     )
@@ -160,6 +169,22 @@ pub async fn get_device_by_id(id: i64, pool: &sqlx::SqlitePool) -> sqlx::Result<
         .await
 }
 
+pub async fn list_active_lights(pool: &sqlx::SqlitePool) -> anyhow::Result<Vec<Device>> {
+    let rows = sqlx::query_as::<_, Device>(
+        r#"
+        SELECT id, entity_id, alias
+        FROM devices
+        WHERE archived = 0
+          AND entity_id LIKE 'light.%'
+        ORDER BY alias, entity_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 /// Retrieves the room ID associated with a device entity.
 ///
 /// # Arguments
@@ -187,7 +212,7 @@ pub async fn get_room_id_by_entity(
 /// This function returns a mapping of entity IDs to their display names.
 /// Display names are prioritized in this order:
 /// 1. Manually set alias
-/// 2. Friendly name from Home Assistant
+/// 2. Name synchronized from Home Assistant
 /// 3. The technical entity ID itself
 ///
 /// # Arguments
@@ -201,7 +226,7 @@ pub async fn get_all_display_names(
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let rows = sqlx::query(
-        "SELECT entity_id, COALESCE(alias, entity_id) as display_name FROM devices WHERE archived = 0"
+        "SELECT entity_id, COALESCE(alias, ha_name, entity_id) as display_name FROM devices WHERE archived = 0"
     )
     .fetch_all(pool)
     .await?;
@@ -291,6 +316,40 @@ pub async fn toggle_state_inversion(
     Ok(value != 0)
 }
 
+pub async fn is_device_critical(entity_id: &str, pool: &sqlx::SqlitePool) -> anyhow::Result<bool> {
+    let value: i64 =
+        sqlx::query_scalar("SELECT COALESCE(critical, 0) FROM devices WHERE entity_id = ?")
+            .bind(entity_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0);
+
+    Ok(value != 0)
+}
+
+pub async fn toggle_device_critical(
+    device_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<bool> {
+    sqlx::query(
+        r#"
+        UPDATE devices
+        SET critical = CASE WHEN COALESCE(critical, 0) = 0 THEN 1 ELSE 0 END
+        WHERE id = ?
+        "#,
+    )
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+
+    let value: i64 = sqlx::query_scalar("SELECT COALESCE(critical, 0) FROM devices WHERE id = ?")
+        .bind(device_id)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(value != 0)
+}
+
 pub async fn get_state_alias(
     entity_id: &str,
     original_state: &str,
@@ -356,4 +415,51 @@ pub async fn delete_state_alias(
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> anyhow::Result<sqlx::SqlitePool> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE devices (
+                id INTEGER PRIMARY KEY,
+                room_id INTEGER NOT NULL,
+                entity_id TEXT NOT NULL UNIQUE,
+                alias TEXT,
+                archived INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(pool)
+    }
+
+    #[tokio::test]
+    async fn list_active_lights_returns_only_light_entities() -> anyhow::Result<()> {
+        let pool = test_pool().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO devices (id, room_id, entity_id, alias, archived)
+            VALUES
+                (1, 1, 'light.hall', 'Hall', 0),
+                (2, 1, 'switch.socket', 'Socket', 0),
+                (3, 1, 'light.old', 'Old', 1)
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        let lights = list_active_lights(&pool).await?;
+
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].entity_id, "light.hall");
+
+        Ok(())
+    }
 }

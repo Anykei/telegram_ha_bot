@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,6 +7,7 @@ use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
 use teloxide::error_handlers::LoggingErrorHandler;
+use teloxide::types::{ChatId, MessageId};
 use teloxide::update_listeners::Polling;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -61,6 +63,8 @@ async fn main() -> Result<()> {
 
     let app_config = Arc::new(AppConfig {
         ha_client: ha_client.clone(),
+        ha_url: paths.ha_url.clone(),
+        ha_token: paths.ha_token.clone(),
         db: db_pool,
         root_user: options.root_user,
 
@@ -78,6 +82,18 @@ async fn main() -> Result<()> {
         camera_recording_max_parallel_jobs: options.camera_recording_max_parallel_jobs,
         camera_recording_storage_root: options.camera_recording_storage_root.clone(),
         camera_recording_tx: recording_tx,
+        voice_enabled: options.voice_enabled,
+        voice_stt_provider: options.voice_stt_provider,
+        voice_command_engine: options.voice_command_engine,
+        voice_ha_pipeline_id: options.voice_ha_pipeline_id.clone(),
+        voice_stt_sample_rate: options.voice_stt_sample_rate,
+        voice_confirm_dangerous: options.voice_confirm_dangerous,
+        voice_pending_ttl_s: options.voice_pending_ttl_s,
+        voice_max_audio_size_mb: options.voice_max_audio_size_mb,
+        voice_max_audio_duration_s: options.voice_max_audio_duration_s,
+        voice_stt_timeout_s: options.voice_stt_timeout_s,
+        voice_show_recognized_text: options.voice_show_recognized_text,
+        voice_response_format: options.voice_response_format,
 
         sessions: DashMap::new(),
         ui_locks: DashMap::new(),
@@ -136,21 +152,11 @@ async fn main() -> Result<()> {
 
     info!("✅ Run Dispatcher...");
 
-    tokio::spawn(async move {
-        // Wait Ctrl+C or SIGTERM Docker/OS
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for ctrl+c");
-        info!("Received SIGTERM");
-        main_cancel_token.cancel();
-    });
-
     let storage = InMemStorage::<bot::State>::new();
     let (mut dispatcher, _bot) = {
         let bot = bot::init(options.bot_token);
         let dispatcher = Dispatcher::builder(bot.clone(), bot::schema())
             .dependencies(dptree::deps![app_config.clone(), storage])
-            .enable_ctrlc_handler()
             .build();
         (dispatcher, bot)
     };
@@ -163,6 +169,7 @@ async fn main() -> Result<()> {
         cancel_token.clone(),
     );
     core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
+    spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
 
     let update_listener = Polling::builder(_bot.clone())
         .timeout(Duration::from_secs(30))
@@ -186,4 +193,96 @@ async fn main() -> Result<()> {
     info!("Database connection closed.");
     info!("Shutting down...");
     Ok(())
+}
+
+fn spawn_shutdown_signal_handler(
+    cancel_token: CancellationToken,
+    bot: teloxide::Bot,
+    config: Arc<AppConfig>,
+) {
+    tokio::spawn(async move {
+        let reason = wait_for_shutdown_signal().await;
+        info!("Received {}, preparing graceful shutdown", reason);
+
+        mark_shutdown_status(&config, reason).await;
+        refresh_shutdown_status_headers(&bot, &config).await;
+
+        cancel_token.cancel();
+    });
+}
+
+async fn mark_shutdown_status(config: &Arc<AppConfig>, reason: &str) {
+    let mut status = config.runtime_status.write().await;
+    status.shutdown_requested_at = Some(Utc::now());
+    status.shutdown_reason = Some(reason.to_string());
+}
+
+async fn refresh_shutdown_status_headers(bot: &teloxide::Bot, config: &Arc<AppConfig>) {
+    let sessions = config
+        .sessions
+        .iter()
+        .map(|entry| {
+            (
+                *entry.key(),
+                entry.value().last_menu_id,
+                entry.value().current_context.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if sessions.is_empty() {
+        return;
+    }
+
+    let refresh = async {
+        for (user_id, message_id, context) in sessions {
+            if let Err(error) = crate::bot::handlers::refresh_current_view(
+                bot,
+                config,
+                user_id,
+                ChatId(user_id as i64),
+                MessageId(message_id),
+                &context,
+            )
+            .await
+            {
+                debug!(
+                    "Failed to refresh shutdown status for user {}: {}",
+                    user_id, error
+                );
+            }
+        }
+    };
+
+    if tokio::time::timeout(Duration::from_secs(6), refresh)
+        .await
+        .is_err()
+    {
+        warn!("Shutdown status refresh timed out");
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to listen for SIGTERM");
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(error) = result {
+                error!("Failed to listen for Ctrl+C: {}", error);
+            }
+            "SIGINT"
+        }
+        _ = sigterm.recv() => "SIGTERM",
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> &'static str {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        error!("Failed to listen for Ctrl+C: {}", error);
+    }
+    "SIGINT"
 }

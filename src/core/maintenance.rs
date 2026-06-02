@@ -50,6 +50,7 @@ pub async fn start_background_maintenance(
 
                 cleanup_expired_sessions(&config).await;
                 cleanup_activity_log(&config).await;
+                cleanup_pending_commands(&config).await;
                 cleanup_camera_recordings(&config).await;
                 refresh_all_active_sessions(&bot, &config).await;
                 refresh_system_data(&config).await;
@@ -59,6 +60,14 @@ pub async fn start_background_maintenance(
                 break;
             }
         }
+    }
+}
+
+async fn cleanup_pending_commands(config: &Arc<AppConfig>) {
+    match db::pending_commands::expire_old(&config.db).await {
+        Ok(count) if count > 0 => debug!("Maintenance: expired {} pending commands", count),
+        Err(e) => error!("Pending command cleanup error: {}", e),
+        _ => {}
     }
 }
 
@@ -116,6 +125,7 @@ async fn record_ha_sync_error(config: &Arc<AppConfig>, error: String) {
 
 async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Result<()> {
     let mut all_synced_entity_ids = Vec::new();
+    let mut sync_errors = Vec::new();
 
     for room in rooms {
         match db::rooms::sync_rooms_from_ha(&room.id, &room.name, &config.db).await {
@@ -126,11 +136,24 @@ async fn refresh_room(rooms: &Vec<Room>, config: &Arc<AppConfig>) -> anyhow::Res
                 }
 
                 if let Err(e) = refresh_entities(&room.id, &room.entities, config).await {
-                    error!("Failed to refresh entities for room {}: {}", room.id, e);
+                    let message = format!("Failed to refresh entities for room {}: {}", room.id, e);
+                    error!("{}", message);
+                    sync_errors.push(message);
                 }
             }
-            Err(e) => error!("Failed to sync room {}: {}", room.id, e),
+            Err(e) => {
+                let message = format!("Failed to sync room {}: {}", room.id, e);
+                error!("{}", message);
+                sync_errors.push(message);
+            }
         }
+    }
+
+    if !sync_errors.is_empty() {
+        anyhow::bail!(
+            "HA sync completed with errors; skipped archiving missing devices: {}",
+            sync_errors.join("; ")
+        );
     }
 
     // После синхронизации всех устройств архивируем те, которых больше нет
@@ -148,6 +171,7 @@ async fn refresh_entities(
     entities: &Vec<Entity>,
     config: &Arc<AppConfig>,
 ) -> anyhow::Result<()> {
+    let mut errors = Vec::new();
     for ent in entities {
         let device_class = ent.device_class.as_deref().unwrap_or("undefined");
 
@@ -155,10 +179,17 @@ async fn refresh_entities(
             db::devices::sync_device(&ent.entity_id, area_id, &ent.name, device_class, &config.db)
                 .await
         {
-            error!("Failed to sync device {}: {}", ent.entity_id, e);
+            let message = format!("Failed to sync device {}: {}", ent.entity_id, e);
+            error!("{}", message);
+            errors.push(message);
         }
     }
-    Ok(())
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", errors.join("; "))
+    }
 }
 
 async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {

@@ -18,6 +18,9 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
     let hidden = db::subscriptions::is_hidden(&dev.entity_id, db)
         .await
         .unwrap_or(false);
+    let critical = db::devices::is_device_critical(&dev.entity_id, db)
+        .await
+        .unwrap_or(false);
     let can_control = db::access::can_control_device(ctx.user_id, ctx.is_admin, device_id, db)
         .await
         .unwrap_or(false);
@@ -40,12 +43,14 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         ID: `{}`\n\
         Entity: `{}`\n\
         Статус: {}\n\
+        Критичное: {}\n\
         ────────────────────\n\
         Настройте поведение устройства в боте:",
         dev.alias.as_deref().unwrap_or(&dev.entity_id),
         device_id,
         dev.entity_id,
-        status_text
+        status_text,
+        if critical { "да" } else { "нет" }
     );
 
     if !can_control {
@@ -95,6 +100,20 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         rows.push(vec![InlineKeyboardButton::callback(
             "🏷 Алиасы состояний",
             Payload::Settings(SettingsPayload::StateAliases {
+                room: room_id,
+                device: device_id,
+            })
+            .to_string(),
+        )]);
+
+        let (critical_icon, critical_label) = if critical {
+            ("🛡", "Критичное: ДА")
+        } else {
+            ("⚪", "Критичное: НЕТ")
+        };
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!("{} {}", critical_icon, critical_label),
+            Payload::Settings(SettingsPayload::ToggleCritical {
                 room: room_id,
                 device: device_id,
             })

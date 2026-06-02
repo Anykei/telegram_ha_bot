@@ -1,3 +1,4 @@
+use crate::options::VoiceCommandEngine;
 use anyhow::Result;
 use sqlx::SqlitePool;
 
@@ -34,6 +35,84 @@ pub async fn get_user_role(user_id: u64, pool: &SqlitePool) -> Result<String> {
         .await?;
 
     Ok(role.unwrap_or_else(|| "user".to_string()))
+}
+
+pub async fn can_use_voice(user_id: u64, is_admin: bool, pool: &SqlitePool) -> Result<bool> {
+    if is_admin {
+        return Ok(true);
+    }
+
+    let value: Option<i64> =
+        sqlx::query_scalar("SELECT can_use_voice FROM user_profiles WHERE user_id = ?")
+            .bind(user_id as i64)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(value.unwrap_or(1) != 0)
+}
+
+pub async fn toggle_user_voice_access(user_id: u64, pool: &SqlitePool) -> Result<bool> {
+    sqlx::query(
+        r#"
+        INSERT INTO user_profiles (user_id, can_use_voice)
+        VALUES (?, 0)
+        ON CONFLICT(user_id) DO UPDATE SET
+            can_use_voice = CASE WHEN COALESCE(can_use_voice, 1) = 0 THEN 1 ELSE 0 END
+        "#,
+    )
+    .bind(user_id as i64)
+    .execute(pool)
+    .await?;
+
+    let value: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(can_use_voice, 1) FROM user_profiles WHERE user_id = ?",
+    )
+    .bind(user_id as i64)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(value != 0)
+}
+
+pub async fn get_user_voice_command_engine(
+    user_id: u64,
+    default_engine: VoiceCommandEngine,
+    pool: &SqlitePool,
+) -> Result<VoiceCommandEngine> {
+    let value: Option<String> =
+        sqlx::query_scalar("SELECT voice_command_engine FROM user_profiles WHERE user_id = ?")
+            .bind(user_id as i64)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(value
+        .as_deref()
+        .map(VoiceCommandEngine::from_db)
+        .unwrap_or(default_engine))
+}
+
+pub async fn cycle_user_voice_command_engine(
+    user_id: u64,
+    default_engine: VoiceCommandEngine,
+    pool: &SqlitePool,
+) -> Result<VoiceCommandEngine> {
+    let current = get_user_voice_command_engine(user_id, default_engine, pool).await?;
+    let next = current.next_for_profile();
+
+    sqlx::query(
+        r#"
+        INSERT INTO user_profiles (user_id, voice_command_engine)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            voice_command_engine = excluded.voice_command_engine
+        "#,
+    )
+    .bind(user_id as i64)
+    .bind(next.as_str())
+    .execute(pool)
+    .await?;
+
+    Ok(next)
 }
 
 pub async fn set_user_role(user_id: u64, role: &str, pool: &SqlitePool) -> Result<()> {
@@ -583,9 +662,18 @@ mod tests {
         )
         .execute(&pool)
         .await?;
-        sqlx::query("CREATE TABLE user_profiles (user_id INTEGER PRIMARY KEY, role TEXT NOT NULL DEFAULT 'user')")
-            .execute(&pool)
-            .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE user_profiles (
+                user_id INTEGER PRIMARY KEY,
+                role TEXT NOT NULL DEFAULT 'user',
+                can_use_voice INTEGER NOT NULL DEFAULT 1,
+                voice_command_engine TEXT NOT NULL DEFAULT 'local_parser'
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
         sqlx::query(
             "CREATE TABLE user_room_access (user_id INTEGER, room_id INTEGER, can_view INTEGER, can_control INTEGER, PRIMARY KEY (user_id, room_id))",
         )
@@ -803,6 +891,50 @@ mod tests {
         assert!(can_view_room(10, false, 1, &pool).await?);
         assert!(can_control_device(10, false, 1, &pool).await?);
         assert!(can_notify_entity(10, "switch.test", &pool).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn voice_access_defaults_to_enabled_and_can_toggle() -> Result<()> {
+        let pool = test_pool().await?;
+
+        assert!(can_use_voice(10, false, &pool).await?);
+
+        let disabled = toggle_user_voice_access(10, &pool).await?;
+        assert!(!disabled);
+        assert!(!can_use_voice(10, false, &pool).await?);
+
+        let enabled = toggle_user_voice_access(10, &pool).await?;
+        assert!(enabled);
+        assert!(can_use_voice(10, false, &pool).await?);
+
+        assert!(can_use_voice(10, true, &pool).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn user_voice_engine_can_cycle_per_profile() -> Result<()> {
+        let pool = test_pool().await?;
+
+        assert_eq!(
+            get_user_voice_command_engine(10, VoiceCommandEngine::LocalParser, &pool).await?,
+            VoiceCommandEngine::LocalParser
+        );
+
+        assert_eq!(
+            cycle_user_voice_command_engine(10, VoiceCommandEngine::LocalParser, &pool).await?,
+            VoiceCommandEngine::HaConversationReadonly
+        );
+        assert_eq!(
+            cycle_user_voice_command_engine(10, VoiceCommandEngine::LocalParser, &pool).await?,
+            VoiceCommandEngine::HaConversationFull
+        );
+        assert_eq!(
+            cycle_user_voice_command_engine(10, VoiceCommandEngine::LocalParser, &pool).await?,
+            VoiceCommandEngine::LocalParser
+        );
 
         Ok(())
     }

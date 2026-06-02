@@ -1,12 +1,14 @@
 pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
 pub(crate) mod cameras;
+pub(crate) mod commands;
 pub mod devices;
 pub(crate) mod maintenance;
 mod notification;
 pub(crate) mod presentation;
 pub(crate) mod types;
 pub(crate) mod ui_background;
+pub(crate) mod voice;
 
 use crate::db;
 use crate::models::{AppConfig, UserSession};
@@ -38,6 +40,20 @@ impl AppConfig {
             .unwrap_or(self.default_language);
 
         let window_mins = self.ttl_notifications;
+
+        let runtime_status = self.runtime_status.read().await.clone();
+        if let Some(shutdown_requested_at) = runtime_status.shutdown_requested_at {
+            let reason = runtime_status
+                .shutdown_reason
+                .as_deref()
+                .unwrap_or("shutdown signal");
+            items.push(HeaderItem {
+                icon: "🛑".into(),
+                label: t(lang, "system.shutdown.label").into(),
+                value: md::bold(&format!("{}: {}", t(lang, "system.shutdown.value"), reason)),
+                last_update: shutdown_requested_at,
+            });
+        }
 
         // 1. Показываем активные записи камер как глобальный статус.
         match db::cameras::list_accessible_cameras(user_id, user_id == self.root_user, &self.db)
@@ -172,7 +188,7 @@ impl AppConfig {
         if items.is_empty() {
             items.push(HeaderItem {
                 icon: "✅".into(), // Сменил 🏠 на ✅ для лучшего контраста при алерте
-                label: "Система".into(),
+                label: t(lang, "system.label").into(),
                 value: t(lang, "system.ok").into(),
                 last_update: Utc::now(),
             });

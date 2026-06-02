@@ -57,6 +57,104 @@ pub struct AppOptions {
     /// Корневая папка локального архива записей.
     #[serde(default = "default_camera_recording_storage_root")]
     pub camera_recording_storage_root: String,
+
+    #[serde(default)]
+    pub voice_enabled: bool,
+
+    #[serde(default)]
+    pub voice_stt_provider: VoiceSttProvider,
+
+    #[serde(default)]
+    pub voice_command_engine: VoiceCommandEngine,
+
+    #[serde(default)]
+    pub voice_ha_pipeline_id: Option<String>,
+
+    #[serde(default = "default_voice_stt_sample_rate")]
+    pub voice_stt_sample_rate: u32,
+
+    #[serde(default = "default_true")]
+    pub voice_confirm_dangerous: bool,
+
+    #[serde(default = "default_voice_pending_ttl_s")]
+    pub voice_pending_ttl_s: u64,
+
+    #[serde(default = "default_voice_max_audio_size_mb")]
+    pub voice_max_audio_size_mb: u64,
+
+    #[serde(default = "default_voice_max_audio_duration_s")]
+    pub voice_max_audio_duration_s: u32,
+
+    #[serde(default = "default_voice_stt_timeout_s")]
+    pub voice_stt_timeout_s: u64,
+
+    #[serde(default = "default_true")]
+    pub voice_show_recognized_text: bool,
+
+    #[serde(default)]
+    pub voice_response_format: VoiceResponseFormat,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceSttProvider {
+    #[default]
+    HaPipeline,
+    ExternalStt,
+    LocalStt,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceCommandEngine {
+    #[default]
+    LocalParser,
+    HaConversationReadonly,
+    #[serde(alias = "ha_conversation")]
+    HaConversationFull,
+}
+
+impl VoiceCommandEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalParser => "local_parser",
+            Self::HaConversationReadonly => "ha_conversation_readonly",
+            Self::HaConversationFull => "ha_conversation_full",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LocalParser => "локальный",
+            Self::HaConversationReadonly => "HA readonly",
+            Self::HaConversationFull => "HA full",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "ha_conversation" | "ha_conversation_full" => Self::HaConversationFull,
+            "ha_conversation_readonly" => Self::HaConversationReadonly,
+            _ => Self::LocalParser,
+        }
+    }
+
+    pub fn next_for_profile(self) -> Self {
+        match self {
+            Self::LocalParser => Self::HaConversationReadonly,
+            Self::HaConversationReadonly => Self::HaConversationFull,
+            Self::HaConversationFull => Self::LocalParser,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceResponseFormat {
+    #[default]
+    Text,
+    Voice,
+    Both,
 }
 
 impl AppOptions {
@@ -125,6 +223,26 @@ impl AppOptions {
             !options.camera_recording_storage_root.trim().is_empty(),
             "camera_recording_storage_root cannot be empty"
         );
+        ensure!(
+            (10..=300).contains(&options.voice_pending_ttl_s),
+            "voice_pending_ttl_s must be between 10 and 300 seconds"
+        );
+        ensure!(
+            (1..=50).contains(&options.voice_max_audio_size_mb),
+            "voice_max_audio_size_mb must be between 1 and 50"
+        );
+        ensure!(
+            (1..=120).contains(&options.voice_max_audio_duration_s),
+            "voice_max_audio_duration_s must be between 1 and 120 seconds"
+        );
+        ensure!(
+            (5..=300).contains(&options.voice_stt_timeout_s),
+            "voice_stt_timeout_s must be between 5 and 300 seconds"
+        );
+        ensure!(
+            options.voice_stt_sample_rate >= 8000,
+            "voice_stt_sample_rate must be at least 8000"
+        );
 
         Ok(options)
     }
@@ -168,6 +286,30 @@ fn default_camera_recording_max_parallel_jobs() -> usize {
 
 fn default_camera_recording_storage_root() -> String {
     "data/recordings".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_voice_stt_sample_rate() -> u32 {
+    16_000
+}
+
+fn default_voice_pending_ttl_s() -> u64 {
+    60
+}
+
+fn default_voice_max_audio_size_mb() -> u64 {
+    10
+}
+
+fn default_voice_max_audio_duration_s() -> u32 {
+    30
+}
+
+fn default_voice_stt_timeout_s() -> u64 {
+    45
 }
 
 /// Гибкий десериализатор для u64.
@@ -214,6 +356,21 @@ mod tests {
         assert_eq!(options.camera_recording_max_segment_seconds, 300);
         assert_eq!(options.camera_recording_max_parallel_jobs, 4);
         assert_eq!(options.camera_recording_storage_root, "data/recordings");
+        assert!(!options.voice_enabled);
+        assert_eq!(options.voice_stt_provider, VoiceSttProvider::HaPipeline);
+        assert_eq!(
+            options.voice_command_engine,
+            VoiceCommandEngine::LocalParser
+        );
+        assert_eq!(options.voice_ha_pipeline_id, None);
+        assert_eq!(options.voice_stt_sample_rate, 16_000);
+        assert!(options.voice_confirm_dangerous);
+        assert_eq!(options.voice_pending_ttl_s, 60);
+        assert_eq!(options.voice_max_audio_size_mb, 10);
+        assert_eq!(options.voice_max_audio_duration_s, 30);
+        assert_eq!(options.voice_stt_timeout_s, 45);
+        assert!(options.voice_show_recognized_text);
+        assert_eq!(options.voice_response_format, VoiceResponseFormat::Text);
     }
 
     #[test]
@@ -228,5 +385,22 @@ mod tests {
         .expect("options should parse");
 
         assert_eq!(options.default_language, Language::En);
+    }
+
+    #[test]
+    fn options_accept_ha_conversation_alias() {
+        let options: AppOptions = serde_json::from_str(
+            r#"{
+                "bot_token": "token",
+                "root_user": 42,
+                "voice_command_engine": "ha_conversation"
+            }"#,
+        )
+        .expect("options should parse");
+
+        assert_eq!(
+            options.voice_command_engine,
+            VoiceCommandEngine::HaConversationFull
+        );
     }
 }

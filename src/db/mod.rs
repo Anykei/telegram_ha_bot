@@ -10,6 +10,7 @@ pub(crate) mod cameras;
 pub(crate) mod device_event_log;
 pub(crate) mod devices;
 mod models;
+pub(crate) mod pending_commands;
 pub(crate) mod rooms;
 pub(crate) mod settings;
 pub(crate) mod subscriptions;

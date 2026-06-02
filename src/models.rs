@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::ha::HomeAssistantClient;
 use crate::i18n::Language;
+use crate::options::{VoiceCommandEngine, VoiceResponseFormat, VoiceSttProvider};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -27,6 +28,8 @@ impl UserSession {
 
 pub struct AppConfig {
     pub ha_client: Arc<dyn HomeAssistantClient>,
+    pub ha_url: String,
+    pub ha_token: String,
     pub db: sqlx::SqlitePool,
     pub root_user: u64,
 
@@ -47,6 +50,18 @@ pub struct AppConfig {
     pub camera_recording_max_parallel_jobs: usize,
     pub camera_recording_storage_root: String,
     pub camera_recording_tx: mpsc::Sender<crate::core::camera_recording::RecordingJob>,
+    pub voice_enabled: bool,
+    pub voice_stt_provider: VoiceSttProvider,
+    pub voice_command_engine: VoiceCommandEngine,
+    pub voice_ha_pipeline_id: Option<String>,
+    pub voice_stt_sample_rate: u32,
+    pub voice_confirm_dangerous: bool,
+    pub voice_pending_ttl_s: u64,
+    pub voice_max_audio_size_mb: u64,
+    pub voice_max_audio_duration_s: u32,
+    pub voice_stt_timeout_s: u64,
+    pub voice_show_recognized_text: bool,
+    pub voice_response_format: VoiceResponseFormat,
 
     pub sessions: DashMap<u64, UserSession>,
     pub ui_locks: DashMap<u64, Arc<Mutex<()>>>,
@@ -142,4 +157,6 @@ pub struct RuntimeStatus {
     pub last_maintenance_tick_at: Option<DateTime<Utc>>,
     pub last_ha_sync_at: Option<DateTime<Utc>>,
     pub last_ha_sync_error: Option<String>,
+    pub shutdown_requested_at: Option<DateTime<Utc>>,
+    pub shutdown_reason: Option<String>,
 }
