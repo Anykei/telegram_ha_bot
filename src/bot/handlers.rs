@@ -5,14 +5,18 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::macros::BotCommands;
+use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{InputFile, InputMedia, InputMediaPhoto, MessageId, ParseMode};
+use teloxide::types::{
+    InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InputMedia, InputMediaPhoto, MessageId,
+    ParseMode,
+};
 use teloxide::{Bot, RequestError};
 
 use super::models::View;
-use crate::bot::router::{router, AdminPayload, CameraPayload, Payload};
-use crate::bot::text_commands;
+use crate::bot::router::{router, AdminPayload, CameraPayload, CommandPayload, Payload};
 use crate::bot::State;
+use crate::core::commands::{CommandExecution, CommandSource};
 use crate::db;
 use crate::models::AppConfig;
 
@@ -119,6 +123,275 @@ pub async fn handle_idle_text(bot: Bot, msg: Message, config: Arc<AppConfig>) ->
     Ok(())
 }
 
+pub async fn handle_text_command_message(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+) -> Result<()> {
+    let Some(user) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let user_id = user.id.0;
+    let chat_id = msg.chat.id;
+    let text = msg.text().unwrap_or("").trim();
+
+    if text.is_empty() {
+        let _ = bot.delete_message(chat_id, msg.id).await;
+        return Ok(());
+    }
+
+    match handle_text_command(&bot, chat_id, user_id, text, config.clone()).await {
+        Ok(true) => {
+            let _ = bot.delete_message(chat_id, msg.id).await;
+        }
+        Ok(false) => {
+            let sent = bot
+                .send_message(
+                    chat_id,
+                    "Команда не распознана. Примеры: свет коридор вкл, включи свет в коридоре, снимок вход.",
+                )
+                .await?;
+            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
+            let _ = bot.delete_message(chat_id, msg.id).await;
+        }
+        Err(error) => {
+            let error = error.to_string();
+            let _ = db::activity_log::log(
+                db::activity_log::NewActivity {
+                    user_id: Some(user_id),
+                    kind: "text_command",
+                    entity_type: "command",
+                    entity_id: None,
+                    action: "parse",
+                    status: "error",
+                    message: Some(&error),
+                },
+                &config.db,
+            )
+            .await;
+            let sent = bot
+                .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
+                .await?;
+            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
+            let _ = bot.delete_message(chat_id, msg.id).await;
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn looks_like_text_command(text: &str) -> bool {
+    let normalized = crate::bot::text_commands::normalize_command_text(text);
+    normalized.starts_with("снимок ")
+        || normalized.starts_with("видео ")
+        || normalized.starts_with("архив ")
+        || crate::bot::text_commands::parse_device_text_command(&normalized).is_some()
+}
+
+pub async fn handle_voice_message(bot: Bot, msg: Message, config: Arc<AppConfig>) -> Result<()> {
+    let Some(user) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let user_id = user.id.0;
+    let chat_id = msg.chat.id;
+
+    spawn_voice_command(bot.clone(), msg.clone(), user_id, chat_id, config);
+    let _ = bot.delete_message(chat_id, msg.id).await;
+    Ok(())
+}
+
+fn spawn_voice_command(
+    bot: Bot,
+    msg: Message,
+    user_id: u64,
+    chat_id: ChatId,
+    config: Arc<AppConfig>,
+) {
+    tokio::spawn(async move {
+        let result = handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone()).await;
+        if let Err(error) = result {
+            handle_voice_command_error(&bot, chat_id, user_id, error, &config).await;
+        }
+    });
+}
+
+async fn handle_voice_command_error(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    error: anyhow::Error,
+    config: &Arc<AppConfig>,
+) {
+    let error = error.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(user_id),
+            kind: "voice_command",
+            entity_type: "command",
+            entity_id: None,
+            action: "voice",
+            status: "error",
+            message: Some(&error),
+        },
+        &config.db,
+    )
+    .await;
+    let sent = bot
+        .send_message(
+            chat_id,
+            format!("Не удалось выполнить голосовую команду: {}", error),
+        )
+        .await;
+    if let Ok(sent) = sent {
+        crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
+    }
+}
+
+async fn handle_voice_message_inner(
+    bot: &Bot,
+    msg: &Message,
+    user_id: u64,
+    chat_id: ChatId,
+    config: Arc<AppConfig>,
+) -> Result<()> {
+    if !config.voice_enabled {
+        anyhow::bail!("голосовые команды выключены");
+    }
+
+    if !db::access::can_use_voice(user_id, config.root_user == user_id, &config.db).await? {
+        anyhow::bail!("голосовые команды выключены для пользователя");
+    }
+
+    if config.voice_stt_provider != crate::options::VoiceSttProvider::HaPipeline {
+        anyhow::bail!("выбранный STT provider пока не реализован");
+    }
+    let response_format = config.voice_response_format;
+
+    let voice = msg.voice().context("voice-сообщение не найдено")?;
+    if voice.duration.seconds() > config.voice_max_audio_duration_s {
+        anyhow::bail!(
+            "voice слишком длинный: максимум {}с",
+            config.voice_max_audio_duration_s
+        );
+    }
+
+    let max_bytes = config.voice_max_audio_size_mb.saturating_mul(1024 * 1024);
+    if u64::from(voice.file.size) > max_bytes {
+        anyhow::bail!(
+            "voice слишком большой: максимум {} MB",
+            config.voice_max_audio_size_mb
+        );
+    }
+
+    let file = bot.get_file(voice.file.id.clone()).await?;
+    if u64::from(file.size) > max_bytes {
+        anyhow::bail!(
+            "voice слишком большой: максимум {} MB",
+            config.voice_max_audio_size_mb
+        );
+    }
+
+    let path = temp_voice_path(user_id);
+    let mut dst = tokio::fs::File::create(&path)
+        .await
+        .context("Не удалось создать временный voice-файл")?;
+    bot.download_file(&file.path, &mut dst).await?;
+    drop(dst);
+
+    let progress = bot
+        .send_message(
+            chat_id,
+            format!(
+                "⏳ Распознаю голосовую команду... таймаут {}с",
+                config.voice_stt_timeout_s
+            ),
+        )
+        .await?;
+    crate::bot::utils::spawn_delayed_delete(
+        bot.clone(),
+        chat_id,
+        progress.id,
+        config.voice_stt_timeout_s + 10,
+    );
+
+    let result = async {
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .context("Не удалось проверить скачанный voice-файл")?;
+        if metadata.len() > max_bytes {
+            anyhow::bail!(
+                "voice слишком большой: максимум {} MB",
+                config.voice_max_audio_size_mb
+            );
+        }
+
+        let pcm = crate::core::voice::decode_audio_file_to_pcm_mono(
+            path.clone(),
+            config.voice_stt_sample_rate,
+        )
+        .await?;
+        let estimated =
+            crate::core::voice::estimated_pcm_duration(pcm.len(), config.voice_stt_sample_rate);
+        if estimated.as_secs() > u64::from(config.voice_max_audio_duration_s) + 1 {
+            anyhow::bail!(
+                "voice слишком длинный: максимум {}с",
+                config.voice_max_audio_duration_s
+            );
+        }
+
+        let recognized = crate::ha::assist_pipeline::transcribe_pcm(
+            &config.ha_url,
+            &config.ha_token,
+            config.voice_ha_pipeline_id.as_deref(),
+            config.voice_stt_sample_rate,
+            config.voice_stt_timeout_s,
+            &pcm,
+        )
+        .await?;
+
+        if matches!(
+            response_format,
+            crate::options::VoiceResponseFormat::Voice | crate::options::VoiceResponseFormat::Both
+        ) {
+            log::debug!("Voice/TTS response format is configured; MVP sends text responses");
+        }
+
+        if config.voice_show_recognized_text {
+            let sent = bot
+                .send_message(chat_id, format!("Распознано: {}", recognized))
+                .await?;
+            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
+        }
+
+        let execution = crate::core::commands::execute_voice_text(
+            user_id,
+            config.root_user == user_id,
+            &recognized,
+            &config,
+        )
+        .await?;
+
+        if matches!(execution, CommandExecution::NotACommand) {
+            anyhow::bail!("команда не распознана: {}", recognized);
+        }
+
+        apply_command_execution(bot, chat_id, user_id, execution, config.clone()).await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = tokio::fs::remove_file(&path).await;
+    result
+}
+
+fn temp_voice_path(user_id: u64) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "telegram_ha_bot_voice_{}_{}.oga",
+        user_id,
+        Utc::now().timestamp_millis()
+    ))
+}
+
 async fn handle_text_command(
     bot: &Bot,
     chat_id: ChatId,
@@ -126,105 +399,78 @@ async fn handle_text_command(
     text: &str,
     config: Arc<AppConfig>,
 ) -> Result<bool> {
-    let normalized = text_commands::normalize_command_text(text);
+    let execution = crate::core::commands::execute_text(
+        user_id,
+        config.root_user == user_id,
+        CommandSource::Text,
+        text,
+        &config,
+    )
+    .await?;
 
-    if let Some(query) = normalized.strip_prefix("снимок ") {
-        let camera = text_commands::find_camera_for_text(user_id, query, &config).await?;
-        spawn_camera_snapshot(bot.clone(), chat_id, user_id, camera.id, config.clone());
-        return Ok(true);
+    if matches!(execution, CommandExecution::NotACommand) {
+        return Ok(false);
     }
 
-    if let Some(rest) = normalized.strip_prefix("видео ") {
-        let (query, seconds) = text_commands::split_camera_video_command(rest);
-        let camera = text_commands::find_camera_for_text(user_id, query, &config).await?;
-        spawn_camera_clip(
-            bot.clone(),
-            chat_id,
-            user_id,
-            camera.id,
-            seconds.unwrap_or(config.camera_default_clip_s),
-            config.clone(),
-        );
-        return Ok(true);
-    }
+    apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+    Ok(true)
+}
 
-    if let Some(query) = normalized.strip_prefix("архив ") {
-        let camera = text_commands::find_camera_for_text(user_id, query, &config).await?;
-        let view = router(
-            Payload::Camera(CameraPayload::RecordingArchive { camera: camera.id }),
-            user_id,
-            config.clone(),
-        )
-        .await?;
-        if let Some(session) = config.sessions.get(&user_id) {
-            update_view(
-                bot,
-                chat_id,
-                MessageId(session.last_menu_id),
+async fn apply_command_execution(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    execution: CommandExecution,
+    config: Arc<AppConfig>,
+) -> Result<()> {
+    match execution {
+        CommandExecution::Done { message } => {
+            let sent = bot.send_message(chat_id, message).await?;
+            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 8);
+        }
+        CommandExecution::NeedsConfirmation {
+            pending_id,
+            message,
+        } => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback(
+                    "✅ Подтвердить",
+                    Payload::Command(CommandPayload::Confirm { id: pending_id }).to_string(),
+                ),
+                InlineKeyboardButton::callback(
+                    "✖️ Отмена",
+                    Payload::Command(CommandPayload::Cancel { id: pending_id }).to_string(),
+                ),
+            ]]);
+            bot.send_message(chat_id, message).reply_markup(kb).await?;
+        }
+        CommandExecution::OpenCameraArchive { camera_id } => {
+            let view = router(
+                Payload::Camera(CameraPayload::RecordingArchive { camera: camera_id }),
                 user_id,
-                view,
                 config.clone(),
             )
             .await?;
-        } else {
-            send_new_view(bot, chat_id, user_id, view, config.clone()).await?;
+            let message_id = config
+                .sessions
+                .get(&user_id)
+                .map(|session| MessageId(session.last_menu_id));
+            if let Some(message_id) = message_id {
+                update_view(bot, chat_id, message_id, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(bot, chat_id, user_id, view, config.clone()).await?;
+            }
         }
-        return Ok(true);
+        CommandExecution::SendCameraSnapshot { camera_id } => {
+            spawn_camera_snapshot(bot.clone(), chat_id, user_id, camera_id, config);
+        }
+        CommandExecution::SendCameraClip { camera_id, seconds } => {
+            spawn_camera_clip(bot.clone(), chat_id, user_id, camera_id, seconds, config);
+        }
+        CommandExecution::NotACommand => {}
     }
 
-    if let Some((query, action)) = text_commands::parse_device_text_command(&normalized) {
-        let device = text_commands::find_device_for_text(
-            user_id,
-            config.root_user == user_id,
-            query,
-            &config,
-        )
-        .await?;
-        let allowed = db::access::can_control_device(
-            user_id,
-            config.root_user == user_id,
-            device.id,
-            &config.db,
-        )
-        .await?;
-        if !allowed {
-            anyhow::bail!("недостаточно прав для управления устройством");
-        }
-
-        let result =
-            crate::core::devices::handle_device_interaction(&config, device.id, action).await?;
-        let status = if matches!(result, crate::core::devices::InteractionResult::Processed) {
-            "ok"
-        } else {
-            "error"
-        };
-        db::activity_log::log(
-            db::activity_log::NewActivity {
-                user_id: Some(user_id),
-                kind: "device",
-                entity_type: "device",
-                entity_id: Some(&device.entity_id),
-                action: "text_command",
-                status,
-                message: Some(text),
-            },
-            &config.db,
-        )
-        .await?;
-        let sent = bot
-            .send_message(
-                chat_id,
-                format!(
-                    "Команда отправлена: {}",
-                    device.alias.unwrap_or(device.entity_id)
-                ),
-            )
-            .await?;
-        crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 8);
-        return Ok(true);
-    }
-
-    Ok(false)
+    Ok(())
 }
 
 /// Основной диспетчер нажатий на кнопки.
@@ -244,6 +490,19 @@ pub async fn handle_callback(
     // 2. Декодирование (Infallible logic)
     let payload = Payload::from_string(data).context("Critical: Binary payload decoding failed")?;
 
+    if let Payload::Command(command_payload) = payload {
+        handle_command_callback(
+            &bot,
+            msg.chat().id,
+            msg.id(),
+            user_id,
+            command_payload,
+            config,
+        )
+        .await?;
+        return Ok(());
+    }
+
     let payload = handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config)?;
 
     // 3. Роутинг
@@ -260,6 +519,49 @@ pub async fn handle_callback(
         view,
     )
     .await
+}
+
+async fn handle_command_callback(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    user_id: u64,
+    payload: CommandPayload,
+    config: Arc<AppConfig>,
+) -> Result<()> {
+    match payload {
+        CommandPayload::Confirm { id } => {
+            let execution = crate::core::commands::confirm_pending(
+                user_id,
+                config.root_user == user_id,
+                id,
+                &config,
+            )
+            .await;
+
+            let _ = bot.delete_message(chat_id, message_id).await;
+
+            match execution {
+                Ok(execution) => {
+                    apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+                }
+                Err(error) => {
+                    let sent = bot
+                        .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
+                        .await?;
+                    crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
+                }
+            }
+        }
+        CommandPayload::Cancel { id } => {
+            let _ = crate::core::commands::cancel_pending(user_id, id, &config).await;
+            let _ = bot.delete_message(chat_id, message_id).await;
+            let sent = bot.send_message(chat_id, "Команда отменена").await?;
+            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 5);
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_camera_media_action(
@@ -1986,6 +2288,7 @@ async fn finalize_dialogue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::text_commands;
 
     #[test]
     fn missing_message_errors_are_classified_as_ghost_sessions() {
@@ -2067,6 +2370,52 @@ mod tests {
             &haystack
         ));
         assert!(!text_commands::device_text_matches("свет кухня", &haystack));
+    }
+
+    #[test]
+    fn device_text_command_accepts_natural_prefix_form() {
+        let normalized = text_commands::normalize_command_text("Включи свет в коридоре");
+        let (query, action) = text_commands::parse_device_text_command(&normalized)
+            .expect("natural command should parse");
+
+        assert_eq!(query, "свет в коридоре");
+        assert!(matches!(action, crate::core::devices::DeviceAction::TurnOn));
+    }
+
+    #[test]
+    fn device_text_match_allows_simple_russian_location_suffixes() {
+        let haystack = text_commands::normalize_command_text("Коридор Свет light.corridor");
+
+        assert!(text_commands::device_text_matches(
+            "свет в коридоре",
+            &haystack
+        ));
+    }
+
+    #[test]
+    fn device_text_match_tolerates_small_stt_mistakes() {
+        let haystack = text_commands::normalize_command_text("Коридор Свет light.corridor");
+
+        assert!(text_commands::device_text_matches(
+            "свет каридор",
+            &haystack
+        ));
+        assert!(text_commands::device_text_matches(
+            "света коридор",
+            &haystack
+        ));
+        assert!(!text_commands::device_text_matches(
+            "свет спальня",
+            &haystack
+        ));
+    }
+
+    #[test]
+    fn text_command_detector_accepts_supported_commands() {
+        assert!(looks_like_text_command("свет коридор вкл"));
+        assert!(looks_like_text_command("включи свет в коридоре"));
+        assert!(looks_like_text_command("снимок вход"));
+        assert!(!looks_like_text_command("привет"));
     }
 
     #[test]

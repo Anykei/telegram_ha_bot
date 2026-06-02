@@ -39,6 +39,23 @@ fn parse_duration_token(value: &str) -> Option<u32> {
 pub(crate) fn parse_device_text_command(
     text: &str,
 ) -> Option<(&str, crate::core::devices::DeviceAction)> {
+    for (prefix, action) in [
+        ("включи ", crate::core::devices::DeviceAction::TurnOn),
+        ("включить ", crate::core::devices::DeviceAction::TurnOn),
+        ("вкл ", crate::core::devices::DeviceAction::TurnOn),
+        ("выключи ", crate::core::devices::DeviceAction::TurnOff),
+        ("выключить ", crate::core::devices::DeviceAction::TurnOff),
+        ("выкл ", crate::core::devices::DeviceAction::TurnOff),
+        ("переключи ", crate::core::devices::DeviceAction::Toggle),
+        ("переключить ", crate::core::devices::DeviceAction::Toggle),
+        ("turn on ", crate::core::devices::DeviceAction::TurnOn),
+        ("turn off ", crate::core::devices::DeviceAction::TurnOff),
+    ] {
+        if let Some(query) = text.strip_prefix(prefix) {
+            return Some((query.trim(), action));
+        }
+    }
+
     for (suffix, action) in [
         (" вкл", crate::core::devices::DeviceAction::TurnOn),
         (" включи", crate::core::devices::DeviceAction::TurnOn),
@@ -147,12 +164,63 @@ pub(crate) fn device_text_matches(query: &str, haystack: &str) -> bool {
     }
 
     let tokens = query_tokens(query);
-    !tokens.is_empty() && tokens.iter().all(|token| haystack.contains(token))
+    !tokens.is_empty() && tokens.iter().all(|token| token_matches(token, haystack))
 }
 
 fn query_tokens(query: &str) -> Vec<&str> {
     query
         .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|token| !token.is_empty())
+        .filter(|token| !token.is_empty() && !is_query_stop_word(token))
         .collect()
+}
+
+fn is_query_stop_word(token: &str) -> bool {
+    matches!(
+        token,
+        "в" | "во" | "на" | "у" | "с" | "со" | "и" | "the" | "a"
+    )
+}
+
+fn token_matches(token: &str, haystack: &str) -> bool {
+    if haystack.contains(token) {
+        return true;
+    }
+
+    if token.chars().count() < 5 {
+        return false;
+    }
+
+    for suffix in [
+        "ой", "ом", "ей", "ым", "им", "ах", "ях", "е", "и", "ы", "у", "ю", "я",
+    ] {
+        if let Some(stem) = token.strip_suffix(suffix) {
+            if stem.chars().count() >= 4 && haystack.contains(stem) {
+                return true;
+            }
+        }
+    }
+
+    fuzzy_token_matches(token, haystack)
+}
+
+fn fuzzy_token_matches(token: &str, haystack: &str) -> bool {
+    let token_len = token.chars().count();
+    if token_len < 4 {
+        return false;
+    }
+
+    query_tokens(haystack)
+        .into_iter()
+        .filter(|candidate| {
+            let candidate_len = candidate.chars().count();
+            candidate_len >= 4 && token_len.abs_diff(candidate_len) <= 2
+        })
+        .any(|candidate| tokens_are_similar(token, candidate))
+}
+
+fn tokens_are_similar(left: &str, right: &str) -> bool {
+    let min_len = left.chars().count().min(right.chars().count());
+    let max_distance = if min_len <= 4 { 1 } else { 2 };
+
+    strsim::levenshtein(left, right) <= max_distance || strsim::jaro_winkler(left, right) >= 0.88
 }

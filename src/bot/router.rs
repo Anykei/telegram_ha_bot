@@ -124,6 +124,7 @@ pub enum Payload {
     Camera(CameraPayload),
     Admin(AdminPayload),
     InDev,
+    Command(CommandPayload),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -187,6 +188,12 @@ pub enum CameraPayload {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum CommandPayload {
+    Confirm { id: i64 },
+    Cancel { id: i64 },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum SettingsPayload {
     ListRooms,
     RoomDetail {
@@ -223,6 +230,10 @@ pub enum SettingsPayload {
         state: String,
     },
     ToggleStateInversion {
+        room: i64,
+        device: i64,
+    },
+    ToggleCritical {
         room: i64,
         device: i64,
     },
@@ -395,6 +406,12 @@ pub enum AdminPayload {
     EnsureDefaultRuleGroupsForRoom {
         room: i64,
     },
+    ToggleUserVoice {
+        id: u64,
+    },
+    CycleUserVoiceEngine {
+        id: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -465,6 +482,7 @@ pub async fn router(
         Payload::Control(sub_payload) => router_control(ctx, sub_payload).await?,
         Payload::Settings(sub_payload) => router_settings(ctx, sub_payload).await?,
         Payload::Camera(sub_payload) => router_camera(ctx, sub_payload).await?,
+        Payload::Command(_) => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
         Payload::Admin(sub_payload) => router_admin(ctx, sub_payload).await?,
         Payload::InDev => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
     };
@@ -871,6 +889,24 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             });
             Ok(view)
         }
+        SettingsPayload::ToggleCritical { room, device } => {
+            if !ctx.is_admin {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Settings(SettingsPayload::RoomDetail { room }),
+                ));
+            }
+
+            let enabled = db::devices::toggle_device_critical(device, &ctx.config.db).await?;
+            let mut view =
+                super::screens::settings::device_settings::render(ctx, room, device).await?;
+            view.notice = Some(if enabled {
+                "Устройство помечено как критичное".to_string()
+            } else {
+                "Критичность устройства снята".to_string()
+            });
+            Ok(view)
+        }
         _ => Ok(super::screens::common::in_dev_menu(
             ctx,
             Payload::Settings(SettingsPayload::ListRooms {}),
@@ -1209,6 +1245,36 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             view.notice = Some(crate::i18n::t(alert_lang, "lang.changed").to_string());
             Ok(view)
         }
+        AdminPayload::ToggleUserVoice { id } => {
+            if id != ctx.config.root_user {
+                let enabled = db::access::toggle_user_voice_access(id, &ctx.config.db).await?;
+                let mut view =
+                    super::screens::admin::list_actions::render_user_profile(ctx, id).await?;
+                view.notice = Some(if enabled {
+                    "Голосовые команды включены".to_string()
+                } else {
+                    "Голосовые команды выключены".to_string()
+                });
+                Ok(view)
+            } else {
+                let mut view =
+                    super::screens::admin::list_actions::render_user_profile(ctx, id).await?;
+                view.alert = Some("Root всегда может использовать голосовые команды".to_string());
+                Ok(view)
+            }
+        }
+        AdminPayload::CycleUserVoiceEngine { id } => {
+            let engine = db::access::cycle_user_voice_command_engine(
+                id,
+                ctx.config.voice_command_engine,
+                &ctx.config.db,
+            )
+            .await?;
+            let mut view =
+                super::screens::admin::list_actions::render_user_profile(ctx, id).await?;
+            view.notice = Some(format!("Voice engine: {}", engine.label()));
+            Ok(view)
+        }
         AdminPayload::ResetUserAccess { id } => {
             let mut view = if id == ctx.config.root_user {
                 let mut view =
@@ -1375,6 +1441,8 @@ mod tests {
                 rule: 2_000_000,
                 group: 3_000_000,
             }),
+            Payload::Admin(AdminPayload::ToggleUserVoice { id: 9_999_999_999 }),
+            Payload::Admin(AdminPayload::CycleUserVoiceEngine { id: 9_999_999_999 }),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroups),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForRoom { room: 1_000_000 }),
         ];
@@ -1398,6 +1466,14 @@ mod tests {
                 "Data corruption: restored payload differs from original"
             );
         }
+    }
+
+    #[test]
+    fn legacy_admin_list_actions_payload_still_decodes() {
+        let restored =
+            Payload::from_string("BAA").expect("legacy admin list actions payload should decode");
+
+        assert_eq!(restored, Payload::Admin(AdminPayload::ListActions));
     }
 
     #[tokio::test]
@@ -1428,6 +1504,8 @@ mod tests {
             tokio::sync::mpsc::channel::<crate::core::camera_recording::RecordingJob>(1);
         let app_config = Arc::new(AppConfig {
             ha_client: ha_client.clone(),
+            ha_url: paths.ha_url.clone(),
+            ha_token: paths.ha_token.clone(),
             db: db_pool,
             root_user: 0,
 
@@ -1448,6 +1526,18 @@ mod tests {
             camera_recording_max_parallel_jobs: 4,
             camera_recording_storage_root: "data/recordings".to_string(),
             camera_recording_tx: recording_tx,
+            voice_enabled: false,
+            voice_stt_provider: crate::options::VoiceSttProvider::HaPipeline,
+            voice_command_engine: crate::options::VoiceCommandEngine::LocalParser,
+            voice_ha_pipeline_id: None,
+            voice_stt_sample_rate: 16_000,
+            voice_confirm_dangerous: true,
+            voice_pending_ttl_s: 60,
+            voice_max_audio_size_mb: 10,
+            voice_max_audio_duration_s: 30,
+            voice_stt_timeout_s: 45,
+            voice_show_recognized_text: true,
+            voice_response_format: crate::options::VoiceResponseFormat::Text,
 
             sessions: DashMap::new(),
             ui_locks: DashMap::new(),

@@ -3741,6 +3741,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "strsim",
  "teloxide",
  "tokio",
  "tokio-tungstenite",

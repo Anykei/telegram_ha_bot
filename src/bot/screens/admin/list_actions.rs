@@ -68,6 +68,15 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
     let user_lang = crate::db::get_user_language(user_id, &ctx.config.db)
         .await?
         .unwrap_or(ctx.config.default_language);
+    let voice_allowed =
+        crate::db::access::can_use_voice(user_id, user_id == ctx.config.root_user, &ctx.config.db)
+            .await?;
+    let voice_engine = crate::db::access::get_user_voice_command_engine(
+        user_id,
+        ctx.config.voice_command_engine,
+        &ctx.config.db,
+    )
+    .await?;
     let summary = crate::db::access::get_access_summary(
         user_id,
         user_id == ctx.config.root_user,
@@ -87,13 +96,15 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
     };
 
     let text = format!(
-        "{}\n\nID: {}\n{}: {}\n{}: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
+        "{}\n\nID: {}\n{}: {}\n{}: {}\n🎙 Голос: {}\n🎙 Engine: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
         t(ctx.lang, "admin.user_profile.title"),
         user_id,
         t(ctx.lang, "admin.role"),
         role,
         t(ctx.lang, "admin.language"),
         user_lang.label(),
+        if voice_allowed { "ВКЛ" } else { "ВЫКЛ" },
+        voice_engine.label(),
         root_note,
         t(ctx.lang, "admin.rooms.label"),
         summary.rooms_full,
@@ -120,7 +131,20 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
             t(ctx.lang, "admin.reset_access"),
             Payload::Admin(AdminPayload::ResetUserAccess { id: user_id }).to_string(),
         )]);
+        rows.push(vec![InlineKeyboardButton::callback(
+            if voice_allowed {
+                "🎙 Голос: ВКЛ"
+            } else {
+                "🎙 Голос: ВЫКЛ"
+            },
+            Payload::Admin(AdminPayload::ToggleUserVoice { id: user_id }).to_string(),
+        )]);
     }
+
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!("🎙 Engine: {}", voice_engine.label()),
+        Payload::Admin(AdminPayload::CycleUserVoiceEngine { id: user_id }).to_string(),
+    )]);
 
     rows.push(vec![InlineKeyboardButton::callback(
         format!("{}: {}", t(ctx.lang, "admin.language"), user_lang.label()),
@@ -1553,12 +1577,17 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         runtime_status.last_ha_sync_at,
         runtime_status.last_ha_sync_error.as_deref(),
     );
+    let shutdown = format_shutdown_status(
+        runtime_status.shutdown_requested_at,
+        runtime_status.shutdown_reason.as_deref(),
+    );
 
     let text = format!(
-        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}",
+        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}",
         ha_status,
         last_heartbeat,
         ha_sync,
+        shutdown,
         stats.users,
         stats.rooms,
         stats.active_devices,
@@ -1629,6 +1658,18 @@ fn format_ha_sync_status(last_sync_at: Option<DateTime<Utc>>, last_error: Option
     last_sync_at
         .map(|dt| format!("OK {}", dt.with_timezone(&Local).format("%H:%M:%S")))
         .unwrap_or_else(|| "еще не выполнялась".to_string())
+}
+
+fn format_shutdown_status(shutdown_at: Option<DateTime<Utc>>, reason: Option<&str>) -> String {
+    shutdown_at
+        .map(|dt| {
+            format!(
+                "{} {}",
+                reason.unwrap_or("signal"),
+                dt.with_timezone(&Local).format("%H:%M:%S")
+            )
+        })
+        .unwrap_or_else(|| "нет".to_string())
 }
 
 pub fn render_confirm_action(

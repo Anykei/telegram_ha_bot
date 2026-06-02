@@ -87,6 +87,12 @@ pub fn t(lang: Language, key: &str) -> &str {
 
         (Language::Ru, "system.ok") => "Все спокойно",
         (Language::En, "system.ok") => "All quiet",
+        (Language::Ru, "system.label") => "Система",
+        (Language::En, "system.label") => "System",
+        (Language::Ru, "system.shutdown.label") => "Система",
+        (Language::En, "system.shutdown.label") => "System",
+        (Language::Ru, "system.shutdown.value") => "Остановка сервиса",
+        (Language::En, "system.shutdown.value") => "Service shutdown",
         (Language::Ru, "recording.header") => "Запись",
         (Language::En, "recording.header") => "Recording",
         (Language::Ru, "recording.active") => "идет",

@@ -58,6 +58,15 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
     // 3. Ветка Callback-запросов: обрабатывает нажатия инлайн-кнопок.
     let callback_handler = Update::filter_callback_query().endpoint(handlers::handle_callback);
 
+    let voice_handler = Update::filter_message()
+        .filter(|msg: Message| msg.voice().is_some())
+        .endpoint(handlers::handle_voice_message);
+
+    let text_command_handler = Update::filter_message()
+        .filter(|state: State| matches!(state, State::Idle))
+        .filter(|msg: Message| msg.text().is_some_and(handlers::looks_like_text_command))
+        .endpoint(handlers::handle_text_command_message);
+
     // 4. Ветка Диалогов: обрабатывает текстовый ввод в зависимости от состояния.
     let message_dialogues = Update::filter_message()
         // Игнорируем команды, чтобы они не перехватывались диалогом.
@@ -131,6 +140,8 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         .chain(auth_filter)
         .branch(command_handler)
         .branch(callback_handler)
+        .branch(voice_handler)
+        .branch(text_command_handler)
         .branch(message_dialogues)
         .endpoint(|update: Update, state: State| async move {
             let user_id = update.from().map(|u| u.id.0).unwrap_or(0);
