@@ -166,15 +166,15 @@ pub async fn render_state_aliases(
         .unwrap_or(false);
     let logical_state =
         crate::core::presentation::StateFormatter::logical_state(&ha_ent.state, inverted);
-    let current_alias = db::devices::get_state_alias(&dev.entity_id, &ha_ent.state, db).await?;
     let aliases = db::devices::get_state_aliases_for_entity(&dev.entity_id, db).await?;
+    let editable_states = editable_state_alias_states(&ha_ent.state);
 
     let current_display = crate::core::presentation::StateFormatter::format_state_value_with_alias(
         domain,
         class,
         &ha_ent.state,
         inverted,
-        current_alias.as_deref(),
+        aliases.get(&ha_ent.state).map(String::as_str),
     );
 
     let aliases_text = if aliases.is_empty() {
@@ -186,6 +186,25 @@ pub async fn render_state_aliases(
             .collect::<Vec<_>>()
             .join("\n")
     };
+
+    let editable_states_text = editable_states
+        .iter()
+        .map(|state| {
+            let display = crate::core::presentation::StateFormatter::format_state_value_with_alias(
+                domain,
+                class,
+                state,
+                inverted,
+                aliases.get(state).map(String::as_str),
+            );
+            if aliases.contains_key(state) {
+                format!("`{}` → {}", state, display)
+            } else {
+                format!("`{}` → {} (по умолчанию)", state, display)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let inversion_label = if inverted {
         "🔁 Инверсия: ВКЛ"
@@ -201,6 +220,9 @@ pub async fn render_state_aliases(
         Текущее состояние HA: `{}`\n\
         Логическое состояние: `{}`\n\
         На экране: {}\n\n\
+        Алиасы:\n\
+        {}\n\n\
+        Состояния для настройки:\n\
         {}\n\n\
         Инверсия меняет смысл `on/off`, `open/closed`, `locked/unlocked` для отображения.",
         dev.alias.as_deref().unwrap_or(&dev.entity_id),
@@ -209,45 +231,60 @@ pub async fn render_state_aliases(
         ha_ent.state,
         logical_state,
         current_display,
-        aliases_text
+        aliases_text,
+        editable_states_text
     );
 
-    let rows = vec![
-        vec![InlineKeyboardButton::callback(
-            format!("✏️ Изменить `{}`", ha_ent.state),
-            Payload::Settings(SettingsPayload::EditStateAlias {
-                room: room_id,
-                device: device_id,
-                state: ha_ent.state.clone(),
-            })
-            .to_string(),
-        )],
-        vec![InlineKeyboardButton::callback(
-            format!("🧹 Сбросить `{}`", ha_ent.state),
-            Payload::Settings(SettingsPayload::ResetStateAlias {
-                room: room_id,
-                device: device_id,
-                state: ha_ent.state.clone(),
-            })
-            .to_string(),
-        )],
-        vec![InlineKeyboardButton::callback(
+    let mut rows = vec![];
+
+    if ctx.is_admin {
+        for state in &editable_states {
+            let edit_label = if aliases.contains_key(state) {
+                format!("✏️ Изменить `{}`", state)
+            } else {
+                format!("➕ Задать `{}`", state)
+            };
+            rows.push(vec![InlineKeyboardButton::callback(
+                edit_label,
+                Payload::Settings(SettingsPayload::EditStateAlias {
+                    room: room_id,
+                    device: device_id,
+                    state: state.clone(),
+                })
+                .to_string(),
+            )]);
+
+            if aliases.contains_key(state) {
+                rows.push(vec![InlineKeyboardButton::callback(
+                    format!("🧹 Сбросить `{}`", state),
+                    Payload::Settings(SettingsPayload::ResetStateAlias {
+                        room: room_id,
+                        device: device_id,
+                        state: state.clone(),
+                    })
+                    .to_string(),
+                )]);
+            }
+        }
+
+        rows.push(vec![InlineKeyboardButton::callback(
             inversion_label,
             Payload::Settings(SettingsPayload::ToggleStateInversion {
                 room: room_id,
                 device: device_id,
             })
             .to_string(),
-        )],
-        vec![InlineKeyboardButton::callback(
-            "⬅️ Назад к устройству",
-            Payload::Settings(SettingsPayload::DeviceDetail {
-                room: room_id,
-                device: device_id,
-            })
-            .to_string(),
-        )],
-    ];
+        )]);
+    }
+
+    rows.push(vec![InlineKeyboardButton::callback(
+        "⬅️ Назад к устройству",
+        Payload::Settings(SettingsPayload::DeviceDetail {
+            room: room_id,
+            device: device_id,
+        })
+        .to_string(),
+    )]);
 
     Ok(View {
         notifications: ctx.notifications,
@@ -259,4 +296,37 @@ pub async fn render_state_aliases(
         }),
         ..Default::default()
     })
+}
+
+fn editable_state_alias_states(current_state: &str) -> Vec<String> {
+    let mut states = vec![current_state.to_string()];
+    let pair = crate::core::presentation::StateFormatter::invert_state(current_state);
+
+    if pair != current_state {
+        states.push(pair);
+    }
+
+    states
+}
+
+#[cfg(test)]
+mod tests {
+    use super::editable_state_alias_states;
+
+    #[test]
+    fn editable_state_alias_states_adds_pair_for_binary_state() {
+        assert_eq!(editable_state_alias_states("off"), vec!["off", "on"]);
+        assert_eq!(
+            editable_state_alias_states("locked"),
+            vec!["locked", "unlocked"]
+        );
+    }
+
+    #[test]
+    fn editable_state_alias_states_keeps_single_unknown_state() {
+        assert_eq!(
+            editable_state_alias_states("unavailable"),
+            vec!["unavailable"]
+        );
+    }
 }
