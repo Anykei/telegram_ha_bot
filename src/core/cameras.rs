@@ -45,7 +45,12 @@ async fn fetch_snapshot(snapshot_url: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("Snapshot URL вернул статус {}", response.status()));
     }
 
-    Ok(response.bytes().await?.to_vec())
+    let bytes = response.bytes().await?.to_vec();
+    if bytes.is_empty() {
+        return Err(anyhow!("Snapshot URL вернул пустой файл"));
+    }
+
+    Ok(bytes)
 }
 
 pub async fn capture_clip(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
@@ -218,6 +223,10 @@ fn encode_rgb_frame_as_jpeg(frame: &util::frame::video::Video) -> Result<Vec<u8>
     encoder
         .encode(&rgb, width as u32, height as u32, ColorType::Rgb8.into())
         .context("Не удалось закодировать кадр в JPEG")?;
+
+    if bytes.is_empty() {
+        return Err(anyhow!("LibAV закодировал пустой JPEG"));
+    }
 
     Ok(bytes)
 }

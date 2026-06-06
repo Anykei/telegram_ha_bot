@@ -206,10 +206,15 @@ pub async fn render(
 }
 
 pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
+    let input_payload = Payload::Control(ControlPayload::QuickAction {
+        room: room_id,
+        device: device_id,
+        cmd: DeviceCmd::EnterManualInput,
+    });
     let cancel_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: device_id,
-        cmd: DeviceCmd::Toggle,
+        cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
     });
 
     View {
@@ -221,7 +226,41 @@ pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
             "❌ Отмена",
             cancel_payload.to_string(),
         )]]),
+        payload: input_payload,
         next_state: Some(state),
         ..View::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_input_screen_keeps_stable_prompt_payload() {
+        let view = render_manual_input(
+            10,
+            20,
+            State::WaitingForGraphInterval {
+                device_id: 20,
+                room_id: 10,
+            },
+        );
+
+        assert_eq!(
+            view.payload,
+            Payload::Control(ControlPayload::QuickAction {
+                room: 10,
+                device: 20,
+                cmd: DeviceCmd::EnterManualInput,
+            })
+        );
+        assert!(matches!(
+            view.next_state,
+            Some(State::WaitingForGraphInterval {
+                device_id: 20,
+                room_id: 10
+            })
+        ));
     }
 }

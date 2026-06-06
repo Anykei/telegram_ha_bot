@@ -79,10 +79,17 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
 
         cache.refreshing = false;
         match result {
-            Ok(bytes) => {
+            Ok(bytes) if !bytes.is_empty() => {
                 cache.bytes = Some(bytes);
                 cache.captured_at = Some(Utc::now());
                 cache.failed_at = None;
+            }
+            Ok(_) => {
+                cache.failed_at = Some(Utc::now());
+                log::warn!(
+                    "UI camera background {} returned an empty snapshot; keeping previous background",
+                    camera_id
+                );
             }
             Err(error) => {
                 cache.failed_at = Some(Utc::now());

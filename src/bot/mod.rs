@@ -2,6 +2,7 @@ pub(crate) mod format;
 pub(crate) mod handlers;
 pub(crate) mod models;
 pub(crate) mod notification;
+pub(crate) mod recording_rule_wizard;
 pub(crate) mod router;
 mod screens;
 pub(crate) mod text_commands;
@@ -117,6 +118,42 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 _ => None,
             })
             .endpoint(handlers::handle_edit_recording_rule_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditRecordingRuleNumber {
+                    room_id,
+                    rule_id,
+                    field,
+                } => Some((room_id, rule_id, field)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_recording_rule_number_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditRecordingRuleConditionValue {
+                    room_id,
+                    rule_id,
+                    device_id,
+                    operator,
+                } => Some((room_id, rule_id, device_id, operator)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_recording_rule_condition_value_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RecordingRuleWizardSourceValue { mode } => Some(mode),
+                _ => None,
+            })
+            .endpoint(handlers::handle_recording_rule_wizard_source_value_input),
+        )
+        .branch(
+            dptree::filter(|state: State| {
+                matches!(state, State::RecordingRuleWizardConditionValue)
+            })
+            .endpoint(handlers::handle_recording_rule_wizard_condition_value_input),
         )
         .branch(
             dptree::filter_map(

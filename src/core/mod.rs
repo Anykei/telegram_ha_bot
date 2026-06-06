@@ -259,6 +259,10 @@ pub async fn update_user_state(config: &Arc<AppConfig>, user_id: u64, msg_id: i3
                 .get(&user_id)
                 .map(|s| s.header_entities.clone())
                 .unwrap_or_default(),
+            recording_rule_wizard: config
+                .sessions
+                .get(&user_id)
+                .and_then(|s| s.recording_rule_wizard.clone()),
             last_ui_refresh_at: Some(now),
             ui_refresh_blocked_until: None,
             last_seen_at: now,

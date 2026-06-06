@@ -14,7 +14,9 @@ use teloxide::types::{
 use teloxide::{Bot, RequestError};
 
 use super::models::View;
-use crate::bot::router::{router, AdminPayload, CameraPayload, CommandPayload, Payload};
+use crate::bot::router::{
+    router, AdminPayload, CameraPayload, CommandPayload, Payload, RecordingRuleEditField,
+};
 use crate::bot::State;
 use crate::core::commands::{CommandExecution, CommandSource};
 use crate::db;
@@ -1582,12 +1584,22 @@ fn log_telegram_retry_after(
 
 async fn resolve_view_image(view: &View, user_id: u64, config: &Arc<AppConfig>) -> Vec<u8> {
     if let Some(image) = &view.image {
-        return image.clone();
+        return non_empty_image_or_placeholder(Some(image.as_slice()), "view image");
     }
 
-    crate::core::ui_background::resolve(config.clone(), user_id)
-        .await
-        .unwrap_or_else(|| crate::bot::utils::UI_PLACEHOLDER_BYTES.to_vec())
+    let background = crate::core::ui_background::resolve(config.clone(), user_id).await;
+    non_empty_image_or_placeholder(background.as_deref(), "UI background")
+}
+
+fn non_empty_image_or_placeholder(image: Option<&[u8]>, source: &str) -> Vec<u8> {
+    match image {
+        Some(bytes) if !bytes.is_empty() => bytes.to_vec(),
+        Some(_) => {
+            log::warn!("{} is empty; using UI placeholder", source);
+            crate::bot::utils::UI_PLACEHOLDER_BYTES.to_vec()
+        }
+        None => crate::bot::utils::UI_PLACEHOLDER_BYTES.to_vec(),
+    }
 }
 
 async fn send_new_view(
@@ -1639,13 +1651,14 @@ pub async fn handle_custom_interval(
         return finalize_dialogue(bot, dialogue, msg, config, Some(new_payload)).await;
     }
 
-    // Если ввод невалиден - уведомляем и выходим со старым контекстом
-    let err_msg = bot
-        .send_message(msg.chat.id, "⚠️ Ошибка: введите целое число часов.")
-        .await?;
-    crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 5);
-
-    finalize_dialogue(bot, dialogue, msg, config, None).await
+    keep_dialogue_with_error(
+        &bot,
+        &dialogue,
+        &msg,
+        State::WaitingForGraphInterval { device_id, room_id },
+        "⚠️ Ошибка: введите целое число часов.".to_string(),
+    )
+    .await
 }
 
 pub async fn handle_state_alias_input(
@@ -1895,6 +1908,340 @@ pub async fn handle_add_recording_rule_input(
     }
 }
 
+pub async fn handle_recording_rule_wizard_source_value_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    mode: crate::bot::recording_rule_wizard::WizardTriggerMode,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let value =
+        match crate::bot::recording_rule_wizard::source_threshold_value(msg.text().unwrap_or("")) {
+            Ok(value) => value,
+            Err(text) => {
+                keep_dialogue_with_error(
+                    &bot,
+                    &dialogue,
+                    &msg,
+                    State::RecordingRuleWizardSourceValue { mode },
+                    text,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let updated = {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+                wizard.set_source_mode(mode, Some(value));
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !updated {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::WizardConditions,
+        )),
+    )
+    .await
+}
+
+pub async fn handle_recording_rule_wizard_condition_value_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let pending = config
+        .sessions
+        .get(&user_id)
+        .and_then(|session| session.recording_rule_wizard.clone())
+        .and_then(|wizard| wizard.pending_condition);
+    let Some(pending) = pending else {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::WizardConditions,
+            )),
+        )
+        .await;
+    };
+    let Some(operator) = pending.operator else {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::WizardAddCondition,
+            )),
+        )
+        .await;
+    };
+    let Some(candidate) =
+        crate::db::devices::get_recording_wizard_candidate(pending.device_id, &config.db).await?
+    else {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::WizardConditions,
+            )),
+        )
+        .await;
+    };
+
+    let condition = match crate::bot::recording_rule_wizard::condition_from_input(
+        &candidate.entity_id,
+        operator,
+        msg.text().unwrap_or(""),
+    ) {
+        Ok(condition) => condition,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::RecordingRuleWizardConditionValue,
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let updated = {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+                wizard.add_extra_condition(condition);
+                wizard.pending_condition = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !updated {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::WizardConditions,
+        )),
+    )
+    .await
+}
+
+pub async fn handle_edit_recording_rule_number_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (room_id, rule_id, field): (i64, i64, RecordingRuleEditField),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    if reject_recording_rule_room_mismatch(&bot, &msg, &config, room_id, rule_id).await? {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::RecordingRules { room: room_id },
+            )),
+        )
+        .await;
+    }
+
+    let (min, max) = recording_rule_edit_field_bounds(&config, field);
+    let value = match parse_range(msg.text().unwrap_or("").trim(), field.title(), min, max) {
+        Ok(value) => i64::from(value),
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::EditRecordingRuleNumber {
+                    room_id,
+                    rule_id,
+                    field,
+                },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let (tail_seconds, max_segment_seconds, cooldown_s, retention_days) = match field {
+        RecordingRuleEditField::TailSeconds => (Some(value), None, None, None),
+        RecordingRuleEditField::MaxSegmentSeconds => (None, Some(value), None, None),
+        RecordingRuleEditField::CooldownSeconds => (None, None, Some(value), None),
+        RecordingRuleEditField::RetentionDays => (None, None, None, Some(value)),
+    };
+
+    crate::db::camera_recording_rules::update_rule_recording_options(
+        rule_id,
+        tail_seconds,
+        max_segment_seconds,
+        cooldown_s,
+        retention_days,
+        &config.db,
+    )
+    .await?;
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::RecordingRuleEditMenu {
+                room: room_id,
+                rule: rule_id,
+            },
+        )),
+    )
+    .await
+}
+
+pub async fn handle_edit_recording_rule_condition_value_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (room_id, rule_id, device_id, operator): (
+        i64,
+        i64,
+        i64,
+        crate::db::camera_recording_rules::ConditionOperator,
+    ),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    if reject_recording_rule_room_mismatch(&bot, &msg, &config, room_id, rule_id).await? {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::RecordingRules { room: room_id },
+            )),
+        )
+        .await;
+    }
+
+    let Some(candidate) =
+        crate::db::devices::get_recording_wizard_candidate(device_id, &config.db).await?
+    else {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::RecordingRuleEditSensors {
+                    room: room_id,
+                    rule: rule_id,
+                },
+            )),
+        )
+        .await;
+    };
+
+    let condition = match crate::bot::recording_rule_wizard::condition_from_input(
+        &candidate.entity_id,
+        operator,
+        msg.text().unwrap_or(""),
+    ) {
+        Ok(condition) => condition,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::EditRecordingRuleConditionValue {
+                    room_id,
+                    rule_id,
+                    device_id,
+                    operator,
+                },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    crate::db::camera_recording_rules::add_condition(
+        crate::db::camera_recording_rules::NewRecordingCondition {
+            rule_id,
+            entity_id: &condition.entity_id,
+            operator: condition.operator,
+            from_state: condition.from_state.as_deref(),
+            to_state: condition.to_state.as_deref(),
+            value: condition.value.as_deref(),
+        },
+        &config.db,
+    )
+    .await?;
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::RecordingRuleEditSensors {
+                room: room_id,
+                rule: rule_id,
+            },
+        )),
+    )
+    .await
+}
+
 pub async fn handle_edit_recording_rule_input(
     bot: Bot,
     msg: Message,
@@ -1904,6 +2251,19 @@ pub async fn handle_edit_recording_rule_input(
 ) -> Result<()> {
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    if reject_recording_rule_room_mismatch(&bot, &msg, &config, room_id, rule_id).await? {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::RecordingRules { room: room_id },
+            )),
+        )
+        .await;
     }
 
     match parse_recording_rule_input(
@@ -1975,6 +2335,30 @@ pub async fn handle_edit_recording_rule_input(
             finalize_dialogue(bot, dialogue, msg, config, None).await
         }
     }
+}
+
+async fn reject_recording_rule_room_mismatch(
+    bot: &Bot,
+    msg: &Message,
+    config: &Arc<AppConfig>,
+    room_id: i64,
+    rule_id: i64,
+) -> Result<bool> {
+    let exists = crate::db::camera_recording_rules::get_rule_for_room(rule_id, room_id, &config.db)
+        .await?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+
+    let err_msg = bot
+        .send_message(
+            msg.chat.id,
+            "Ошибка: правило не найдено или не принадлежит выбранной комнате.",
+        )
+        .await?;
+    crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 8);
+    Ok(true)
 }
 
 fn parse_user_id(msg: &Message) -> std::result::Result<u64, &'static str> {
@@ -2157,7 +2541,9 @@ fn extract_recording_rule_block(text: &str) -> String {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("Текст правила") || trimmed.contains("Отправьте исправленный блок")
+        if trimmed.contains("Текст правила")
+            || trimmed.contains("Отправьте исправленный блок")
+            || trimmed.contains("Скопируйте блок")
         {
             use_tail = true;
             lines.clear();
@@ -2225,8 +2611,36 @@ fn parse_range(value: &str, label: &str, min: u32, max: u32) -> std::result::Res
     Ok(parsed)
 }
 
+fn recording_rule_edit_field_bounds(
+    config: &AppConfig,
+    field: RecordingRuleEditField,
+) -> (u32, u32) {
+    match field {
+        RecordingRuleEditField::TailSeconds => (5, config.camera_recording_max_tail_seconds),
+        RecordingRuleEditField::MaxSegmentSeconds => {
+            (30, config.camera_recording_max_segment_seconds)
+        }
+        RecordingRuleEditField::CooldownSeconds => (0, 86_400),
+        RecordingRuleEditField::RetentionDays => (1, 365),
+    }
+}
+
 fn recording_rule_input_help() -> String {
     "Ошибка: заполните правило в формате:\nНазвание\nID камеры\nany/all\nentity_id;operator;from;to;value\nTail seconds\nMax segment seconds\nCooldown seconds\nRetention days".to_string()
+}
+
+async fn keep_dialogue_with_error(
+    bot: &Bot,
+    dialogue: &MyDialogue,
+    msg: &Message,
+    state: State,
+    text: String,
+) -> Result<()> {
+    dialogue.update(state).await?;
+    let err_msg = bot.send_message(msg.chat.id, text).await?;
+    crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 8);
+    let _ = bot.delete_message(msg.chat.id, msg.id).await;
+    Ok(())
 }
 
 /// Завершает диалог, очищает чат и обновляет интерфейс.
@@ -2431,6 +2845,28 @@ mod tests {
         assert_eq!(input.camera_id, 3);
         assert_eq!(input.conditions.len(), 2);
         assert_eq!(input.retention_days, 15);
+    }
+
+    #[test]
+    fn recording_rule_input_extracts_wizard_advanced_block() {
+        let input = parse_recording_rule_input(
+            "Скопируйте блок ниже, измените если нужно и отправьте сообщением:\n\nЗамок Дверь: открытие или закрытие\n3\nany\nbinary_sensor.zamok_contact;changed_from_to;off;on;\nbinary_sensor.zamok_contact;changed_from_to;on;off;\n60\n300\n0\n30\n\n────────────────────\nОбновлено: 12:00:00",
+            300,
+            300,
+        )
+        .expect("wizard advanced block should parse");
+
+        assert_eq!(input.name, "Замок Дверь: открытие или закрытие");
+        assert_eq!(input.camera_id, 3);
+        assert_eq!(input.conditions.len(), 2);
+        assert_eq!(input.retention_days, 30);
+    }
+
+    #[test]
+    fn empty_view_image_falls_back_to_placeholder() {
+        let image = non_empty_image_or_placeholder(Some(&[]), "test image");
+
+        assert_eq!(image, crate::bot::utils::UI_PLACEHOLDER_BYTES);
     }
 
     #[test]

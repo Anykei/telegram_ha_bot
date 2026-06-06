@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConditionLogic {
     All,
     Any,
@@ -24,7 +25,7 @@ impl ConditionLogic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConditionOperator {
     ChangedTo,
     ChangedFromTo,
@@ -139,6 +140,14 @@ pub struct NewRecordingCondition<'a> {
     pub value: Option<&'a str>,
 }
 
+pub struct NewRecordingConditionDraft<'a> {
+    pub entity_id: &'a str,
+    pub operator: ConditionOperator,
+    pub from_state: Option<&'a str>,
+    pub to_state: Option<&'a str>,
+    pub value: Option<&'a str>,
+}
+
 pub async fn create_rule(rule: NewRecordingRule<'_>, pool: &SqlitePool) -> Result<i64> {
     let result = sqlx::query(
         r#"
@@ -160,6 +169,92 @@ pub async fn create_rule(rule: NewRecordingRule<'_>, pool: &SqlitePool) -> Resul
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub async fn create_rule_with_conditions_and_group(
+    rule: NewRecordingRule<'_>,
+    conditions: &[NewRecordingConditionDraft<'_>],
+    group_id: Option<i64>,
+    pool: &SqlitePool,
+) -> Result<i64> {
+    let group_ids = group_id.into_iter().collect::<Vec<_>>();
+    create_rule_with_conditions_and_groups(rule, conditions, &group_ids, pool).await
+}
+
+pub async fn create_rule_with_conditions_and_groups(
+    rule: NewRecordingRule<'_>,
+    conditions: &[NewRecordingConditionDraft<'_>],
+    group_ids: &[i64],
+    pool: &SqlitePool,
+) -> Result<i64> {
+    if conditions.is_empty() {
+        return Err(anyhow!("Recording rule must have at least one condition"));
+    }
+
+    let mut tx = pool.begin().await?;
+    let result = sqlx::query(
+        r#"
+        INSERT INTO camera_recording_rules (
+            name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
+            cooldown_s, retention_days, enabled, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        "#,
+    )
+    .bind(rule.name.trim())
+    .bind(rule.camera_id)
+    .bind(rule.condition_logic.as_str())
+    .bind(rule.tail_seconds)
+    .bind(rule.max_segment_seconds)
+    .bind(rule.cooldown_s)
+    .bind(rule.retention_days)
+    .execute(&mut *tx)
+    .await?;
+    let rule_id = result.last_insert_rowid();
+
+    for condition in conditions {
+        sqlx::query(
+            r#"
+            INSERT INTO camera_recording_rule_conditions (
+                rule_id, entity_id, operator, from_state, to_state, value
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(rule_id)
+        .bind(condition.entity_id.trim())
+        .bind(condition.operator.as_str())
+        .bind(condition.from_state.map(str::trim))
+        .bind(condition.to_state.map(str::trim))
+        .bind(condition.value.map(str::trim))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    for group_id in group_ids {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO camera_recording_rule_group_items (rule_id, group_id)
+            SELECT ?, ?
+            WHERE EXISTS (
+                SELECT 1 FROM camera_recording_rule_groups WHERE id = ?
+            )
+            "#,
+        )
+        .bind(rule_id)
+        .bind(group_id)
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(anyhow!("Recording rule group not found"));
+        }
+    }
+
+    tx.commit().await?;
+    Ok(rule_id)
 }
 
 pub async fn add_condition(condition: NewRecordingCondition<'_>, pool: &SqlitePool) -> Result<i64> {
@@ -213,6 +308,30 @@ pub async fn get_rule(rule_id: i64, pool: &SqlitePool) -> Result<Option<Recordin
     .await?)
 }
 
+pub async fn get_rule_for_room(
+    rule_id: i64,
+    room_id: i64,
+    pool: &SqlitePool,
+) -> Result<Option<RecordingRule>> {
+    Ok(sqlx::query_as::<_, RecordingRule>(
+        r#"
+        SELECT r.id, r.name, r.camera_id, r.condition_logic, r.tail_seconds, r.max_segment_seconds,
+               r.cooldown_s, r.retention_days, r.enabled, r.notify_enabled, r.noise_enabled,
+               r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
+        FROM camera_recording_rules r
+        JOIN cameras c ON c.id = r.camera_id
+        WHERE r.id = ?
+          AND r.deleted_at IS NULL
+          AND c.room_id = ?
+          AND c.enabled != 0
+        "#,
+    )
+    .bind(rule_id)
+    .bind(room_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 pub async fn list_conditions(
     rule_id: i64,
     pool: &SqlitePool,
@@ -228,6 +347,32 @@ pub async fn list_conditions(
     .bind(rule_id)
     .fetch_all(pool)
     .await?)
+}
+
+pub async fn delete_condition(rule_id: i64, condition_id: i64, pool: &SqlitePool) -> Result<()> {
+    let condition_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM camera_recording_rule_conditions WHERE rule_id = ?",
+    )
+    .bind(rule_id)
+    .fetch_one(pool)
+    .await?;
+
+    if condition_count <= 1 {
+        return Err(anyhow!("Recording rule must keep at least one condition"));
+    }
+
+    let result =
+        sqlx::query("DELETE FROM camera_recording_rule_conditions WHERE id = ? AND rule_id = ?")
+            .bind(condition_id)
+            .bind(rule_id)
+            .execute(pool)
+            .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule condition not found"));
+    }
+
+    Ok(())
 }
 
 pub async fn find_candidate_rules_by_entity(
@@ -333,6 +478,64 @@ pub async fn toggle_rule_noise(rule_id: i64, pool: &SqlitePool) -> Result<bool> 
     enabled
         .map(|value| value != 0)
         .ok_or_else(|| anyhow!("Recording rule not found"))
+}
+
+pub async fn update_rule_logic(
+    rule_id: i64,
+    logic: ConditionLogic,
+    pool: &SqlitePool,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET condition_logic = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL
+        "#,
+    )
+    .bind(logic.as_str())
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule not found"));
+    }
+
+    Ok(())
+}
+
+pub async fn update_rule_recording_options(
+    rule_id: i64,
+    tail_seconds: Option<i64>,
+    max_segment_seconds: Option<i64>,
+    cooldown_s: Option<i64>,
+    retention_days: Option<i64>,
+    pool: &SqlitePool,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET tail_seconds = COALESCE(?, tail_seconds),
+            max_segment_seconds = COALESCE(?, max_segment_seconds),
+            cooldown_s = COALESCE(?, cooldown_s),
+            retention_days = COALESCE(?, retention_days),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL
+        "#,
+    )
+    .bind(tail_seconds)
+    .bind(max_segment_seconds)
+    .bind(cooldown_s)
+    .bind(retention_days)
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule not found"));
+    }
+
+    Ok(())
 }
 
 pub async fn mark_noise_summary_sent(

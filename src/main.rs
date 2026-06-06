@@ -30,6 +30,8 @@ mod i18n;
 mod models;
 mod options;
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -38,13 +40,23 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
     let main_cancel_token = cancel_token.clone();
 
-    info!("🚀 Starting Homeassistant Telegram BOT.");
+    info!("🚀 Starting Home Assistant Telegram Bot v{}.", APP_VERSION);
 
     let paths = EnvPaths::load()
         .validate()
         .context("Error checking env variables.")?;
 
     let options = AppOptions::load(&paths.options).context("Error load options.json.")?;
+    info!(
+        "Startup config: db={}, migrations={}, ha_url={}, default_language={:?}, voice_enabled={}, recording_storage={}, recording_parallel_jobs={}",
+        paths.db_url(),
+        paths.migrations.display(),
+        paths.ha_url,
+        options.default_language,
+        options.voice_enabled,
+        options.camera_recording_storage_root,
+        options.camera_recording_max_parallel_jobs
+    );
 
     let db_pool = db::init(
         &paths.db_url(),
@@ -116,6 +128,7 @@ async fn main() -> Result<()> {
                 last_menu_id: mid,
                 current_context: context,
                 header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
+                recording_rule_wizard: None,
                 last_ui_refresh_at: None,
                 ui_refresh_blocked_until: None,
                 last_seen_at,

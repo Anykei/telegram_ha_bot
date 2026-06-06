@@ -1,4 +1,5 @@
 use crate::bot::models::View;
+use crate::bot::recording_rule_wizard::{WizardRuleSelection, WizardTriggerMode};
 use crate::bot::screens::room;
 use crate::core::devices::{ChartParams, InputIntent, InteractionResult};
 use crate::core::types::RoomViewMode;
@@ -57,6 +58,21 @@ pub enum State {
         room_id: i64,
         rule_id: i64,
     },
+    EditRecordingRuleNumber {
+        room_id: i64,
+        rule_id: i64,
+        field: RecordingRuleEditField,
+    },
+    EditRecordingRuleConditionValue {
+        room_id: i64,
+        rule_id: i64,
+        device_id: i64,
+        operator: db::camera_recording_rules::ConditionOperator,
+    },
+    RecordingRuleWizardSourceValue {
+        mode: WizardTriggerMode,
+    },
+    RecordingRuleWizardConditionValue,
 }
 
 impl State {
@@ -95,6 +111,32 @@ pub enum DeviceCmd {
         o: i32,
     },
     EnterManualInput,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum RecordingRuleEditField {
+    TailSeconds,
+    MaxSegmentSeconds,
+    CooldownSeconds,
+    RetentionDays,
+}
+
+impl RecordingRuleEditField {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::TailSeconds => "Писать после события",
+            Self::MaxSegmentSeconds => "Длина файла",
+            Self::CooldownSeconds => "Пауза после записи",
+            Self::RetentionDays => "Время хранения",
+        }
+    }
+
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::RetentionDays => "д",
+            _ => "с",
+        }
+    }
 }
 
 impl From<DeviceCmd> for devices::DeviceAction {
@@ -406,11 +448,156 @@ pub enum AdminPayload {
     EnsureDefaultRuleGroupsForRoom {
         room: i64,
     },
+    EnsureDefaultRuleGroupsForWizard,
+    EnsureDefaultRuleGroupsForEdit {
+        room: i64,
+        rule: i64,
+    },
     ToggleUserVoice {
         id: u64,
     },
     CycleUserVoiceEngine {
         id: u64,
+    },
+    StartRecordingRuleWizard {
+        room: i64,
+    },
+    WizardPickCamera {
+        room: i64,
+        camera: i64,
+    },
+    WizardSourcePage {
+        page: u16,
+    },
+    WizardPickEntity {
+        room: i64,
+        camera: i64,
+        device: i64,
+    },
+    WizardPickMode {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+    },
+    WizardPickTail {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+        tail: u32,
+    },
+    WizardPickRetention {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+        tail: u32,
+        retention: u32,
+    },
+    WizardPickGroup {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+        tail: u32,
+        retention: u32,
+        group: Option<i64>,
+    },
+    WizardCreateRule {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+        tail: u32,
+        retention: u32,
+        group: Option<i64>,
+    },
+    WizardAdvancedText {
+        room: i64,
+        camera: i64,
+        device: i64,
+        mode: WizardTriggerMode,
+        tail: u32,
+        retention: u32,
+        group: Option<i64>,
+    },
+    WizardConditions,
+    WizardAddCondition,
+    WizardConditionEntityPage {
+        page: u16,
+    },
+    WizardPickConditionEntity {
+        device: i64,
+    },
+    WizardPickConditionOperator {
+        operator: db::camera_recording_rules::ConditionOperator,
+    },
+    WizardRemoveCondition {
+        index: u8,
+    },
+    WizardToggleLogic,
+    WizardNextTail,
+    WizardPickWizardTail {
+        tail: u32,
+    },
+    WizardPickWizardRetention {
+        retention: u32,
+    },
+    WizardToggleGroup {
+        group: i64,
+    },
+    WizardConfirmGroups,
+    WizardCreateCurrentRule,
+    WizardAdvancedCurrentText,
+    RecordingRuleEditMenu {
+        room: i64,
+        rule: i64,
+    },
+    RecordingRuleEditSensors {
+        room: i64,
+        rule: i64,
+    },
+    PromptEditRecordingRuleNumber {
+        room: i64,
+        rule: i64,
+        field: RecordingRuleEditField,
+    },
+    CycleRecordingRuleLogic {
+        room: i64,
+        rule: i64,
+    },
+    RecordingRuleEditSensorPage {
+        room: i64,
+        rule: i64,
+        page: u16,
+    },
+    RecordingRuleEditPickSensor {
+        room: i64,
+        rule: i64,
+        device: i64,
+    },
+    RecordingRuleEditPickSensorOperator {
+        room: i64,
+        rule: i64,
+        device: i64,
+        operator: db::camera_recording_rules::ConditionOperator,
+    },
+    DeleteRecordingRuleCondition {
+        room: i64,
+        rule: i64,
+        condition: i64,
+    },
+    WizardGroups,
+    WizardCancel,
+    RecordingRuleEditGroups {
+        room: i64,
+        rule: i64,
+    },
+    ToggleRecordingRuleEditGroupItem {
+        room: i64,
+        rule: i64,
+        group: i64,
     },
 }
 
@@ -843,6 +1030,11 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
                     state,
                     current_alias.unwrap_or_else(|| "не задан".to_string())
                 ),
+                Payload::Settings(SettingsPayload::EditStateAlias {
+                    room,
+                    device,
+                    state,
+                }),
                 Payload::Settings(SettingsPayload::StateAliases { room, device }),
             ))
         }
@@ -957,6 +1149,7 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             State::AddUser { user_id: 0 },
             "Добавление пользователя",
             "Введите Telegram ID пользователя, которому нужно открыть доступ.",
+            Payload::Admin(AdminPayload::PromptAddUser),
             Payload::Admin(AdminPayload::ListUsers),
         )),
         AdminPayload::PromptDeleteUser => {
@@ -965,6 +1158,7 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
                 State::DeleteUser { user_id: 0 },
                 "Удаление пользователя",
                 "Введите Telegram ID пользователя, у которого нужно забрать доступ.",
+                Payload::Admin(AdminPayload::PromptDeleteUser),
                 Payload::Admin(AdminPayload::ListUsers),
             ))
         }
@@ -999,15 +1193,350 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
         AdminPayload::PromptAddRecordingRule { room } => Ok(
             super::screens::admin::list_actions::render_add_recording_rule_input(ctx, room).await?,
         ),
+        AdminPayload::StartRecordingRuleWizard { room } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_start(ctx, room)
+                .await?,
+        ),
+        AdminPayload::WizardPickCamera { room, camera } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_entities(
+                ctx, room, camera,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardSourcePage { page } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_source_page(
+                ctx, page,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickEntity {
+            room,
+            camera,
+            device,
+        } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_modes(
+                ctx, room, camera, device,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickMode {
+            room,
+            camera,
+            device,
+            mode,
+        } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_tail(
+                ctx, room, camera, device, mode,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickTail {
+            room,
+            camera,
+            device,
+            mode,
+            tail,
+        } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_retention(
+                ctx, room, camera, device, mode, tail,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickRetention {
+            room,
+            camera,
+            device,
+            mode,
+            tail,
+            retention,
+        } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_groups(
+                ctx, room, camera, device, mode, tail, retention,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickGroup {
+            room,
+            camera,
+            device,
+            mode,
+            tail,
+            retention,
+            group,
+        } => {
+            update_wizard_compat_selection(&ctx, room, camera, device, mode, tail, retention, group)?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx)
+                    .await?,
+            )
+        }
+        AdminPayload::WizardAdvancedText {
+            room,
+            camera,
+            device,
+            mode,
+            tail,
+            retention,
+            group,
+        } => {
+            update_wizard_compat_selection(&ctx, room, camera, device, mode, tail, retention, group)?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_wizard_advanced(ctx)
+                    .await?,
+            )
+        }
+        AdminPayload::WizardCreateRule {
+            room,
+            camera,
+            device,
+            mode,
+            tail,
+            retention,
+            group,
+        } => {
+            create_wizard_recording_rule(
+                ctx,
+                WizardRuleSelection {
+                    room_id: room,
+                    camera_id: camera,
+                    device_id: device,
+                    mode,
+                    tail_seconds: tail,
+                    retention_days: retention,
+                    group_ids: group.into_iter().collect(),
+                },
+            )
+            .await
+        }
+        AdminPayload::WizardConditions => {
+            Ok(super::screens::admin::list_actions::render_recording_rule_wizard_conditions(ctx)
+                .await?)
+        }
+        AdminPayload::WizardAddCondition => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_condition_entities(
+                ctx,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardConditionEntityPage { page } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_condition_entities_page(
+                ctx, page,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickConditionEntity { device } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_condition_operators(
+                ctx, device,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickConditionOperator { operator } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_condition_value_input(
+                ctx, operator,
+            )?,
+        ),
+        AdminPayload::WizardRemoveCondition { index } => {
+            update_current_wizard(&ctx, |wizard| {
+                let _ = wizard.remove_extra_condition(usize::from(index));
+            })?;
+            Ok(super::screens::admin::list_actions::render_recording_rule_wizard_conditions(ctx)
+                .await?)
+        }
+        AdminPayload::WizardToggleLogic => {
+            update_current_wizard(&ctx, |wizard| wizard.toggle_logic())?;
+            Ok(super::screens::admin::list_actions::render_recording_rule_wizard_conditions(ctx)
+                .await?)
+        }
+        AdminPayload::WizardNextTail => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_tail_from_state(ctx)
+                .await?,
+        ),
+        AdminPayload::WizardPickWizardTail { tail } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_retention_from_state(
+                ctx, tail,
+            )
+            .await?,
+        ),
+        AdminPayload::WizardPickWizardRetention { retention } => {
+            update_current_wizard(&ctx, |wizard| {
+                wizard.retention_days = Some(retention);
+            })?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx)
+                .await?,
+            )
+        }
+        AdminPayload::WizardGroups => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(ctx)
+                .await?,
+        ),
+        AdminPayload::EnsureDefaultRuleGroupsForWizard => {
+            db::camera_recording_rule_groups::ensure_default_groups(&ctx.config.db).await?;
+            let lang = ctx.lang;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(
+                    ctx,
+                )
+                .await?;
+            view.notice = Some(t(lang, "admin.rule_groups.defaults_created").to_string());
+            Ok(view)
+        }
+        AdminPayload::WizardCancel => cancel_current_wizard(ctx).await,
+        AdminPayload::WizardToggleGroup { group } => {
+            update_current_wizard(&ctx, |wizard| wizard.toggle_group(group))?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(
+                    ctx,
+                )
+                .await?,
+            )
+        }
+        AdminPayload::WizardConfirmGroups => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx).await?,
+        ),
+        AdminPayload::WizardCreateCurrentRule => create_current_wizard_recording_rule(ctx).await,
+        AdminPayload::WizardAdvancedCurrentText => Ok(
+            super::screens::admin::list_actions::render_recording_rule_wizard_advanced(ctx)
+                .await?,
+        ),
+        AdminPayload::RecordingRuleEditMenu { room, rule } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_menu(ctx, room, rule)
+                .await?,
+        ),
+        AdminPayload::RecordingRuleEditSensors { room, rule } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_sensors(
+                ctx, room, rule,
+            )
+            .await?,
+        ),
+        AdminPayload::RecordingRuleEditGroups { room, rule } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_groups(
+                ctx, room, rule,
+            )
+            .await?,
+        ),
+        AdminPayload::EnsureDefaultRuleGroupsForEdit { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
+            db::camera_recording_rule_groups::ensure_default_groups(&ctx.config.db).await?;
+            let lang = ctx.lang;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_edit_groups(
+                    ctx, room, rule,
+                )
+                .await?;
+            view.notice = Some(t(lang, "admin.rule_groups.defaults_created").to_string());
+            Ok(view)
+        }
+        AdminPayload::ToggleRecordingRuleEditGroupItem { room, rule, group } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
+            let selected =
+                db::camera_recording_rule_groups::toggle_rule_in_group(rule, group, &ctx.config.db)
+                    .await?;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_edit_groups(
+                    ctx, room, rule,
+                )
+                .await?;
+            view.notice = Some(if selected {
+                "Правило добавлено в группу".to_string()
+            } else {
+                "Правило убрано из группы".to_string()
+            });
+            Ok(view)
+        }
+        AdminPayload::RecordingRuleEditSensorPage { room, rule, page } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_sensor_page(
+                ctx, room, rule, page,
+            )
+            .await?,
+        ),
+        AdminPayload::RecordingRuleEditPickSensor { room, rule, device } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_sensor_operators(
+                ctx, room, rule, device,
+            )
+            .await?,
+        ),
+        AdminPayload::RecordingRuleEditPickSensorOperator {
+            room,
+            rule,
+            device,
+            operator,
+        } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_edit_sensor_value_input(
+                ctx, room, rule, device, operator,
+            )
+            .await?,
+        ),
+        AdminPayload::PromptEditRecordingRuleNumber { room, rule, field } => Ok(
+            super::screens::admin::list_actions::render_edit_recording_rule_number_input(
+                ctx, room, rule, field,
+            )
+            .await?,
+        ),
+        AdminPayload::CycleRecordingRuleLogic { room, rule } => {
+            let Some(current_rule) =
+                db::camera_recording_rules::get_rule_for_room(rule, room, &ctx.config.db).await?
+            else {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            };
+            let next_logic = match current_rule.logic() {
+                db::camera_recording_rules::ConditionLogic::All => {
+                    db::camera_recording_rules::ConditionLogic::Any
+                }
+                db::camera_recording_rules::ConditionLogic::Any => {
+                    db::camera_recording_rules::ConditionLogic::All
+                }
+            };
+            db::camera_recording_rules::update_rule_logic(rule, next_logic, &ctx.config.db)
+                .await?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_edit_sensors(
+                    ctx, room, rule,
+                )
+                .await?,
+            )
+        },
+        AdminPayload::DeleteRecordingRuleCondition {
+            room,
+            rule,
+            condition,
+        } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
+            let result =
+                db::camera_recording_rules::delete_condition(rule, condition, &ctx.config.db)
+                    .await;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_edit_sensors(
+                    ctx, room, rule,
+                )
+                .await?;
+            match result {
+                Ok(()) => view.notice = Some("Сенсор удален из правила".to_string()),
+                Err(error) => view.alert = Some(format!("Не удалось удалить сенсор: {}", error)),
+            }
+            Ok(view)
+        }
         AdminPayload::PromptEditRecordingRule { room, rule } => Ok(
             super::screens::admin::list_actions::render_edit_recording_rule_input(ctx, room, rule)
                 .await?,
         ),
         AdminPayload::ToggleRecordingRule { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rules::toggle_rule_enabled(rule, &ctx.config.db).await?;
             Ok(super::screens::admin::list_actions::render_recording_rules(ctx, room).await?)
         }
         AdminPayload::ToggleRecordingRuleNotify { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rules::toggle_rule_notifications(rule, &ctx.config.db).await?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_detail(ctx, room, rule)
@@ -1015,6 +1544,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             )
         }
         AdminPayload::DuplicateRecordingRule { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             let new_rule_id =
                 db::camera_recording_rules::duplicate_rule(rule, &ctx.config.db).await?;
             let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
@@ -1031,6 +1563,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
                 .await?,
         ),
         AdminPayload::ToggleRecordingRuleNoise { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rules::toggle_rule_noise(rule, &ctx.config.db).await?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_detail(ctx, room, rule)
@@ -1073,6 +1608,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             )
         }
         AdminPayload::ToggleRuleGroupItem { room, rule, group } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rule_groups::toggle_rule_in_group(rule, group, &ctx.config.db)
                 .await?;
             Ok(
@@ -1100,6 +1638,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             Ok(view)
         }
         AdminPayload::ToggleRecordingRuleDetail { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rules::toggle_rule_enabled(rule, &ctx.config.db).await?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_detail(ctx, room, rule)
@@ -1116,6 +1657,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             ))
         }
         AdminPayload::DeleteRecordingRule { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
             db::camera_recording_rules::soft_delete_rule(rule, &ctx.config.db).await?;
             let mut view =
                 super::screens::admin::list_actions::render_recording_rules(ctx, room).await?;
@@ -1358,6 +1902,425 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
     }
 }
 
+async fn recording_rule_belongs_to_room(
+    ctx: &RenderContext,
+    room_id: i64,
+    rule_id: i64,
+) -> anyhow::Result<bool> {
+    Ok(
+        db::camera_recording_rules::get_rule_for_room(rule_id, room_id, &ctx.config.db)
+            .await?
+            .is_some(),
+    )
+}
+
+async fn recording_rule_room_mismatch_view(
+    ctx: RenderContext,
+    room_id: i64,
+) -> anyhow::Result<View> {
+    let mut view =
+        super::screens::admin::list_actions::render_recording_rules(ctx, room_id).await?;
+    view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
+    Ok(view)
+}
+
+async fn create_wizard_recording_rule(
+    ctx: RenderContext,
+    selection: WizardRuleSelection,
+) -> anyhow::Result<View> {
+    let Some(camera) = db::cameras::get_camera(selection.camera_id, &ctx.config.db).await? else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, selection.room_id)
+                .await?;
+        view.alert = Some("Камера не найдена".to_string());
+        return Ok(view);
+    };
+
+    if camera.room_id != Some(selection.room_id) {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, selection.room_id)
+                .await?;
+        view.alert = Some("Камера не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    }
+
+    let Some(candidate) =
+        db::devices::get_recording_wizard_candidate(selection.device_id, &ctx.config.db).await?
+    else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, selection.room_id)
+                .await?;
+        view.alert = Some("Датчик не найден или не подходит для мастера".to_string());
+        return Ok(view);
+    };
+
+    let tail_seconds = selection
+        .tail_seconds
+        .max(5)
+        .min(ctx.config.camera_recording_max_tail_seconds);
+    let max_segment_seconds = ctx.config.camera_recording_max_segment_seconds;
+    let retention_days = selection.retention_days.clamp(1, 365);
+    let conditions =
+        crate::bot::recording_rule_wizard::build_conditions(&candidate.entity_id, selection.mode)
+            .map_err(anyhow::Error::msg)?;
+
+    if let Some(existing_rule_id) = find_duplicate_wizard_rule(
+        selection.camera_id,
+        db::camera_recording_rules::ConditionLogic::Any,
+        &conditions,
+        &ctx.config.db,
+    )
+    .await?
+    {
+        let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
+            ctx,
+            selection.room_id,
+            existing_rule_id,
+        )
+        .await?;
+        view.notice = Some("Похожее правило уже существует".to_string());
+        return Ok(view);
+    }
+
+    let name = crate::bot::recording_rule_wizard::build_rule_name(
+        ctx.lang,
+        &candidate.display_name,
+        selection.mode,
+        None,
+    );
+    let condition_drafts = conditions
+        .iter()
+        .map(
+            |condition| db::camera_recording_rules::NewRecordingConditionDraft {
+                entity_id: &condition.entity_id,
+                operator: condition.operator,
+                from_state: condition.from_state.as_deref(),
+                to_state: condition.to_state.as_deref(),
+                value: condition.value.as_deref(),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let rule_id = db::camera_recording_rules::create_rule_with_conditions_and_groups(
+        db::camera_recording_rules::NewRecordingRule {
+            name: &name,
+            camera_id: selection.camera_id,
+            condition_logic: db::camera_recording_rules::ConditionLogic::Any,
+            tail_seconds: i64::from(tail_seconds),
+            max_segment_seconds: i64::from(max_segment_seconds),
+            cooldown_s: 0,
+            retention_days: i64::from(retention_days),
+        },
+        &condition_drafts,
+        &selection.group_ids,
+        &ctx.config.db,
+    )
+    .await?;
+
+    let rule_id_text = rule_id.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(ctx.user_id),
+            kind: "recording",
+            entity_type: "rule",
+            entity_id: Some(&rule_id_text),
+            action: "recording_rule_wizard_created",
+            status: "ok",
+            message: Some(&name),
+        },
+        &ctx.config.db,
+    )
+    .await;
+
+    let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
+        ctx,
+        selection.room_id,
+        rule_id,
+    )
+    .await?;
+    view.notice = Some("Правило создано".to_string());
+    Ok(view)
+}
+
+async fn cancel_current_wizard(ctx: RenderContext) -> anyhow::Result<View> {
+    let room_id = current_wizard(&ctx).map(|wizard| wizard.room_id);
+    {
+        if let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) {
+            session.recording_rule_wizard = None;
+        }
+    }
+
+    if let Some(room_id) = room_id.filter(|room_id| *room_id > 0) {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, room_id).await?;
+        view.notice = Some("Создание правила отменено".to_string());
+        Ok(view)
+    } else {
+        let mut view = super::screens::admin::list_actions::render(ctx).await?;
+        view.notice = Some("Создание правила отменено".to_string());
+        Ok(view)
+    }
+}
+
+async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Result<View> {
+    let Some(wizard) = current_wizard(&ctx) else {
+        let mut view = super::screens::admin::list_actions::render(ctx).await?;
+        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
+        return Ok(view);
+    };
+    let Some(camera_id) = wizard.camera_id else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Камера не выбрана".to_string());
+        return Ok(view);
+    };
+    let Some(source_device_id) = wizard.source_device_id else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Источник не выбран".to_string());
+        return Ok(view);
+    };
+    let Some(source_mode) = wizard.source_mode else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Событие источника не выбрано".to_string());
+        return Ok(view);
+    };
+
+    let Some(camera) = db::cameras::get_camera(camera_id, &ctx.config.db).await? else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Камера не найдена".to_string());
+        return Ok(view);
+    };
+    if camera.room_id != Some(wizard.room_id) {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Камера не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    }
+
+    let Some(source) =
+        db::devices::get_recording_wizard_candidate(source_device_id, &ctx.config.db).await?
+    else {
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
+                .await?;
+        view.alert = Some("Источник не найден или архивирован".to_string());
+        return Ok(view);
+    };
+
+    let tail_seconds = wizard
+        .tail_seconds
+        .unwrap_or(60)
+        .max(5)
+        .min(ctx.config.camera_recording_max_tail_seconds);
+    let max_segment_seconds = ctx.config.camera_recording_max_segment_seconds;
+    let retention_days = wizard.retention_days.unwrap_or(30).clamp(1, 365);
+    let conditions = crate::bot::recording_rule_wizard::build_final_conditions(
+        &source.entity_id,
+        source_mode,
+        wizard.source_value.as_deref(),
+        &wizard.extra_conditions,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    if let Some(existing_rule_id) = find_duplicate_wizard_rule(
+        camera_id,
+        wizard.condition_logic,
+        &conditions,
+        &ctx.config.db,
+    )
+    .await?
+    {
+        let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
+            ctx,
+            wizard.room_id,
+            existing_rule_id,
+        )
+        .await?;
+        view.notice = Some("Похожее правило уже существует".to_string());
+        return Ok(view);
+    }
+
+    let name = crate::bot::recording_rule_wizard::build_rule_name(
+        ctx.lang,
+        &source.display_name,
+        source_mode,
+        wizard.source_value.as_deref(),
+    );
+    let condition_drafts = conditions
+        .iter()
+        .map(
+            |condition| db::camera_recording_rules::NewRecordingConditionDraft {
+                entity_id: &condition.entity_id,
+                operator: condition.operator,
+                from_state: condition.from_state.as_deref(),
+                to_state: condition.to_state.as_deref(),
+                value: condition.value.as_deref(),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let rule_id = db::camera_recording_rules::create_rule_with_conditions_and_groups(
+        db::camera_recording_rules::NewRecordingRule {
+            name: &name,
+            camera_id,
+            condition_logic: wizard.condition_logic,
+            tail_seconds: i64::from(tail_seconds),
+            max_segment_seconds: i64::from(max_segment_seconds),
+            cooldown_s: i64::from(crate::bot::recording_rule_wizard::default_cooldown_s(
+                source_mode,
+            )),
+            retention_days: i64::from(retention_days),
+        },
+        &condition_drafts,
+        &wizard.group_ids,
+        &ctx.config.db,
+    )
+    .await?;
+
+    if let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) {
+        session.recording_rule_wizard = None;
+    }
+
+    let rule_id_text = rule_id.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(ctx.user_id),
+            kind: "recording",
+            entity_type: "rule",
+            entity_id: Some(&rule_id_text),
+            action: "recording_rule_wizard_created",
+            status: "ok",
+            message: Some(&name),
+        },
+        &ctx.config.db,
+    )
+    .await;
+
+    let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
+        ctx,
+        wizard.room_id,
+        rule_id,
+    )
+    .await?;
+    view.notice = Some("Правило создано".to_string());
+    Ok(view)
+}
+
+async fn find_duplicate_wizard_rule(
+    camera_id: i64,
+    logic: db::camera_recording_rules::ConditionLogic,
+    conditions: &[crate::bot::recording_rule_wizard::WizardCondition],
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Option<i64>> {
+    let expected = wizard_condition_keys(conditions);
+    for rule in db::camera_recording_rules::list_rules(pool).await? {
+        if rule.camera_id != camera_id || rule.logic() != logic || !rule.is_enabled() {
+            continue;
+        }
+
+        let existing_conditions =
+            db::camera_recording_rules::list_conditions(rule.id, pool).await?;
+        if recording_condition_keys(&existing_conditions) == expected {
+            return Ok(Some(rule.id));
+        }
+    }
+
+    Ok(None)
+}
+
+fn current_wizard(
+    ctx: &RenderContext,
+) -> Option<crate::bot::recording_rule_wizard::RecordingRuleWizard> {
+    ctx.config
+        .sessions
+        .get(&ctx.user_id)
+        .and_then(|session| session.recording_rule_wizard.clone())
+}
+
+fn update_current_wizard<F>(ctx: &RenderContext, update: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut crate::bot::recording_rule_wizard::RecordingRuleWizard),
+{
+    let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) else {
+        return Err(anyhow::anyhow!("User session not found"));
+    };
+    let Some(wizard) = session.recording_rule_wizard.as_mut() else {
+        return Err(anyhow::anyhow!("Recording rule wizard session not found"));
+    };
+    update(wizard);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_wizard_compat_selection(
+    ctx: &RenderContext,
+    room: i64,
+    camera: i64,
+    device: i64,
+    mode: WizardTriggerMode,
+    tail: u32,
+    retention: u32,
+    group: Option<i64>,
+) -> anyhow::Result<()> {
+    update_current_wizard(ctx, |wizard| {
+        wizard.room_id = room;
+        wizard.camera_id = Some(camera);
+        wizard.source_device_id = Some(device);
+        wizard.source_mode = Some(mode);
+        wizard.tail_seconds = Some(tail);
+        wizard.retention_days = Some(retention);
+        wizard.group_ids = group.into_iter().collect();
+    })
+}
+
+fn wizard_condition_keys(
+    conditions: &[crate::bot::recording_rule_wizard::WizardCondition],
+) -> Vec<String> {
+    let mut keys = conditions
+        .iter()
+        .map(|condition| {
+            format!(
+                "{}|{}|{}|{}|{}",
+                condition.entity_id,
+                condition.operator.as_str(),
+                condition.from_state.as_deref().unwrap_or(""),
+                condition.to_state.as_deref().unwrap_or(""),
+                condition.value.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn recording_condition_keys(
+    conditions: &[db::camera_recording_rules::RecordingRuleCondition],
+) -> Vec<String> {
+    let mut keys = conditions
+        .iter()
+        .map(|condition| {
+            format!(
+                "{}|{}|{}|{}|{}",
+                condition.entity_id,
+                condition.operator,
+                condition.from_state.as_deref().unwrap_or(""),
+                condition.to_state.as_deref().unwrap_or(""),
+                condition.value.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1397,6 +2360,53 @@ mod tests {
             Payload::Admin(AdminPayload::PromptEditRecordingRule {
                 room: 1_000_000,
                 rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditMenu {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditSensors {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditGroups {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::ToggleRecordingRuleEditGroupItem {
+                room: 1_000_000,
+                rule: 2_000_000,
+                group: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::PromptEditRecordingRuleNumber {
+                room: 1_000_000,
+                rule: 2_000_000,
+                field: RecordingRuleEditField::TailSeconds,
+            }),
+            Payload::Admin(AdminPayload::CycleRecordingRuleLogic {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditSensorPage {
+                room: 1_000_000,
+                rule: 2_000_000,
+                page: 12,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditPickSensor {
+                room: 1_000_000,
+                rule: 2_000_000,
+                device: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::RecordingRuleEditPickSensorOperator {
+                room: 1_000_000,
+                rule: 2_000_000,
+                device: 3_000_000,
+                operator: db::camera_recording_rules::ConditionOperator::Above,
+            }),
+            Payload::Admin(AdminPayload::DeleteRecordingRuleCondition {
+                room: 1_000_000,
+                rule: 2_000_000,
+                condition: 4_000_000,
             }),
             Payload::Admin(AdminPayload::ToggleRecordingRuleNotify {
                 room: 1_000_000,
@@ -1445,6 +2455,38 @@ mod tests {
             Payload::Admin(AdminPayload::CycleUserVoiceEngine { id: 9_999_999_999 }),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroups),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForRoom { room: 1_000_000 }),
+            Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForWizard),
+            Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForEdit {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: 1_000_000 }),
+            Payload::Admin(AdminPayload::WizardPickCamera {
+                room: 1_000_000,
+                camera: 2_000_000,
+            }),
+            Payload::Admin(AdminPayload::WizardPickEntity {
+                room: 1_000_000,
+                camera: 2_000_000,
+                device: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::WizardPickMode {
+                room: 1_000_000,
+                camera: 2_000_000,
+                device: 3_000_000,
+                mode: WizardTriggerMode::OpenAndClose,
+            }),
+            Payload::Admin(AdminPayload::WizardCreateRule {
+                room: 1_000_000,
+                camera: 2_000_000,
+                device: 3_000_000,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 300,
+                retention: 90,
+                group: Some(4_000_000),
+            }),
+            Payload::Admin(AdminPayload::WizardGroups),
+            Payload::Admin(AdminPayload::WizardCancel),
         ];
 
         for original in payloads {
