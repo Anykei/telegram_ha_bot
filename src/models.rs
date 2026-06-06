@@ -13,6 +13,7 @@ pub struct UserSession {
     pub last_menu_id: i32,
     pub current_context: String,
     pub header_entities: HashSet<String>,
+    pub recording_rule_wizard: Option<crate::bot::recording_rule_wizard::RecordingRuleWizard>,
     pub last_ui_refresh_at: Option<DateTime<Utc>>,
     pub ui_refresh_blocked_until: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,

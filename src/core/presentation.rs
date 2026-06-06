@@ -134,15 +134,25 @@ impl StateFormatter {
 
     /// Переводит техническое состояние Home Assistant на человеческий русский язык.
     pub fn translate_state(state: &str) -> &str {
-        match state {
-            "on" => "ВКЛ",
-            "off" => "ВЫКЛ",
-            "unavailable" => "Н/Д",
-            "home" => "Дома",
-            "not_home" => "Ушел",
-            "locked" => "Закрыто",
-            "unlocked" => "Открыто",
-            _ => state, // Возвращаем как есть, если нет перевода
+        Self::translate_state_for("", "", state)
+    }
+
+    pub fn translate_state_for<'a>(domain: &str, class: &str, state: &'a str) -> &'a str {
+        match (domain, class, state) {
+            ("binary_sensor", "door" | "window" | "opening" | "garage_door", "on") => "Открыто",
+            ("binary_sensor", "door" | "window" | "opening" | "garage_door", "off") => "Закрыто",
+            ("binary_sensor", "motion" | "occupancy" | "presence", "on") => "Обнаружено",
+            ("binary_sensor", "motion" | "occupancy" | "presence", "off") => "Нет",
+            ("binary_sensor", _, "on") => "Активно",
+            ("binary_sensor", _, "off") => "Неактивно",
+            (_, _, "on") => "ВКЛ",
+            (_, _, "off") => "ВЫКЛ",
+            (_, _, "unavailable") => "Н/Д",
+            (_, _, "home") => "Дома",
+            (_, _, "not_home") => "Ушел",
+            (_, _, "locked") => "Закрыто",
+            (_, _, "unlocked") => "Открыто",
+            _ => state,
         }
     }
 
@@ -171,7 +181,7 @@ impl StateFormatter {
             };
         }
 
-        Self::translate_state(state).to_string()
+        Self::translate_state_for(domain, class, state).to_string()
     }
 
     pub fn get_room_icon(name: &str) -> &'static str {
@@ -220,5 +230,34 @@ impl StateFormatter {
         } else {
             Self::format_ru_day_month_time(local_dt)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StateFormatter;
+
+    #[test]
+    fn binary_door_states_are_human_readable() {
+        assert_eq!(
+            StateFormatter::format_state_value("binary_sensor", "door", "on"),
+            "Открыто"
+        );
+        assert_eq!(
+            StateFormatter::format_state_value("binary_sensor", "door", "off"),
+            "Закрыто"
+        );
+    }
+
+    #[test]
+    fn switch_states_keep_generic_labels() {
+        assert_eq!(
+            StateFormatter::format_state_value("switch", "", "on"),
+            "ВКЛ"
+        );
+        assert_eq!(
+            StateFormatter::format_state_value("switch", "", "off"),
+            "ВЫКЛ"
+        );
     }
 }

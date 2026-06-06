@@ -127,33 +127,62 @@ async fn matches_rule(
     conditions: &[RecordingRuleCondition],
     logic: ConditionLogic,
 ) -> Result<bool> {
-    let event_matches = conditions
-        .iter()
-        .any(|condition| condition_matches_event(condition, event));
-
-    if !event_matches {
+    if !event_matches_rule(conditions, event) {
         return Ok(false);
     }
 
+    let context_states = if matches!(logic, ConditionLogic::All) {
+        fetch_context_states(config, event, conditions).await?
+    } else {
+        HashMap::new()
+    };
+
+    Ok(matches_rule_with_context(
+        event,
+        conditions,
+        logic,
+        &context_states,
+    ))
+}
+
+fn event_matches_rule(conditions: &[RecordingRuleCondition], event: &NotifyEvent) -> bool {
+    let has_event_conditions = conditions
+        .iter()
+        .any(|condition| condition.operator().is_event_operator());
+
+    conditions.iter().any(|condition| {
+        if has_event_conditions && !condition.operator().is_event_operator() {
+            return false;
+        }
+
+        condition_matches_event(condition, event)
+    })
+}
+
+fn matches_rule_with_context(
+    event: &NotifyEvent,
+    conditions: &[RecordingRuleCondition],
+    logic: ConditionLogic,
+    context_states: &HashMap<String, String>,
+) -> bool {
     match logic {
-        ConditionLogic::Any => Ok(true),
+        ConditionLogic::Any => true,
         ConditionLogic::All => {
-            let context_states = fetch_context_states(config, event, conditions).await?;
             for condition in conditions {
                 if condition.entity_id == event.entity_id {
                     if !condition_matches_event_or_current(condition, event, &event.new_state) {
-                        return Ok(false);
+                        return false;
                     }
                 } else {
                     let Some(state) = context_states.get(&condition.entity_id) else {
-                        return Ok(false);
+                        return false;
                     };
                     if !condition_matches_current(condition, state) {
-                        return Ok(false);
+                        return false;
                     }
                 }
             }
-            Ok(true)
+            true
         }
     }
 }
@@ -221,10 +250,10 @@ fn condition_matches_current(condition: &RecordingRuleCondition, current_state: 
         .unwrap_or("");
 
     match condition.operator() {
-        ConditionOperator::ChangedTo => optional_eq(condition.to_state.as_deref(), current_state),
-        ConditionOperator::ChangedFromTo => {
-            optional_eq(condition.to_state.as_deref(), current_state)
-        }
+        ConditionOperator::ChangedTo | ConditionOperator::ChangedFromTo => condition
+            .to_state
+            .as_deref()
+            .is_some_and(|expected| expected == current_state),
         ConditionOperator::Is => current_state == expected,
         ConditionOperator::IsNot => current_state != expected,
         ConditionOperator::Contains => current_state.contains(expected),
@@ -264,10 +293,20 @@ mod tests {
         to: Option<&str>,
         value: Option<&str>,
     ) -> RecordingRuleCondition {
+        condition_for("binary_sensor.door", operator, from, to, value)
+    }
+
+    fn condition_for(
+        entity_id: &str,
+        operator: ConditionOperator,
+        from: Option<&str>,
+        to: Option<&str>,
+        value: Option<&str>,
+    ) -> RecordingRuleCondition {
         RecordingRuleCondition {
             id: 1,
             rule_id: 1,
-            entity_id: "binary_sensor.door".to_string(),
+            entity_id: entity_id.to_string(),
             operator: operator.as_str().to_string(),
             from_state: from.map(str::to_string),
             to_state: to.map(str::to_string),
@@ -276,8 +315,12 @@ mod tests {
     }
 
     fn event(old_state: &str, new_state: &str) -> NotifyEvent {
+        event_for("binary_sensor.door", old_state, new_state)
+    }
+
+    fn event_for(entity_id: &str, old_state: &str, new_state: &str) -> NotifyEvent {
         NotifyEvent {
-            entity_id: "binary_sensor.door".to_string(),
+            entity_id: entity_id.to_string(),
             old_state: old_state.to_string(),
             new_state: new_state.to_string(),
             friendly_name: "Door".to_string(),
@@ -309,5 +352,61 @@ mod tests {
         assert!(condition_matches_current(&above, "29.5"));
         assert!(condition_matches_current(&below, "19"));
         assert!(!condition_matches_current(&above, "unknown"));
+    }
+
+    #[test]
+    fn state_context_condition_does_not_trigger_rule_with_event_source() {
+        let conditions = vec![
+            condition_for(
+                "binary_sensor.door",
+                ConditionOperator::ChangedTo,
+                None,
+                None,
+                None,
+            ),
+            condition_for(
+                "binary_sensor.alarm",
+                ConditionOperator::Is,
+                None,
+                None,
+                Some("on"),
+            ),
+        ];
+        let context_states = HashMap::from([("binary_sensor.door".to_string(), "off".to_string())]);
+
+        assert!(!matches_rule_with_context(
+            &event_for("binary_sensor.alarm", "off", "on"),
+            &conditions,
+            ConditionLogic::All,
+            &context_states,
+        ));
+    }
+
+    #[test]
+    fn event_source_triggers_when_state_context_matches() {
+        let conditions = vec![
+            condition_for(
+                "binary_sensor.door",
+                ConditionOperator::ChangedTo,
+                None,
+                None,
+                None,
+            ),
+            condition_for(
+                "binary_sensor.alarm",
+                ConditionOperator::Is,
+                None,
+                None,
+                Some("on"),
+            ),
+        ];
+        let context_states = HashMap::from([("binary_sensor.alarm".to_string(), "on".to_string())]);
+
+        assert!(matches_rule_with_context(
+            &event_for("binary_sensor.door", "off", "on"),
+            &conditions,
+            ConditionLogic::All,
+            &context_states,
+        ));
     }
 }

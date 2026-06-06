@@ -161,39 +161,54 @@ pub async fn save_user_session(
     pool: &SqlitePool,
 ) {
     let ctx = context.to_string();
-    let pool_local = pool.clone();
     let uid = user_id as i64;
     let last_seen_at = last_seen_at.to_rfc3339();
 
-    tokio::spawn(async move {
-        let res = sqlx::query(
-            r#"
-            INSERT INTO users (id, last_menu_id, current_context, last_seen_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                last_menu_id = excluded.last_menu_id,
-                current_context = excluded.current_context,
-                last_seen_at = excluded.last_seen_at
-            "#,
-        )
-        .bind(uid)
-        .bind(msg_id)
-        .bind(ctx)
-        .bind(last_seen_at)
-        .execute(&pool_local)
-        .await;
+    if pool.is_closed() {
+        log::debug!(
+            "Skip saving session for user {}: database pool is closed",
+            uid
+        );
+        return;
+    }
 
-        match res {
-            Ok(result) => {
-                if result.rows_affected() == 0 {
-                    log::warn!("Session for user {} was not changed", uid);
-                } else {
-                    log::debug!("Session for user {} saved to disk", uid);
-                }
+    let res = sqlx::query(
+        r#"
+        INSERT INTO users (id, last_menu_id, current_context, last_seen_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            last_menu_id = excluded.last_menu_id,
+            current_context = excluded.current_context,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(uid)
+    .bind(msg_id)
+    .bind(ctx)
+    .bind(last_seen_at)
+    .execute(pool)
+    .await;
+
+    match res {
+        Ok(result) => {
+            if result.rows_affected() == 0 {
+                log::warn!("Session for user {} was not changed", uid);
+            } else {
+                log::debug!("Session for user {} saved to disk", uid);
             }
-            Err(e) => log::error!("Critical error saving session to disk: {}", e),
         }
-    });
+        Err(e) => {
+            if pool.is_closed() {
+                log::debug!(
+                    "Skip saving session for user {} during database shutdown: {}",
+                    uid,
+                    e
+                );
+            } else {
+                log::error!("Critical error saving session to disk: {}", e);
+            }
+        }
+    }
 }
 
 pub async fn clear_user_session(user_id: u64, pool: &SqlitePool) -> Result<()> {

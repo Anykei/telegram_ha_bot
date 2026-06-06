@@ -2,6 +2,18 @@ use crate::core::types::Device;
 use sqlx::Row;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
+pub struct RecordingTriggerCandidate {
+    pub device_id: i64,
+    pub entity_id: String,
+    pub display_name: String,
+    pub device_domain: String,
+    pub device_class: String,
+    pub room_id: i64,
+    pub room_name: String,
+}
+
 /// Synchronizes a device with the database.
 ///
 /// This function inserts or updates a device record in the database based on
@@ -239,6 +251,151 @@ pub async fn get_all_display_names(
     Ok(mapping)
 }
 
+#[allow(dead_code)]
+pub async fn list_room_recording_trigger_candidates(
+    room_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Vec<RecordingTriggerCandidate>> {
+    let rows = sqlx::query_as::<_, RecordingTriggerCandidate>(
+        r#"
+        SELECT id AS device_id,
+               entity_id,
+               COALESCE(NULLIF(TRIM(alias), ''), NULLIF(TRIM(ha_name), ''), entity_id) AS display_name,
+               COALESCE(
+                   NULLIF(TRIM(device_domain), ''),
+                   CASE
+                       WHEN instr(entity_id, '.') > 0
+                       THEN substr(entity_id, 1, instr(entity_id, '.') - 1)
+                       ELSE ''
+                   END
+               ) AS device_domain,
+               COALESCE(NULLIF(TRIM(device_class), ''), '') AS device_class,
+               room_id,
+               '' AS room_name
+        FROM devices
+        WHERE room_id = ?
+          AND COALESCE(archived, 0) = 0
+          AND COALESCE(
+              NULLIF(TRIM(device_domain), ''),
+              CASE
+                  WHEN instr(entity_id, '.') > 0
+                  THEN substr(entity_id, 1, instr(entity_id, '.') - 1)
+                  ELSE ''
+              END
+          ) = 'binary_sensor'
+          AND COALESCE(NULLIF(TRIM(device_class), ''), '') IN (
+              'door',
+              'window',
+              'opening',
+              'garage_door'
+          )
+        ORDER BY display_name, entity_id
+        "#,
+    )
+    .bind(room_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn list_recording_wizard_candidates(
+    current_room_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Vec<RecordingTriggerCandidate>> {
+    let rows = sqlx::query_as::<_, RecordingTriggerCandidate>(
+        r#"
+        SELECT d.id AS device_id,
+               d.entity_id,
+               COALESCE(NULLIF(TRIM(d.alias), ''), NULLIF(TRIM(d.ha_name), ''), d.entity_id) AS display_name,
+               COALESCE(
+                   NULLIF(TRIM(d.device_domain), ''),
+                   CASE
+                       WHEN instr(d.entity_id, '.') > 0
+                       THEN substr(d.entity_id, 1, instr(d.entity_id, '.') - 1)
+                       ELSE ''
+                   END
+               ) AS device_domain,
+               COALESCE(NULLIF(TRIM(d.device_class), ''), '') AS device_class,
+               d.room_id,
+               COALESCE(NULLIF(TRIM(r.alias), ''), NULLIF(TRIM(r.area), ''), 'Без комнаты') AS room_name
+        FROM devices d
+        LEFT JOIN rooms r ON r.id = d.room_id
+        WHERE COALESCE(d.archived, 0) = 0
+          AND COALESCE(d.entity_id, '') != ''
+          AND COALESCE(
+              NULLIF(TRIM(d.device_domain), ''),
+              CASE
+                  WHEN instr(d.entity_id, '.') > 0
+                  THEN substr(d.entity_id, 1, instr(d.entity_id, '.') - 1)
+                  ELSE ''
+              END
+          ) IN ('binary_sensor', 'sensor', 'number', 'switch', 'light')
+        ORDER BY
+          CASE WHEN d.room_id = ? THEN 0 ELSE 1 END,
+          room_name COLLATE NOCASE,
+          CASE
+            WHEN device_domain = 'binary_sensor'
+             AND device_class IN ('door', 'window', 'opening', 'garage_door') THEN 0
+            WHEN device_domain = 'binary_sensor'
+             AND device_class IN ('motion', 'occupancy', 'presence') THEN 1
+            WHEN device_domain IN ('sensor', 'number') THEN 2
+            WHEN device_domain IN ('switch', 'light') THEN 3
+            ELSE 4
+          END,
+          display_name COLLATE NOCASE,
+          d.entity_id COLLATE NOCASE
+        "#,
+    )
+    .bind(current_room_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_recording_wizard_candidate(
+    device_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Option<RecordingTriggerCandidate>> {
+    let row = sqlx::query_as::<_, RecordingTriggerCandidate>(
+        r#"
+        SELECT d.id AS device_id,
+               d.entity_id,
+               COALESCE(NULLIF(TRIM(d.alias), ''), NULLIF(TRIM(d.ha_name), ''), d.entity_id) AS display_name,
+               COALESCE(
+                   NULLIF(TRIM(d.device_domain), ''),
+                   CASE
+                       WHEN instr(d.entity_id, '.') > 0
+                       THEN substr(d.entity_id, 1, instr(d.entity_id, '.') - 1)
+                       ELSE ''
+                   END
+               ) AS device_domain,
+               COALESCE(NULLIF(TRIM(d.device_class), ''), '') AS device_class,
+               d.room_id,
+               COALESCE(NULLIF(TRIM(r.alias), ''), NULLIF(TRIM(r.area), ''), 'Без комнаты') AS room_name
+        FROM devices d
+        LEFT JOIN rooms r ON r.id = d.room_id
+        WHERE d.id = ?
+          AND COALESCE(d.archived, 0) = 0
+          AND COALESCE(d.entity_id, '') != ''
+          AND COALESCE(
+              NULLIF(TRIM(d.device_domain), ''),
+              CASE
+                  WHEN instr(d.entity_id, '.') > 0
+                  THEN substr(d.entity_id, 1, instr(d.entity_id, '.') - 1)
+                  ELSE ''
+              END
+          ) IN ('binary_sensor', 'sensor', 'number', 'switch', 'light')
+        "#,
+    )
+    .bind(device_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
 /// Archives devices that no longer exist in Home Assistant.
 ///
 /// This function should be called after a full sync to mark devices
@@ -425,11 +582,27 @@ mod tests {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await?;
         sqlx::query(
             r#"
+            CREATE TABLE rooms (
+                id INTEGER PRIMARY KEY,
+                area TEXT,
+                alias TEXT,
+                hide INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE devices (
                 id INTEGER PRIMARY KEY,
                 room_id INTEGER NOT NULL,
                 entity_id TEXT NOT NULL UNIQUE,
                 alias TEXT,
+                ha_name TEXT,
+                device_class TEXT,
+                device_domain TEXT,
                 archived INTEGER NOT NULL DEFAULT 0
             )
             "#,
@@ -459,6 +632,125 @@ mod tests {
 
         assert_eq!(lights.len(), 1);
         assert_eq!(lights[0].entity_id, "light.hall");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recording_trigger_candidates_return_room_door_sensors() -> anyhow::Result<()> {
+        let pool = test_pool().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO devices (
+                id, room_id, entity_id, alias, ha_name, device_class, device_domain, archived
+            )
+            VALUES
+                (1, 4, 'binary_sensor.zamok_contact', 'Замок Дверь', 'Door', 'door', 'binary_sensor', 0),
+                (2, 4, 'binary_sensor.motion', 'Motion', 'Motion', 'motion', 'binary_sensor', 0),
+                (3, 4, 'light.hall', 'Hall', 'Hall', '', 'light', 0),
+                (4, 5, 'binary_sensor.window', 'Window', 'Window', 'window', 'binary_sensor', 0),
+                (5, 4, 'binary_sensor.old_door', 'Old Door', 'Old Door', 'door', 'binary_sensor', 1)
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        let candidates = list_room_recording_trigger_candidates(4, &pool).await?;
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].device_id, 1);
+        assert_eq!(candidates[0].entity_id, "binary_sensor.zamok_contact");
+        assert_eq!(candidates[0].display_name, "Замок Дверь");
+        assert_eq!(candidates[0].device_domain, "binary_sensor");
+        assert_eq!(candidates[0].device_class, "door");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recording_wizard_candidates_include_supported_devices_from_all_rooms(
+    ) -> anyhow::Result<()> {
+        let pool = test_pool().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO rooms (id, area, alias)
+            VALUES (4, 'hall', 'Прихожая'), (5, 'kitchen', 'Кухня')
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO devices (
+                id, room_id, entity_id, alias, ha_name, device_class, device_domain, archived
+            )
+            VALUES
+                (1, 5, 'sensor.kitchen_temperature', 'Температура кухня', 'Temp', 'temperature', 'sensor', 0),
+                (2, 4, 'binary_sensor.zamok_contact', 'Замок Дверь', 'Door', 'door', 'binary_sensor', 0),
+                (3, 5, 'number.heater_target', 'Целевая температура', 'Target', '', 'number', 0),
+                (4, 4, 'button.skip', 'Skip', 'Skip', '', 'button', 0),
+                (5, 5, 'sensor.old', 'Old', 'Old', 'temperature', 'sensor', 1)
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        let candidates = list_recording_wizard_candidates(4, &pool).await?;
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.entity_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "binary_sensor.zamok_contact",
+                "sensor.kitchen_temperature",
+                "number.heater_target"
+            ]
+        );
+        assert_eq!(candidates[0].room_id, 4);
+        assert_eq!(candidates[0].room_name, "Прихожая");
+        assert_eq!(candidates[1].room_name, "Кухня");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recording_wizard_candidate_rejects_unsupported_device_domain() -> anyhow::Result<()> {
+        let pool = test_pool().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO rooms (id, area, alias)
+            VALUES (4, 'hall', 'Прихожая')
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO devices (
+                id, room_id, entity_id, alias, ha_name, device_class, device_domain, archived
+            )
+            VALUES
+                (1, 4, 'button.skip', 'Skip', 'Skip', '', 'button', 0),
+                (2, 4, 'binary_sensor.zamok_contact', 'Замок Дверь', 'Door', 'door', 'binary_sensor', 0)
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        let unsupported = get_recording_wizard_candidate(1, &pool).await?;
+        let supported = get_recording_wizard_candidate(2, &pool).await?;
+
+        assert!(unsupported.is_none());
+        assert_eq!(
+            supported
+                .as_ref()
+                .map(|candidate| candidate.entity_id.as_str()),
+            Some("binary_sensor.zamok_contact")
+        );
 
         Ok(())
     }
