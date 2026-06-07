@@ -3,17 +3,18 @@ use crate::bot::recording_rule_wizard::{
     self, RecordingRuleWizard, WizardPendingCondition, WizardTriggerMode,
 };
 use crate::bot::router::{
-    ActivityLogFilter, AdminPayload, Payload, RecordingRuleEditField, RenderContext,
-    SettingsPayload, State,
+    ActivityLogFilter, AdminPayload, Payload, RecordingRuleActiveTimePreset,
+    RecordingRuleEditField, RecordingRuleGroupRulesFilter, RenderContext, SettingsPayload, State,
 };
 use crate::db::camera_recording_rule_groups::RecordingRuleGroup;
 use crate::db::camera_recording_rules::{ConditionLogic, ConditionOperator};
 use crate::i18n::t;
+use crate::models::{UiMessageMode, UserSession};
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, Utc};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 pub async fn render(ctx: RenderContext) -> Result<View> {
@@ -529,11 +530,16 @@ pub async fn render_recording_rule_detail(
         &ctx.config.db,
     )
     .await?;
-    let status = if rule.is_enabled() {
-        "включено"
-    } else {
+    let pause_reason = recording_rule_pause_reason(&rule, &groups, &rule_group_ids);
+    let status = if pause_reason.is_some() {
         "на паузе"
+    } else {
+        "включено"
     };
+    let pause_reason_text = pause_reason
+        .as_deref()
+        .map(|reason| format!("\nПричина паузы: {}", reason))
+        .unwrap_or_default();
     let toggle_label = if rule.is_enabled() {
         "⏸ Пауза"
     } else {
@@ -553,6 +559,7 @@ pub async fn render_recording_rule_detail(
         "выключен"
     };
     let groups_text = selected_group_names_text(&groups, &rule_group_ids);
+    let active_time_text = format_rule_active_time(&rule);
     let short_segment_warning = if rule.max_segment_seconds < 60 {
         "\n\n⚠️ Длина файла меньше 60с. Для теста нормально, но в рабочем режиме будет много мелких файлов."
     } else {
@@ -638,10 +645,11 @@ pub async fn render_recording_rule_detail(
     ]);
 
     let text = format!(
-        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}\nУведомления: {}\nШумодав: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
+        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}{}\nУведомления: {}\nШумодав: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
         rule.id,
         rule.name,
         status,
+        pause_reason_text,
         notify_text,
         noise_text,
         room.display_name(),
@@ -649,6 +657,7 @@ pub async fn render_recording_rule_detail(
         camera.id,
         condition_logic_label(rule.logic()),
         conditions.len(),
+        active_time_text,
         rule.tail_seconds,
         rule.max_segment_seconds,
         rule.cooldown_s,
@@ -713,6 +722,14 @@ pub async fn render_recording_rule_edit_menu(
         vec![InlineKeyboardButton::callback(
             group_button_label,
             Payload::Admin(AdminPayload::RecordingRuleEditGroups {
+                room: room_id,
+                rule: rule.id,
+            })
+            .to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            format!("🕒 Активно: {}", format_rule_active_time(&rule)),
+            Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
                 room: room_id,
                 rule: rule.id,
             })
@@ -807,17 +824,24 @@ pub async fn render_recording_rule_edit_groups(
         crate::db::camera_recording_rule_groups::list_rule_group_ids(rule.id, &ctx.config.db)
             .await?;
 
-    let mut rows = Vec::new();
-    if groups.is_empty() {
-        rows.push(vec![InlineKeyboardButton::callback(
+    let mut rows = vec![vec![
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.create_custom"),
+            Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroupForEdit {
+                room: room_id,
+                rule: rule.id,
+            })
+            .to_string(),
+        ),
+        InlineKeyboardButton::callback(
             t(ctx.lang, "admin.rule_groups.create_defaults"),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForEdit {
                 room: room_id,
                 rule: rule.id,
             })
             .to_string(),
-        )]);
-    }
+        ),
+    ]];
     for group in &groups {
         let checked = if rule_group_ids.contains(&group.id) {
             "☑"
@@ -855,12 +879,12 @@ pub async fn render_recording_rule_edit_groups(
     let selected_text = selected_group_names_text(&groups, &rule_group_ids);
     let text = if groups.is_empty() {
         format!(
-            "Группы правила\n\nПравило: {}\n\nГруппы еще не созданы. Можно создать базовые группы или вернуться к изменению правила.",
+            "Группы правила\n\nПравило: {}\n\nГруппы еще не созданы. Создайте свою группу, создайте базовые группы или вернитесь к изменению правила.",
             rule.name
         )
     } else {
         format!(
-            "Группы правила\n\nПравило: {}\nВыбрано: {}\n\nОтметьте нужные группы галочкой. Можно ничего не выбирать.",
+            "Группы правила\n\nПравило: {}\nВыбрано: {}\n\nПравило работает, когда включены все выбранные группы. Отметьте нужные группы галочкой. Можно ничего не выбирать.",
             rule.name, selected_text
         )
     };
@@ -1238,6 +1262,199 @@ pub async fn render_edit_recording_rule_number_input(
             room_id,
             rule_id,
             field,
+        }),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_rule_active_time(
+    ctx: RenderContext,
+    room_id: i64,
+    rule_id: i64,
+) -> Result<View> {
+    let Some(rule) = recording_rule_for_room(&ctx, room_id, rule_id).await? else {
+        let mut view = render_recording_rules(ctx, room_id).await?;
+        view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    };
+
+    let rows = vec![
+        vec![InlineKeyboardButton::callback(
+            "Всегда",
+            Payload::Admin(AdminPayload::SetRecordingRuleActiveTimePreset {
+                room: room_id,
+                rule: rule_id,
+                preset: RecordingRuleActiveTimePreset::Always,
+            })
+            .to_string(),
+        )],
+        vec![
+            InlineKeyboardButton::callback(
+                "Ночь 22:00-07:00",
+                Payload::Admin(AdminPayload::SetRecordingRuleActiveTimePreset {
+                    room: room_id,
+                    rule: rule_id,
+                    preset: RecordingRuleActiveTimePreset::Night,
+                })
+                .to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                "День 08:00-20:00",
+                Payload::Admin(AdminPayload::SetRecordingRuleActiveTimePreset {
+                    room: room_id,
+                    rule: rule_id,
+                    preset: RecordingRuleActiveTimePreset::Day,
+                })
+                .to_string(),
+            ),
+        ],
+        vec![InlineKeyboardButton::callback(
+            "Свое время",
+            Payload::Admin(AdminPayload::PromptRecordingRuleActiveTimeCustom {
+                room: room_id,
+                rule: rule_id,
+            })
+            .to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            "Дни недели",
+            Payload::Admin(AdminPayload::RecordingRuleActiveDays {
+                room: room_id,
+                rule: rule_id,
+            })
+            .to_string(),
+        )],
+        vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            Payload::Admin(AdminPayload::RecordingRuleEditMenu {
+                room: room_id,
+                rule: rule_id,
+            }),
+        )],
+    ];
+
+    Ok(View {
+        header: Some("🕒 Время активности".to_string()),
+        notifications: ctx.notifications,
+        text: format!(
+            "Время активности\n\nПравило: {}\nСейчас: {}\nВремя сервера: {}\n\nВыберите, когда правило может запускать запись.",
+            rule.name,
+            format_rule_active_time(&rule),
+            server_timezone_label()
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
+            room: room_id,
+            rule: rule_id,
+        }),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_rule_active_time_custom_input(
+    ctx: RenderContext,
+    room_id: i64,
+    rule_id: i64,
+) -> Result<View> {
+    let Some(rule) = recording_rule_for_room(&ctx, room_id, rule_id).await? else {
+        let mut view = render_recording_rules(ctx, room_id).await?;
+        view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    };
+
+    Ok(render_user_input(
+        ctx,
+        State::EditRecordingRuleActiveTime { room_id, rule_id },
+        "Свое время",
+        &format!(
+            "Правило: {}\nТекущее значение: {}\n\nВведите время в формате HH:MM-HH:MM.\nНапример: 22:00-07:00",
+            rule.name,
+            format_rule_active_time(&rule)
+        ),
+        Payload::Admin(AdminPayload::PromptRecordingRuleActiveTimeCustom {
+            room: room_id,
+            rule: rule_id,
+        }),
+        Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
+            room: room_id,
+            rule: rule_id,
+        }),
+    ))
+}
+
+pub async fn render_recording_rule_active_days(
+    ctx: RenderContext,
+    room_id: i64,
+    rule_id: i64,
+) -> Result<View> {
+    let Some(rule) = recording_rule_for_room(&ctx, room_id, rule_id).await? else {
+        let mut view = render_recording_rules(ctx, room_id).await?;
+        view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    };
+    let active_time = rule.active_time();
+    if !active_time.enabled || !crate::db::camera_recording_rules::active_time_is_valid(active_time)
+    {
+        let mut view = render_recording_rule_active_time(ctx, room_id, rule_id).await?;
+        view.alert = Some("Сначала выберите корректное окно времени.".to_string());
+        return Ok(view);
+    }
+
+    let names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    let mask = active_time.days_mask;
+    let mut rows = Vec::new();
+    for chunk in [0_usize..3, 3..5, 5..7] {
+        rows.push(
+            chunk
+                .map(|index| {
+                    let checked = if mask & (1_i64 << index) != 0 {
+                        "☑"
+                    } else {
+                        "☐"
+                    };
+                    InlineKeyboardButton::callback(
+                        format!("{} {}", checked, names[index]),
+                        Payload::Admin(AdminPayload::ToggleRecordingRuleActiveDay {
+                            room: room_id,
+                            rule: rule_id,
+                            day: index as u8,
+                        })
+                        .to_string(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    rows.push(vec![InlineKeyboardButton::callback(
+        "Готово",
+        Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
+            room: room_id,
+            rule: rule_id,
+        })
+        .to_string(),
+    )]);
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
+            room: room_id,
+            rule: rule_id,
+        }),
+    )]);
+
+    Ok(View {
+        header: Some("🗓 Дни активности".to_string()),
+        notifications: ctx.notifications,
+        text: format!(
+            "Дни активности\n\nПравило: {}\nОкно: {}\nДни: {}\nВремя сервера: {}",
+            rule.name,
+            format_rule_active_time(&rule),
+            format_active_days_mask(mask),
+            server_timezone_label()
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Admin(AdminPayload::RecordingRuleActiveDays {
+            room: room_id,
+            rule: rule_id,
         }),
         ..Default::default()
     })
@@ -1862,12 +2079,16 @@ pub async fn render_recording_rule_wizard_condition_operators(
         return Ok(view);
     };
 
-    update_wizard(&ctx, |wizard| {
+    if !update_wizard(&ctx, |wizard| {
         wizard.pending_condition = Some(WizardPendingCondition {
             device_id,
             operator: None,
         });
-    })?;
+    })? {
+        let mut view = render(ctx).await?;
+        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
+        return Ok(view);
+    }
 
     let mut rows = Vec::new();
     for operator in condition_operators_for_candidate(&candidate) {
@@ -1901,11 +2122,20 @@ pub fn render_recording_rule_wizard_condition_value_input(
     ctx: RenderContext,
     operator: ConditionOperator,
 ) -> Result<View> {
-    update_wizard(&ctx, |wizard| {
+    let Some(wizard) = wizard_state(&ctx) else {
+        return Ok(wizard_expired_view(ctx));
+    };
+    if wizard.pending_condition.is_none() {
+        return Ok(wizard_pending_condition_missing_view(ctx));
+    }
+
+    if !update_wizard(&ctx, |wizard| {
         if let Some(pending) = wizard.pending_condition.as_mut() {
             pending.operator = Some(operator);
         }
-    })?;
+    })? {
+        return Ok(wizard_expired_view(ctx));
+    }
 
     let help = match operator {
         ConditionOperator::ChangedFromTo => "Введите два состояния в формате `from;to`.",
@@ -2118,24 +2348,94 @@ pub async fn render_recording_rule_wizard_retention(
     })
 }
 
-pub async fn render_recording_rule_wizard_groups(
+pub async fn render_recording_rule_wizard_active_time_from_state(
     ctx: RenderContext,
-    room_id: i64,
-    camera_id: i64,
-    device_id: i64,
-    mode: WizardTriggerMode,
-    tail: u32,
-    retention: u32,
+    retention: Option<u32>,
 ) -> Result<View> {
-    update_wizard(&ctx, |wizard| {
-        wizard.room_id = room_id;
-        wizard.camera_id = Some(camera_id);
-        wizard.source_device_id = Some(device_id);
-        wizard.source_mode = Some(mode);
-        wizard.tail_seconds = Some(tail);
-        wizard.retention_days = Some(retention);
-    })?;
-    render_recording_rule_wizard_confirm(ctx).await
+    if let Some(retention) = retention {
+        update_wizard(&ctx, |wizard| {
+            wizard.retention_days = Some(retention);
+        })?;
+    }
+
+    let Some(wizard) = wizard_state(&ctx) else {
+        let mut view = render(ctx).await?;
+        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
+        return Ok(view);
+    };
+    let Some(camera_id) = wizard.camera_id else {
+        let mut view = render_recording_rules(ctx, wizard.room_id).await?;
+        view.alert = Some("Камера не выбрана".to_string());
+        return Ok(view);
+    };
+    let Some(camera) = wizard_camera(&ctx, wizard.room_id, camera_id).await? else {
+        let mut view = render_recording_rules(ctx, wizard.room_id).await?;
+        view.alert = Some("Камера не найдена".to_string());
+        return Ok(view);
+    };
+
+    let rows = vec![
+        vec![InlineKeyboardButton::callback(
+            "Всегда",
+            Payload::Admin(AdminPayload::WizardPickActiveTimePreset {
+                preset: RecordingRuleActiveTimePreset::Always,
+            })
+            .to_string(),
+        )],
+        vec![
+            InlineKeyboardButton::callback(
+                "Ночь 22:00-07:00",
+                Payload::Admin(AdminPayload::WizardPickActiveTimePreset {
+                    preset: RecordingRuleActiveTimePreset::Night,
+                })
+                .to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                "День 08:00-20:00",
+                Payload::Admin(AdminPayload::WizardPickActiveTimePreset {
+                    preset: RecordingRuleActiveTimePreset::Day,
+                })
+                .to_string(),
+            ),
+        ],
+        vec![InlineKeyboardButton::callback(
+            "Свое время",
+            Payload::Admin(AdminPayload::WizardPromptActiveTimeCustom).to_string(),
+        )],
+        vec![wizard_cancel_button()],
+        vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            Payload::Admin(AdminPayload::WizardPickWizardTail {
+                tail: wizard.tail_seconds.unwrap_or(60),
+            }),
+        )],
+    ];
+
+    Ok(View {
+        header: Some("➕ Мастер правила".to_string()),
+        notifications: ctx.notifications,
+        text: format!(
+            "Когда правило активно?\n\nКамера: {}\nХранить: {}д\nСейчас: {}\nВремя сервера: {}",
+            camera.name,
+            wizard.retention_days.unwrap_or(30),
+            format_wizard_active_time(wizard.active_time),
+            server_timezone_label()
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Admin(AdminPayload::WizardActiveTime),
+        ..Default::default()
+    })
+}
+
+pub fn render_recording_rule_wizard_active_time_custom_input(ctx: RenderContext) -> Result<View> {
+    Ok(render_wizard_user_input(
+        ctx,
+        State::RecordingRuleWizardActiveTimeValue,
+        "Время активности",
+        "Введите время в формате HH:MM-HH:MM.\nНапример: 22:00-07:00",
+        Payload::Admin(AdminPayload::WizardPromptActiveTimeCustom),
+        Payload::Admin(AdminPayload::WizardActiveTime),
+    ))
 }
 
 pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) -> Result<View> {
@@ -2146,22 +2446,26 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
     };
 
     let groups = crate::db::camera_recording_rule_groups::list_groups(&ctx.config.db).await?;
+    let mut rows = vec![vec![
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.create_custom"),
+            Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroupForWizard).to_string(),
+        ),
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.create_defaults"),
+            Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForWizard).to_string(),
+        ),
+    ]];
     if groups.is_empty() {
-        let rows = vec![
-            vec![InlineKeyboardButton::callback(
-                t(ctx.lang, "admin.rule_groups.create_defaults"),
-                Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForWizard).to_string(),
-            )],
-            vec![InlineKeyboardButton::callback(
-                "Готово",
-                Payload::Admin(AdminPayload::WizardConfirmGroups).to_string(),
-            )],
-            vec![wizard_cancel_button()],
-            vec![crate::bot::screens::common::back_button_lang(
-                ctx.lang,
-                Payload::Admin(AdminPayload::WizardConfirmGroups),
-            )],
-        ];
+        rows.push(vec![InlineKeyboardButton::callback(
+            "Готово",
+            Payload::Admin(AdminPayload::WizardConfirmGroups).to_string(),
+        )]);
+        rows.push(vec![wizard_cancel_button()]);
+        rows.push(vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            Payload::Admin(AdminPayload::WizardConfirmGroups),
+        )]);
 
         return Ok(View {
             header: Some("➕ Мастер правила".to_string()),
@@ -2174,7 +2478,6 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
         });
     }
 
-    let mut rows = Vec::new();
     for group in groups {
         let checked = if wizard.group_ids.contains(&group.id) {
             "☑"
@@ -2239,6 +2542,13 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
             Payload::Admin(AdminPayload::WizardGroups).to_string(),
         )],
         vec![InlineKeyboardButton::callback(
+            format!(
+                "🕒 Активно: {}",
+                format_wizard_active_time(wizard.active_time)
+            ),
+            Payload::Admin(AdminPayload::WizardActiveTime).to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
             "✏️ Расширенно",
             Payload::Admin(AdminPayload::WizardAdvancedCurrentText).to_string(),
         )],
@@ -2255,12 +2565,13 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
         header: Some("➕ Мастер правила".to_string()),
         notifications: ctx.notifications,
         text: format!(
-            "Создать правило записи?\n\nКамера: {}\nИсточник: {} · {}\nСобытие: {}\nЛогика: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранить: {}д\nГруппы: {}\n\nБудут созданы условия:\n{}",
+            "Создать правило записи?\n\nКамера: {}\nИсточник: {} · {}\nСобытие: {}\nЛогика: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранить: {}д\nГруппы: {}\n\nБудут созданы условия:\n{}",
             camera.name,
             source.display_name,
             source.room_name,
             source_mode.summary_label(ctx.lang),
             logic_label,
+            format_wizard_active_time(wizard.active_time),
             wizard.tail_seconds.unwrap_or(60),
             ctx.config.camera_recording_max_segment_seconds,
             cooldown_s,
@@ -2323,6 +2634,27 @@ pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result
 }
 
 fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> {
+    if ctx.config.sessions.get(&ctx.user_id).is_none() {
+        let now = Utc::now();
+        let context = Payload::Admin(AdminPayload::StartRecordingRuleWizard {
+            room: wizard.room_id,
+        })
+        .to_string();
+        ctx.config.sessions.insert(
+            ctx.user_id,
+            UserSession {
+                last_menu_id: 0,
+                current_context: context,
+                ui_message_mode: UiMessageMode::Photo,
+                header_entities: HashSet::new(),
+                recording_rule_wizard: None,
+                last_ui_refresh_at: None,
+                ui_refresh_blocked_until: None,
+                last_seen_at: now,
+            },
+        );
+    }
+
     let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) else {
         return Err(anyhow::anyhow!("User session not found"));
     };
@@ -2330,16 +2662,20 @@ fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> 
     Ok(())
 }
 
-fn update_wizard<F>(ctx: &RenderContext, update: F) -> Result<()>
+fn update_wizard<F>(ctx: &RenderContext, update: F) -> Result<bool>
 where
     F: FnOnce(&mut RecordingRuleWizard),
 {
     let mut wizard = wizard_state(ctx).unwrap_or_else(|| RecordingRuleWizard::new(0));
     update(&mut wizard);
     if wizard.room_id == 0 {
-        return Err(anyhow::anyhow!("Recording rule wizard room is missing"));
+        log::warn!(
+            "Recording rule wizard update ignored for user {}: session is missing",
+            ctx.user_id
+        );
+        return Ok(false);
     }
-    store_wizard(ctx, wizard)
+    store_wizard(ctx, wizard).map(|_| true)
 }
 
 fn wizard_state(ctx: &RenderContext) -> Option<RecordingRuleWizard> {
@@ -2347,6 +2683,31 @@ fn wizard_state(ctx: &RenderContext) -> Option<RecordingRuleWizard> {
         .sessions
         .get(&ctx.user_id)
         .and_then(|session| session.recording_rule_wizard.clone())
+}
+
+fn wizard_expired_view(ctx: RenderContext) -> View {
+    View {
+        header: Some("➕ Мастер правила".to_string()),
+        notifications: ctx.notifications,
+        text: "Сессия мастера устарела. Откройте мастер заново.".to_string(),
+        payload: Payload::Admin(AdminPayload::CameraRooms),
+        ..Default::default()
+    }
+}
+
+fn wizard_pending_condition_missing_view(ctx: RenderContext) -> View {
+    View {
+        header: Some("➕ Условие правила".to_string()),
+        notifications: ctx.notifications,
+        text: "Условие уже не выбрано. Вернитесь к списку условий и добавьте его заново."
+            .to_string(),
+        kb: InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+            "К условиям",
+            Payload::Admin(AdminPayload::WizardConditions).to_string(),
+        )]]),
+        payload: Payload::Admin(AdminPayload::WizardConditions),
+        ..Default::default()
+    }
 }
 
 async fn wizard_summary_parts(
@@ -2409,7 +2770,13 @@ fn selected_group_names_text(groups: &[RecordingRuleGroup], group_ids: &[i64]) -
     let names = groups
         .iter()
         .filter(|group| group_ids.contains(&group.id))
-        .map(|group| group.name.as_str())
+        .map(|group| {
+            if group.is_enabled() {
+                group.name.clone()
+            } else {
+                format!("{} ⏸", group.name)
+            }
+        })
         .collect::<Vec<_>>();
 
     if names.is_empty() {
@@ -2417,6 +2784,89 @@ fn selected_group_names_text(groups: &[RecordingRuleGroup], group_ids: &[i64]) -
     } else {
         names.join(", ")
     }
+}
+
+fn recording_rule_pause_reason(
+    rule: &crate::db::camera_recording_rules::RecordingRule,
+    groups: &[RecordingRuleGroup],
+    group_ids: &[i64],
+) -> Option<String> {
+    let mut reasons = Vec::new();
+    if !rule.is_enabled() {
+        reasons.push("правило выключено".to_string());
+    }
+
+    let disabled_groups = groups
+        .iter()
+        .filter(|group| group_ids.contains(&group.id) && !group.is_enabled())
+        .map(|group| group.name.clone())
+        .collect::<Vec<_>>();
+
+    match disabled_groups.as_slice() {
+        [] => {}
+        [name] => reasons.push(format!("выключенная группа: {}", name)),
+        names => reasons.push(format!("выключенные группы: {}", names.join(", "))),
+    }
+
+    let active_time = rule.active_time();
+    if active_time.enabled {
+        if !crate::db::camera_recording_rules::active_time_is_valid(active_time) {
+            reasons.push("ошибка настройки времени активности".to_string());
+        } else if !crate::db::camera_recording_rules::active_time_matches_now(rule) {
+            reasons.push("сейчас правило на паузе по времени".to_string());
+        }
+    }
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
+    }
+}
+
+fn format_rule_active_time(rule: &crate::db::camera_recording_rules::RecordingRule) -> String {
+    format_wizard_active_time(rule.active_time())
+}
+
+fn format_wizard_active_time(
+    active_time: crate::db::camera_recording_rules::RecordingRuleActiveTime,
+) -> String {
+    if !active_time.enabled {
+        return "всегда".to_string();
+    }
+    if !crate::db::camera_recording_rules::active_time_is_valid(active_time) {
+        return "ошибка настройки времени".to_string();
+    }
+
+    format!(
+        "{}-{} · {} · {}",
+        crate::db::camera_recording_rules::format_minute(active_time.from_minute),
+        crate::db::camera_recording_rules::format_minute(active_time.to_minute),
+        format_active_days_mask(active_time.days_mask),
+        server_timezone_label()
+    )
+}
+
+fn format_active_days_mask(days_mask: i64) -> String {
+    match days_mask {
+        crate::db::camera_recording_rules::ACTIVE_TIME_ALL_DAYS_MASK => "ежедневно".to_string(),
+        0b001_1111 => "Пн-Пт".to_string(),
+        0b110_0000 => "Сб-Вс".to_string(),
+        _ => {
+            let names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+            names
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| days_mask & (1_i64 << index) != 0)
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
+fn server_timezone_label() -> String {
+    std::env::var("TZ").unwrap_or_else(|_| Local::now().format("%:z").to_string())
 }
 
 async fn recording_rule_for_room(
@@ -3406,6 +3856,27 @@ async fn render_recording_rule_group_detail_with_back(
             toggle_label,
             recording_rule_group_toggle_detail_payload(room_id, group.id).to_string(),
         )],
+        vec![InlineKeyboardButton::callback(
+            format!(
+                "🌐 Доступ: {}",
+                if group.is_visible_to_all_users() {
+                    "всем"
+                } else {
+                    "только администратору"
+                }
+            ),
+            recording_rule_group_access_payload(room_id, group.id).to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.rules"),
+            recording_rule_group_rules_payload(
+                room_id,
+                group.id,
+                0,
+                RecordingRuleGroupRulesFilter::All,
+            )
+            .to_string(),
+        )],
         vec![
             InlineKeyboardButton::callback(
                 t(ctx.lang, "admin.rule_groups.rename"),
@@ -3423,12 +3894,13 @@ async fn render_recording_rule_group_detail_with_back(
     ];
 
     let text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}\n\n{}",
+        "{}\n\n{}: {}\n{}: {}\nДоступ: {}\n{}: {}\n\n{}",
         t(ctx.lang, "admin.rule_groups.detail"),
         t(ctx.lang, "admin.rule_groups.name"),
         group.name,
         t(ctx.lang, "admin.rule_groups.status"),
         status,
+        group.access_scope_label(),
         t(ctx.lang, "admin.rule_groups.rules_count"),
         group.rules_count,
         t(ctx.lang, "admin.rule_groups.detail_hint"),
@@ -3440,6 +3912,200 @@ async fn render_recording_rule_group_detail_with_back(
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: recording_rule_group_detail_payload(room_id, group.id),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_rule_group_rules(
+    ctx: RenderContext,
+    group_id: i64,
+    page: u16,
+    filter: RecordingRuleGroupRulesFilter,
+) -> Result<View> {
+    render_recording_rule_group_rules_with_back(ctx, None, group_id, page, filter).await
+}
+
+pub async fn render_recording_rule_group_rules_for_room(
+    ctx: RenderContext,
+    room_id: i64,
+    group_id: i64,
+    page: u16,
+    filter: RecordingRuleGroupRulesFilter,
+) -> Result<View> {
+    render_recording_rule_group_rules_with_back(ctx, Some(room_id), group_id, page, filter).await
+}
+
+async fn render_recording_rule_group_rules_with_back(
+    ctx: RenderContext,
+    room_id: Option<i64>,
+    group_id: i64,
+    page: u16,
+    filter: RecordingRuleGroupRulesFilter,
+) -> Result<View> {
+    const PAGE_SIZE: usize = 8;
+
+    let Some(group) =
+        crate::db::camera_recording_rule_groups::get_group(group_id, &ctx.config.db).await?
+    else {
+        let lang = ctx.lang;
+        let mut view = render_recording_rule_groups_with_back(ctx, room_id).await?;
+        view.alert = Some(t(lang, "admin.rule_groups.not_found").to_string());
+        return Ok(view);
+    };
+
+    let all_rules =
+        crate::db::camera_recording_rule_groups::list_group_rules(group_id, &ctx.config.db).await?;
+    let selected_count = all_rules.iter().filter(|rule| rule.is_selected()).count();
+    let filtered_rules = all_rules
+        .iter()
+        .filter(|rule| match filter {
+            RecordingRuleGroupRulesFilter::All => true,
+            RecordingRuleGroupRulesFilter::Selected => rule.is_selected(),
+            RecordingRuleGroupRulesFilter::Unselected => !rule.is_selected(),
+        })
+        .collect::<Vec<_>>();
+    let total_pages = filtered_rules.len().div_ceil(PAGE_SIZE).max(1);
+    let page_index = usize::from(page).min(total_pages.saturating_sub(1));
+    let page_rules = filtered_rules
+        .iter()
+        .skip(page_index * PAGE_SIZE)
+        .take(PAGE_SIZE)
+        .copied()
+        .collect::<Vec<_>>();
+    let current_payload =
+        recording_rule_group_rules_payload(room_id, group_id, page_index as u16, filter);
+
+    let mut rows = vec![vec![
+        InlineKeyboardButton::callback(
+            recording_rule_group_rules_filter_label(
+                ctx.lang,
+                RecordingRuleGroupRulesFilter::All,
+                filter,
+            ),
+            recording_rule_group_rules_payload(
+                room_id,
+                group_id,
+                0,
+                RecordingRuleGroupRulesFilter::All,
+            )
+            .to_string(),
+        ),
+        InlineKeyboardButton::callback(
+            recording_rule_group_rules_filter_label(
+                ctx.lang,
+                RecordingRuleGroupRulesFilter::Selected,
+                filter,
+            ),
+            recording_rule_group_rules_payload(
+                room_id,
+                group_id,
+                0,
+                RecordingRuleGroupRulesFilter::Selected,
+            )
+            .to_string(),
+        ),
+        InlineKeyboardButton::callback(
+            recording_rule_group_rules_filter_label(
+                ctx.lang,
+                RecordingRuleGroupRulesFilter::Unselected,
+                filter,
+            ),
+            recording_rule_group_rules_payload(
+                room_id,
+                group_id,
+                0,
+                RecordingRuleGroupRulesFilter::Unselected,
+            )
+            .to_string(),
+        ),
+    ]];
+
+    let page_rules_empty = page_rules.is_empty();
+    let mut last_room_label = String::new();
+    for rule in page_rules.iter().copied() {
+        let room_label = recording_rule_group_rule_room_label(rule);
+        if room_label != last_room_label {
+            rows.push(vec![InlineKeyboardButton::callback(
+                format!("— {} —", room_label),
+                current_payload.to_string(),
+            )]);
+            last_room_label = room_label;
+        }
+
+        let checked = if rule.is_selected() { "☑" } else { "☐" };
+        let paused = if rule.is_rule_enabled() { "" } else { " ⏸" };
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!(
+                "{} {} · {}{}",
+                checked, rule.rule_name, rule.camera_name, paused
+            ),
+            recording_rule_group_toggle_rule_payload(
+                room_id,
+                group.id,
+                rule.rule_id,
+                page_index as u16,
+                filter,
+            )
+            .to_string(),
+        )]);
+    }
+
+    if page_rules_empty {
+        rows.push(vec![InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.rules_empty"),
+            current_payload.to_string(),
+        )]);
+    }
+
+    if total_pages > 1 {
+        let prev_page = page_index.saturating_sub(1) as u16;
+        let next_page = (page_index + 1).min(total_pages - 1) as u16;
+        let page_label = format!("{}/{}", page_index + 1, total_pages);
+        rows.push(vec![
+            InlineKeyboardButton::callback(
+                t(ctx.lang, "common.prev"),
+                recording_rule_group_rules_payload(room_id, group.id, prev_page, filter)
+                    .to_string(),
+            ),
+            InlineKeyboardButton::callback(page_label, current_payload.to_string()),
+            InlineKeyboardButton::callback(
+                t(ctx.lang, "common.next"),
+                recording_rule_group_rules_payload(room_id, group.id, next_page, filter)
+                    .to_string(),
+            ),
+        ]);
+    }
+
+    rows.push(vec![InlineKeyboardButton::callback(
+        t(ctx.lang, "common.done"),
+        recording_rule_group_detail_payload(room_id, group.id).to_string(),
+    )]);
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        recording_rule_group_detail_payload(room_id, group.id),
+    )]);
+
+    let page_label = format!("{}/{}", page_index + 1, total_pages);
+    let text = format!(
+        "{}: {}\n\n{}: {}\n{}: {} / {}\n{}: {}\n\n{}",
+        t(ctx.lang, "admin.rule_groups.rules_title"),
+        group.name,
+        t(ctx.lang, "admin.rule_groups.rules_filter"),
+        recording_rule_group_rules_filter_name(ctx.lang, filter),
+        t(ctx.lang, "admin.rule_groups.selected_count"),
+        selected_count,
+        all_rules.len(),
+        t(ctx.lang, "admin.rule_groups.page"),
+        page_label,
+        t(ctx.lang, "admin.rule_groups.rules_hint"),
+    );
+
+    Ok(View {
+        header: Some(t(ctx.lang, "admin.rule_groups").to_string()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: current_payload,
         ..Default::default()
     })
 }
@@ -3456,6 +4122,51 @@ pub async fn render_create_recording_rule_group_input(
         t(lang, "admin.rule_groups.create_prompt"),
         recording_rule_group_create_payload(room_id),
         recording_rule_groups_payload(room_id),
+    ))
+}
+
+pub async fn render_create_recording_rule_group_for_edit_input(
+    ctx: RenderContext,
+    room_id: i64,
+    rule_id: i64,
+) -> Result<View> {
+    if recording_rule_for_room(&ctx, room_id, rule_id)
+        .await?
+        .is_none()
+    {
+        let mut view = render_recording_rules(ctx, room_id).await?;
+        view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
+        return Ok(view);
+    }
+
+    let lang = ctx.lang;
+    Ok(render_user_input(
+        ctx,
+        State::AddRecordingRuleGroupForEdit { room_id, rule_id },
+        t(lang, "admin.rule_groups.create_title"),
+        t(lang, "admin.rule_groups.create_prompt"),
+        Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroupForEdit {
+            room: room_id,
+            rule: rule_id,
+        }),
+        Payload::Admin(AdminPayload::RecordingRuleEditGroups {
+            room: room_id,
+            rule: rule_id,
+        }),
+    ))
+}
+
+pub async fn render_create_recording_rule_group_for_wizard_input(
+    ctx: RenderContext,
+) -> Result<View> {
+    let lang = ctx.lang;
+    Ok(render_wizard_user_input(
+        ctx,
+        State::AddRecordingRuleGroupForWizard,
+        t(lang, "admin.rule_groups.create_title"),
+        t(lang, "admin.rule_groups.create_prompt"),
+        Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroupForWizard),
+        Payload::Admin(AdminPayload::WizardGroups),
     ))
 }
 
@@ -3552,6 +4263,102 @@ fn recording_rule_group_confirm_delete_payload(room_id: Option<i64>, group_id: i
         },
         None => AdminPayload::ConfirmDeleteRecordingRuleGroup { group: group_id },
     })
+}
+
+fn recording_rule_group_access_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::CycleRecordingRuleGroupAccessForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::CycleRecordingRuleGroupAccess { group: group_id },
+    })
+}
+
+fn recording_rule_group_rules_payload(
+    room_id: Option<i64>,
+    group_id: i64,
+    page: u16,
+    filter: RecordingRuleGroupRulesFilter,
+) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::RecordingRuleGroupRulesForRoom {
+            room,
+            group: group_id,
+            page,
+            filter,
+        },
+        None => AdminPayload::RecordingRuleGroupRules {
+            group: group_id,
+            page,
+            filter,
+        },
+    })
+}
+
+fn recording_rule_group_toggle_rule_payload(
+    room_id: Option<i64>,
+    group_id: i64,
+    rule_id: i64,
+    page: u16,
+    filter: RecordingRuleGroupRulesFilter,
+) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::ToggleRecordingRuleGroupRuleForRoom {
+            room,
+            group: group_id,
+            rule: rule_id,
+            page,
+            filter,
+        },
+        None => AdminPayload::ToggleRecordingRuleGroupRule {
+            group: group_id,
+            rule: rule_id,
+            page,
+            filter,
+        },
+    })
+}
+
+fn recording_rule_group_rules_filter_label(
+    lang: crate::i18n::Language,
+    candidate: RecordingRuleGroupRulesFilter,
+    current: RecordingRuleGroupRulesFilter,
+) -> String {
+    let prefix = if candidate == current { "●" } else { "○" };
+    format!(
+        "{} {}",
+        prefix,
+        recording_rule_group_rules_filter_name(lang, candidate)
+    )
+}
+
+fn recording_rule_group_rules_filter_name(
+    lang: crate::i18n::Language,
+    filter: RecordingRuleGroupRulesFilter,
+) -> &'static str {
+    match filter {
+        RecordingRuleGroupRulesFilter::All => t(lang, "admin.rule_groups.filter_all"),
+        RecordingRuleGroupRulesFilter::Selected => t(lang, "admin.rule_groups.filter_selected"),
+        RecordingRuleGroupRulesFilter::Unselected => t(lang, "admin.rule_groups.filter_unselected"),
+    }
+}
+
+fn recording_rule_group_rule_room_label(
+    rule: &crate::db::camera_recording_rule_groups::RecordingRuleGroupRule,
+) -> String {
+    let name = rule
+        .room_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            rule.room_area
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or("Без комнаты");
+
+    format!("🏠 {}", name)
 }
 
 pub async fn render_user_rooms(ctx: RenderContext, user_id: u64) -> Result<View> {
@@ -4037,6 +4844,10 @@ mod tests {
             enabled: 1,
             notify_enabled: 1,
             noise_enabled: 1,
+            active_time_enabled: 0,
+            active_from_minute: None,
+            active_to_minute: None,
+            active_days_mask: crate::db::camera_recording_rules::ACTIVE_TIME_ALL_DAYS_MASK,
             noise_summary_sent_at: None,
             last_completed_at: None,
             deleted_at: None,

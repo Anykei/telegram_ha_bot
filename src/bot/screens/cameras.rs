@@ -9,6 +9,7 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
     let cameras =
         crate::db::cameras::list_accessible_cameras(ctx.user_id, ctx.is_admin, &ctx.config.db)
             .await?;
+    let cameras_empty = cameras.is_empty();
     let mut rows = Vec::new();
 
     for camera in cameras {
@@ -23,12 +24,17 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    rows.push(vec![InlineKeyboardButton::callback(
+        "🎛 Режимы записи",
+        Payload::Camera(CameraPayload::RecordingGroupModes).to_string(),
+    )]);
+
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Home,
     )]);
 
-    let text = if rows.len() == 1 {
+    let text = if cameras_empty {
         t(ctx.lang, "camera.list.empty").to_string()
     } else {
         t(ctx.lang, "camera.list.pick").to_string()
@@ -40,6 +46,110 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::ListCameras),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_group_modes(ctx: RenderContext) -> Result<View> {
+    let groups = crate::db::camera_recording_rule_groups::list_groups_visible_to_user(
+        ctx.user_id,
+        ctx.config.root_user,
+        &ctx.config.db,
+    )
+    .await?;
+    let mut rows = Vec::new();
+    for group in &groups {
+        let icon = if group.is_enabled() { "✅" } else { "⏸" };
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!("{} {} · {} правил", icon, group.name, group.rules_count),
+            Payload::Camera(CameraPayload::RecordingGroupModeDetail { group: group.id })
+                .to_string(),
+        )]);
+    }
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        Payload::Camera(CameraPayload::ListCameras),
+    )]);
+
+    let text = if groups.is_empty() {
+        "Режимы записи\n\nДоступных режимов пока нет.".to_string()
+    } else {
+        "Режимы записи\n\nВключенная группа разрешает связанные правила. Выключенная группа ставит их на паузу."
+            .to_string()
+    };
+
+    Ok(View {
+        header: Some("🎛 Режимы записи".to_string()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingGroupModes),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_group_mode_detail(ctx: RenderContext, group_id: i64) -> Result<View> {
+    let Some(group) =
+        crate::db::camera_recording_rule_groups::get_group(group_id, &ctx.config.db).await?
+    else {
+        let mut view = render_recording_group_modes(ctx).await?;
+        view.alert = Some("Группа не найдена".to_string());
+        return Ok(view);
+    };
+    if !ctx.is_admin && !group.is_visible_to_all_users() {
+        let mut view = render_recording_group_modes(ctx).await?;
+        view.alert = Some("Группа недоступна".to_string());
+        return Ok(view);
+    }
+
+    let cameras = crate::db::camera_recording_rule_groups::list_group_cameras_visible_to_user(
+        ctx.user_id,
+        ctx.is_admin,
+        group.id,
+        &ctx.config.db,
+    )
+    .await?;
+    let cameras_text = if cameras.is_empty() {
+        "нет камер".to_string()
+    } else {
+        cameras
+            .iter()
+            .map(|camera| camera.camera_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let status = if group.is_enabled() {
+        "включена"
+    } else {
+        "на паузе"
+    };
+    let toggle_label = if group.is_enabled() {
+        "⏸ Поставить на паузу"
+    } else {
+        "▶️ Включить"
+    };
+
+    let rows = vec![
+        vec![InlineKeyboardButton::callback(
+            toggle_label,
+            Payload::Camera(CameraPayload::ToggleRecordingGroupMode { group: group.id })
+                .to_string(),
+        )],
+        vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            Payload::Camera(CameraPayload::RecordingGroupModes),
+        )],
+    ];
+
+    Ok(View {
+        header: Some("🎛 Режим записи".to_string()),
+        notifications: ctx.notifications,
+        text: format!(
+            "{}\n\nСтатус: {}\nПравил: {}\nКамеры: {}",
+            group.name, status, group.rules_count, cameras_text
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingGroupModeDetail { group: group.id }),
         ..Default::default()
     })
 }

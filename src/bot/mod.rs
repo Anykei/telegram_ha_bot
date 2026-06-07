@@ -120,6 +120,19 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
             .endpoint(handlers::handle_add_recording_rule_group_input),
         )
         .branch(
+            dptree::filter(|state: State| matches!(state, State::AddRecordingRuleGroupForWizard))
+                .endpoint(handlers::handle_add_recording_rule_group_for_wizard_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::AddRecordingRuleGroupForEdit { room_id, rule_id } => {
+                    Some((room_id, rule_id))
+                }
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_recording_rule_group_for_edit_input),
+        )
+        .branch(
             dptree::filter_map(|state: State| match state {
                 State::RenameRecordingRuleGroup { room_id, group_id } => Some((room_id, group_id)),
                 _ => None,
@@ -146,6 +159,13 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         )
         .branch(
             dptree::filter_map(|state: State| match state {
+                State::EditRecordingRuleActiveTime { room_id, rule_id } => Some((room_id, rule_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_recording_rule_active_time_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
                 State::EditRecordingRuleConditionValue {
                     room_id,
                     rule_id,
@@ -162,6 +182,12 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 _ => None,
             })
             .endpoint(handlers::handle_recording_rule_wizard_source_value_input),
+        )
+        .branch(
+            dptree::filter(|state: State| {
+                matches!(state, State::RecordingRuleWizardActiveTimeValue)
+            })
+            .endpoint(handlers::handle_recording_rule_wizard_active_time_input),
         )
         .branch(
             dptree::filter(|state: State| {

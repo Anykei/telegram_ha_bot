@@ -2066,12 +2066,186 @@ pub async fn handle_add_recording_rule_group_input(
     };
 
     let group_id = crate::db::camera_recording_rule_groups::create_group(&name, &config.db).await?;
+    let group_id_text = group_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "recording",
+            entity_type: "rule_group",
+            entity_id: Some(&group_id_text),
+            action: "rule_group.create",
+            status: "ok",
+            message: Some(&name),
+        },
+        &config.db,
+    )
+    .await;
     finalize_dialogue(
         bot,
         dialogue,
         msg,
         config,
         Some(recording_rule_group_detail_payload(room_id, group_id)),
+    )
+    .await
+}
+
+pub async fn handle_add_recording_rule_group_for_wizard_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let has_wizard = config
+        .sessions
+        .get(&user_id)
+        .is_some_and(|session| session.recording_rule_wizard.is_some());
+    if !has_wizard {
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
+    }
+
+    let name = match parse_recording_rule_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddRecordingRuleGroupForWizard,
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let group_id = crate::db::camera_recording_rule_groups::create_group(&name, &config.db).await?;
+    if let Some(mut session) = config.sessions.get_mut(&user_id) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            if !wizard.group_ids.contains(&group_id) {
+                wizard.group_ids.push(group_id);
+                wizard.group_ids.sort_unstable();
+            }
+        }
+    }
+
+    let group_id_text = group_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "recording",
+            entity_type: "rule_group",
+            entity_id: Some(&group_id_text),
+            action: "rule_group.create",
+            status: "ok",
+            message: Some(&name),
+        },
+        &config.db,
+    )
+    .await;
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::WizardGroups,
+        )),
+    )
+    .await
+}
+
+pub async fn handle_add_recording_rule_group_for_edit_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (room_id, rule_id): (i64, i64),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    if reject_recording_rule_room_mismatch(&bot, &msg, &config, room_id, rule_id).await? {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(
+                crate::bot::router::AdminPayload::RecordingRules { room: room_id },
+            )),
+        )
+        .await;
+    }
+
+    let name = match parse_recording_rule_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddRecordingRuleGroupForEdit { room_id, rule_id },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let group_id = crate::db::camera_recording_rule_groups::create_group(&name, &config.db).await?;
+    let added =
+        crate::db::camera_recording_rule_groups::add_rule_to_group(rule_id, group_id, &config.db)
+            .await?;
+    let group_id_text = group_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "recording",
+            entity_type: "rule_group",
+            entity_id: Some(&group_id_text),
+            action: "rule_group.create",
+            status: "ok",
+            message: Some(&name),
+        },
+        &config.db,
+    )
+    .await;
+    if added {
+        let activity_message = format!("rule {}", rule_id);
+        let _ = crate::db::activity_log::log(
+            crate::db::activity_log::NewActivity {
+                user_id: msg.from.as_ref().map(|user| user.id.0),
+                kind: "recording",
+                entity_type: "rule_group",
+                entity_id: Some(&group_id_text),
+                action: "rule_group.add_rule",
+                status: "ok",
+                message: Some(&activity_message),
+            },
+            &config.db,
+        )
+        .await;
+    }
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::RecordingRuleEditGroups {
+                room: room_id,
+                rule: rule_id,
+            },
+        )),
     )
     .await
 }
@@ -2115,6 +2289,21 @@ pub async fn handle_rename_recording_rule_group_input(
         .await?;
         return Ok(());
     }
+
+    let group_id_text = group_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "recording",
+            entity_type: "rule_group",
+            entity_id: Some(&group_id_text),
+            action: "rule_group.rename",
+            status: "ok",
+            message: Some(&name),
+        },
+        &config.db,
+    )
+    .await;
 
     finalize_dialogue(
         bot,
@@ -2167,7 +2356,7 @@ pub async fn handle_recording_rule_wizard_source_value_input(
         }
     };
     if !updated {
-        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
 
     finalize_dialogue(
@@ -2178,6 +2367,60 @@ pub async fn handle_recording_rule_wizard_source_value_input(
         Some(Payload::Admin(
             crate::bot::router::AdminPayload::WizardConditions,
         )),
+    )
+    .await
+}
+
+pub async fn handle_recording_rule_wizard_active_time_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let active_time =
+        match crate::db::camera_recording_rules::parse_active_time_window(msg.text().unwrap_or(""))
+        {
+            Ok(active_time) => active_time,
+            Err(text) => {
+                keep_dialogue_with_error(
+                    &bot,
+                    &dialogue,
+                    &msg,
+                    State::RecordingRuleWizardActiveTimeValue,
+                    text,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let updated = {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+                wizard.active_time = active_time;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !updated {
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
+    }
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(AdminPayload::WizardGroups)),
     )
     .await
 }
@@ -2199,28 +2442,10 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
         .and_then(|session| session.recording_rule_wizard.clone())
         .and_then(|wizard| wizard.pending_condition);
     let Some(pending) = pending else {
-        return finalize_dialogue(
-            bot,
-            dialogue,
-            msg,
-            config,
-            Some(Payload::Admin(
-                crate::bot::router::AdminPayload::WizardConditions,
-            )),
-        )
-        .await;
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     };
     let Some(operator) = pending.operator else {
-        return finalize_dialogue(
-            bot,
-            dialogue,
-            msg,
-            config,
-            Some(Payload::Admin(
-                crate::bot::router::AdminPayload::WizardAddCondition,
-            )),
-        )
-        .await;
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     };
     let Some(candidate) =
         crate::db::devices::get_recording_wizard_candidate(pending.device_id, &config.db).await?
@@ -2270,7 +2495,7 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
         }
     };
     if !updated {
-        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+        return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
 
     finalize_dialogue(
@@ -2357,6 +2582,91 @@ pub async fn handle_edit_recording_rule_number_input(
                 rule: rule_id,
             },
         )),
+    )
+    .await
+}
+
+pub async fn handle_edit_recording_rule_active_time_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (room_id, rule_id): (i64, i64),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    if reject_recording_rule_room_mismatch(&bot, &msg, &config, room_id, rule_id).await? {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(AdminPayload::RecordingRules {
+                room: room_id,
+            })),
+        )
+        .await;
+    }
+
+    let mut active_time =
+        match crate::db::camera_recording_rules::parse_active_time_window(msg.text().unwrap_or(""))
+        {
+            Ok(active_time) => active_time,
+            Err(text) => {
+                keep_dialogue_with_error(
+                    &bot,
+                    &dialogue,
+                    &msg,
+                    State::EditRecordingRuleActiveTime { room_id, rule_id },
+                    text,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+    if let Some(rule) = crate::db::camera_recording_rules::get_rule(rule_id, &config.db).await? {
+        let current = rule.active_time();
+        if current.enabled && crate::db::camera_recording_rules::active_time_is_valid(current) {
+            active_time.days_mask = current.days_mask;
+        }
+    }
+
+    crate::db::camera_recording_rules::update_rule_active_time(rule_id, active_time, &config.db)
+        .await?;
+
+    let rule_id_text = rule_id.to_string();
+    let message = format!(
+        "{}-{} mask={}",
+        crate::db::camera_recording_rules::format_minute(active_time.from_minute),
+        crate::db::camera_recording_rules::format_minute(active_time.to_minute),
+        active_time.days_mask
+    );
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "recording",
+            entity_type: "recording_rule",
+            entity_id: Some(&rule_id_text),
+            action: "recording_rule.active_time_update",
+            status: "ok",
+            message: Some(&message),
+        },
+        &config.db,
+    )
+    .await;
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(AdminPayload::RecordingRuleEditActiveTime {
+            room: room_id,
+            rule: rule_id,
+        })),
     )
     .await
 }
@@ -2890,6 +3200,19 @@ async fn keep_dialogue_with_error(
     let err_msg = bot.send_message(msg.chat.id, text).await?;
     crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 8);
     let _ = bot.delete_message(msg.chat.id, msg.id).await;
+    Ok(())
+}
+
+async fn finish_stale_wizard_input(bot: &Bot, dialogue: &MyDialogue, msg: &Message) -> Result<()> {
+    dialogue.exit().await?;
+    let _ = bot.delete_message(msg.chat.id, msg.id).await;
+    let notice = bot
+        .send_message(
+            msg.chat.id,
+            "Сессия мастера устарела. Откройте мастер заново.",
+        )
+        .await?;
+    crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, notice.id, 8);
     Ok(())
 }
 

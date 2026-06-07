@@ -69,6 +69,12 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::En, "common.confirm") => "✅ Confirm",
         (Language::Ru, "common.cancel") => "↩️ Отмена",
         (Language::En, "common.cancel") => "↩️ Cancel",
+        (Language::Ru, "common.prev") => "◀️ Назад",
+        (Language::En, "common.prev") => "◀️ Prev",
+        (Language::Ru, "common.next") => "Далее ▶️",
+        (Language::En, "common.next") => "Next ▶️",
+        (Language::Ru, "common.done") => "Готово",
+        (Language::En, "common.done") => "Done",
         (Language::Ru, "access.denied.text") => "Недостаточно прав для этого действия",
         (Language::En, "access.denied.text") => "Not enough permissions for this action",
         (Language::Ru, "access.denied.alert") => "Доступ ограничен профилем пользователя",
@@ -212,6 +218,30 @@ pub fn t(lang: Language, key: &str) -> &str {
         }
         (Language::Ru, "admin.rule_groups.rules_count") => "правил",
         (Language::En, "admin.rule_groups.rules_count") => "rules",
+        (Language::Ru, "admin.rule_groups.rules") => "📋 Правила в группе",
+        (Language::En, "admin.rule_groups.rules") => "📋 Rules in group",
+        (Language::Ru, "admin.rule_groups.rules_title") => "Правила группы",
+        (Language::En, "admin.rule_groups.rules_title") => "Group rules",
+        (Language::Ru, "admin.rule_groups.rules_filter") => "Фильтр",
+        (Language::En, "admin.rule_groups.rules_filter") => "Filter",
+        (Language::Ru, "admin.rule_groups.selected_count") => "Выбрано",
+        (Language::En, "admin.rule_groups.selected_count") => "Selected",
+        (Language::Ru, "admin.rule_groups.page") => "Страница",
+        (Language::En, "admin.rule_groups.page") => "Page",
+        (Language::Ru, "admin.rule_groups.rules_hint") => {
+            "Отметьте правила галочкой. Выключенные правила показаны с ⏸."
+        }
+        (Language::En, "admin.rule_groups.rules_hint") => {
+            "Tick the rules to include them. Disabled rules are marked with ⏸."
+        }
+        (Language::Ru, "admin.rule_groups.rules_empty") => "Правил нет",
+        (Language::En, "admin.rule_groups.rules_empty") => "No rules",
+        (Language::Ru, "admin.rule_groups.filter_all") => "Все",
+        (Language::En, "admin.rule_groups.filter_all") => "All",
+        (Language::Ru, "admin.rule_groups.filter_selected") => "Выбранные",
+        (Language::En, "admin.rule_groups.filter_selected") => "Selected",
+        (Language::Ru, "admin.rule_groups.filter_unselected") => "Не выбранные",
+        (Language::En, "admin.rule_groups.filter_unselected") => "Unselected",
         (Language::Ru, "admin.rule_groups.detail") => "Группа правил",
         (Language::En, "admin.rule_groups.detail") => "Rule group",
         (Language::Ru, "admin.rule_groups.name") => "Название",
@@ -268,6 +298,8 @@ pub fn t(lang: Language, key: &str) -> &str {
         }
         (Language::Ru, "admin.rule_groups.delete_failed") => "Не удалось удалить группу",
         (Language::En, "admin.rule_groups.delete_failed") => "Failed to delete group",
+        (Language::Ru, "admin.rule_groups.toggle_failed") => "Не удалось переключить группу",
+        (Language::En, "admin.rule_groups.toggle_failed") => "Failed to toggle group",
         (Language::Ru, "admin.camera.health") => "🩺 Health",
         (Language::En, "admin.camera.health") => "🩺 Health",
         (Language::Ru, "admin.camera.health.check_now") => "🔄 Проверить сейчас",

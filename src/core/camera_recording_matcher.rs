@@ -55,6 +55,14 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
             continue;
         }
 
+        if !db::camera_recording_rules::active_time_matches_now(&rule) {
+            log::debug!(
+                "Camera recording rule {} skipped: inactive time window",
+                rule.id
+            );
+            continue;
+        }
+
         if !matches_rule(&config, event, &conditions, rule.logic()).await? {
             log::debug!(
                 "Camera recording rule {} did not match event {} {} -> {} with logic {:?}",

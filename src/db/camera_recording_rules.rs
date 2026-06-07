@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -66,6 +66,37 @@ impl ConditionOperator {
     }
 }
 
+pub const ACTIVE_TIME_ALL_DAYS_MASK: i64 = 0b111_1111;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingRuleActiveTime {
+    pub enabled: bool,
+    pub from_minute: i64,
+    pub to_minute: i64,
+    pub days_mask: i64,
+}
+
+impl RecordingRuleActiveTime {
+    pub fn always() -> Self {
+        Self {
+            enabled: false,
+            from_minute: 0,
+            to_minute: 0,
+            days_mask: ACTIVE_TIME_ALL_DAYS_MASK,
+        }
+    }
+
+    pub fn window(from_minute: i64, to_minute: i64, days_mask: i64) -> Result<Self> {
+        validate_active_time_window(from_minute, to_minute, days_mask)?;
+        Ok(Self {
+            enabled: true,
+            from_minute,
+            to_minute,
+            days_mask,
+        })
+    }
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 #[allow(dead_code)]
 pub struct RecordingRule {
@@ -80,6 +111,10 @@ pub struct RecordingRule {
     pub enabled: i64,
     pub notify_enabled: i64,
     pub noise_enabled: i64,
+    pub active_time_enabled: i64,
+    pub active_from_minute: Option<i64>,
+    pub active_to_minute: Option<i64>,
+    pub active_days_mask: i64,
     pub noise_summary_sent_at: Option<DateTime<Utc>>,
     pub last_completed_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -100,6 +135,19 @@ impl RecordingRule {
 
     pub fn noise_enabled(&self) -> bool {
         self.noise_enabled != 0
+    }
+
+    pub fn active_time(&self) -> RecordingRuleActiveTime {
+        if self.active_time_enabled == 0 {
+            return RecordingRuleActiveTime::always();
+        }
+
+        RecordingRuleActiveTime {
+            enabled: true,
+            from_minute: self.active_from_minute.unwrap_or(-1),
+            to_minute: self.active_to_minute.unwrap_or(-1),
+            days_mask: self.active_days_mask,
+        }
     }
 }
 
@@ -283,6 +331,7 @@ pub async fn list_rules(pool: &SqlitePool) -> Result<Vec<RecordingRule>> {
         r#"
         SELECT id, name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
                cooldown_s, retention_days, enabled, notify_enabled, noise_enabled,
+               active_time_enabled, active_from_minute, active_to_minute, active_days_mask,
                noise_summary_sent_at, last_completed_at, deleted_at
         FROM camera_recording_rules
         WHERE deleted_at IS NULL
@@ -298,6 +347,7 @@ pub async fn get_rule(rule_id: i64, pool: &SqlitePool) -> Result<Option<Recordin
         r#"
         SELECT id, name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
                cooldown_s, retention_days, enabled, notify_enabled, noise_enabled,
+               active_time_enabled, active_from_minute, active_to_minute, active_days_mask,
                noise_summary_sent_at, last_completed_at, deleted_at
         FROM camera_recording_rules
         WHERE id = ? AND deleted_at IS NULL
@@ -317,6 +367,7 @@ pub async fn get_rule_for_room(
         r#"
         SELECT r.id, r.name, r.camera_id, r.condition_logic, r.tail_seconds, r.max_segment_seconds,
                r.cooldown_s, r.retention_days, r.enabled, r.notify_enabled, r.noise_enabled,
+               r.active_time_enabled, r.active_from_minute, r.active_to_minute, r.active_days_mask,
                r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
         FROM camera_recording_rules r
         JOIN cameras c ON c.id = r.camera_id
@@ -383,7 +434,8 @@ pub async fn find_candidate_rules_by_entity(
         r#"
         SELECT DISTINCT r.id, r.name, r.camera_id, r.condition_logic, r.tail_seconds,
                r.max_segment_seconds, r.cooldown_s, r.retention_days, r.enabled, r.notify_enabled,
-               r.noise_enabled, r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
+               r.noise_enabled, r.active_time_enabled, r.active_from_minute, r.active_to_minute,
+               r.active_days_mask, r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
         FROM camera_recording_rules r
         JOIN camera_recording_rule_conditions c ON c.rule_id = r.id
         WHERE r.enabled != 0
@@ -538,6 +590,95 @@ pub async fn update_rule_recording_options(
     Ok(())
 }
 
+pub async fn update_rule_active_time(
+    rule_id: i64,
+    active_time: RecordingRuleActiveTime,
+    pool: &SqlitePool,
+) -> Result<()> {
+    if !active_time.enabled {
+        return reset_rule_active_time(rule_id, pool).await;
+    }
+    validate_active_time_window(
+        active_time.from_minute,
+        active_time.to_minute,
+        active_time.days_mask,
+    )?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET active_time_enabled = 1,
+            active_from_minute = ?,
+            active_to_minute = ?,
+            active_days_mask = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL
+        "#,
+    )
+    .bind(active_time.from_minute)
+    .bind(active_time.to_minute)
+    .bind(active_time.days_mask)
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule not found"));
+    }
+
+    Ok(())
+}
+
+pub async fn reset_rule_active_time(rule_id: i64, pool: &SqlitePool) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET active_time_enabled = 0,
+            active_from_minute = NULL,
+            active_to_minute = NULL,
+            active_days_mask = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL
+        "#,
+    )
+    .bind(ACTIVE_TIME_ALL_DAYS_MASK)
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule not found"));
+    }
+
+    Ok(())
+}
+
+pub async fn update_rule_active_days_mask(
+    rule_id: i64,
+    days_mask: i64,
+    pool: &SqlitePool,
+) -> Result<()> {
+    validate_days_mask(days_mask)?;
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET active_days_mask = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL AND active_time_enabled != 0
+        "#,
+    )
+    .bind(days_mask)
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule active time is not enabled"));
+    }
+
+    Ok(())
+}
+
 pub async fn mark_noise_summary_sent(
     rule_id: i64,
     at: DateTime<Utc>,
@@ -647,6 +788,9 @@ pub async fn duplicate_rule(rule_id: i64, pool: &SqlitePool) -> Result<i64> {
     if !rule.notifications_enabled() {
         toggle_rule_notifications(new_rule_id, pool).await?;
     }
+    if rule.active_time().enabled {
+        update_rule_active_time(new_rule_id, rule.active_time(), pool).await?;
+    }
 
     for condition in conditions {
         add_condition(
@@ -700,4 +844,200 @@ pub async fn mark_rule_completed(
     .await?;
 
     Ok(())
+}
+
+pub fn parse_active_time_window(raw: &str) -> std::result::Result<RecordingRuleActiveTime, String> {
+    let (from, to) = raw
+        .trim()
+        .split_once('-')
+        .ok_or_else(|| "Введите время в формате HH:MM-HH:MM.".to_string())?;
+    let from_minute = parse_hhmm(from)?;
+    let to_minute = parse_hhmm(to)?;
+    RecordingRuleActiveTime::window(from_minute, to_minute, ACTIVE_TIME_ALL_DAYS_MASK)
+        .map_err(active_time_error_text)
+}
+
+pub fn active_time_matches_now(rule: &RecordingRule) -> bool {
+    active_time_matches_at(rule.active_time(), Local::now())
+}
+
+pub fn active_time_matches_at(active_time: RecordingRuleActiveTime, now: DateTime<Local>) -> bool {
+    if !active_time.enabled {
+        return true;
+    }
+    if validate_active_time_window(
+        active_time.from_minute,
+        active_time.to_minute,
+        active_time.days_mask,
+    )
+    .is_err()
+    {
+        return false;
+    }
+
+    let minute = i64::from(now.hour() * 60 + now.minute());
+    let today = now.weekday().num_days_from_monday();
+    let from = active_time.from_minute;
+    let to = active_time.to_minute;
+
+    if from < to {
+        return day_enabled(active_time.days_mask, today) && minute >= from && minute < to;
+    }
+
+    if minute >= from {
+        return day_enabled(active_time.days_mask, today);
+    }
+    if minute < to {
+        let previous_day = (today + 6) % 7;
+        return day_enabled(active_time.days_mask, previous_day);
+    }
+    false
+}
+
+pub fn active_time_is_valid(active_time: RecordingRuleActiveTime) -> bool {
+    !active_time.enabled
+        || validate_active_time_window(
+            active_time.from_minute,
+            active_time.to_minute,
+            active_time.days_mask,
+        )
+        .is_ok()
+}
+
+pub fn format_minute(minute: i64) -> String {
+    let minute = minute.clamp(0, 1439);
+    format!("{:02}:{:02}", minute / 60, minute % 60)
+}
+
+pub fn active_time_error_text(error: anyhow::Error) -> String {
+    let text = error.to_string();
+    if text.contains("invalid time") {
+        "Время должно быть в диапазоне 00:00-23:59.".to_string()
+    } else if text.contains("same time") {
+        "Начало и конец не должны совпадать. Для круглосуточного режима выберите «Всегда»."
+            .to_string()
+    } else if text.contains("days mask") {
+        "Нужно выбрать хотя бы один день недели.".to_string()
+    } else {
+        text
+    }
+}
+
+fn validate_active_time_window(from_minute: i64, to_minute: i64, days_mask: i64) -> Result<()> {
+    if !(0..=1439).contains(&from_minute) || !(0..=1439).contains(&to_minute) {
+        return Err(anyhow!("invalid time minute"));
+    }
+    if from_minute == to_minute {
+        return Err(anyhow!("same time"));
+    }
+    validate_days_mask(days_mask)?;
+    Ok(())
+}
+
+fn validate_days_mask(days_mask: i64) -> Result<()> {
+    if !(1..=ACTIVE_TIME_ALL_DAYS_MASK).contains(&days_mask) {
+        return Err(anyhow!("invalid days mask"));
+    }
+    Ok(())
+}
+
+fn parse_hhmm(value: &str) -> std::result::Result<i64, String> {
+    let (hour, minute) = value
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| "Введите время в формате HH:MM-HH:MM.".to_string())?;
+    let hour = hour
+        .parse::<i64>()
+        .map_err(|_| "Часы должны быть числом от 00 до 23.".to_string())?;
+    let minute = minute
+        .parse::<i64>()
+        .map_err(|_| "Минуты должны быть числом от 00 до 59.".to_string())?;
+    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) {
+        return Err("Время должно быть в диапазоне 00:00-23:59.".to_string());
+    }
+    Ok(hour * 60 + minute)
+}
+
+fn day_enabled(days_mask: i64, day_index: u32) -> bool {
+    let bit = 1_i64 << day_index;
+    days_mask & bit != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn local_at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .single()
+            .expect("valid local datetime")
+    }
+
+    fn recording_rule_with_active_time(
+        active_from_minute: Option<i64>,
+        active_to_minute: Option<i64>,
+        active_days_mask: i64,
+    ) -> RecordingRule {
+        RecordingRule {
+            id: 1,
+            name: "Test".to_string(),
+            camera_id: 1,
+            condition_logic: ConditionLogic::Any.as_str().to_string(),
+            tail_seconds: 60,
+            max_segment_seconds: 60,
+            cooldown_s: 0,
+            retention_days: 30,
+            enabled: 1,
+            notify_enabled: 0,
+            noise_enabled: 0,
+            active_time_enabled: 1,
+            active_from_minute,
+            active_to_minute,
+            active_days_mask,
+            noise_summary_sent_at: None,
+            last_completed_at: None,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn active_time_regular_window_matches_inside_only() {
+        let active = RecordingRuleActiveTime::window(8 * 60, 20 * 60, ACTIVE_TIME_ALL_DAYS_MASK)
+            .expect("active time");
+
+        assert!(active_time_matches_at(active, local_at(2026, 6, 1, 12, 0)));
+        assert!(!active_time_matches_at(active, local_at(2026, 6, 1, 21, 0)));
+    }
+
+    #[test]
+    fn active_time_midnight_window_uses_previous_day_for_after_midnight() {
+        let friday_mask = 1_i64 << 4;
+        let active =
+            RecordingRuleActiveTime::window(22 * 60, 7 * 60, friday_mask).expect("active time");
+
+        assert!(active_time_matches_at(active, local_at(2026, 6, 5, 23, 0)));
+        assert!(active_time_matches_at(active, local_at(2026, 6, 6, 6, 30)));
+        assert!(!active_time_matches_at(active, local_at(2026, 6, 6, 23, 0)));
+    }
+
+    #[test]
+    fn active_time_days_mask_uses_monday_bit_zero() {
+        let monday_mask = 1_i64;
+        let active =
+            RecordingRuleActiveTime::window(8 * 60, 20 * 60, monday_mask).expect("active time");
+
+        assert!(active_time_matches_at(active, local_at(2026, 6, 1, 12, 0)));
+        assert!(!active_time_matches_at(active, local_at(2026, 6, 2, 12, 0)));
+    }
+
+    #[test]
+    fn invalid_enabled_active_time_does_not_match() {
+        let rule = recording_rule_with_active_time(None, Some(20 * 60), ACTIVE_TIME_ALL_DAYS_MASK);
+        let active = rule.active_time();
+
+        assert!(!active_time_is_valid(active));
+        assert!(!active_time_matches_at(active, local_at(2026, 6, 1, 12, 0)));
+    }
 }
