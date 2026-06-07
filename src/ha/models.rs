@@ -5,7 +5,9 @@ pub struct Entity {
     pub entity_id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub state: String,
+    #[serde(default)]
     pub device_class: Option<String>,
 }
 

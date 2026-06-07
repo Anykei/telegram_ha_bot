@@ -1,3 +1,4 @@
+pub(crate) mod action_groups;
 pub(crate) mod admin;
 pub(crate) mod cameras;
 pub(crate) mod common;

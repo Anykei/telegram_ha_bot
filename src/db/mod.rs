@@ -1,4 +1,5 @@
 pub(crate) mod access;
+pub(crate) mod action_groups;
 pub(crate) mod activity_log;
 pub(crate) mod camera_health;
 pub(crate) mod camera_recording_rule_conditions;

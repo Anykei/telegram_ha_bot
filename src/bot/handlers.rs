@@ -1108,7 +1108,28 @@ async fn send_recording_segment(
         return Ok(());
     };
 
-    let full_path = std::path::Path::new(&config.camera_recording_storage_root).join(path);
+    let (full_path, _) = match crate::core::camera_recording::recording_file_info(config, &path)
+        .await
+    {
+        Ok(file) => file,
+        Err(error) => {
+            log::warn!(
+                "Recording segment file is unavailable before send: user={}, camera={}, session={}, segment={}, path={}, error={:#}",
+                user_id,
+                camera_id,
+                session_id,
+                segment_id,
+                path,
+                error
+            );
+            bot.send_message(
+                chat_id,
+                "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
     send_recording_video_file(
         bot,
         chat_id,
@@ -1149,17 +1170,56 @@ async fn send_recording_all(
         return Ok(());
     }
 
+    let mut files = Vec::new();
+    let mut missing_files = 0usize;
     for segment in segments {
         if let Some(path) = segment.file_path {
-            let full_path = std::path::Path::new(&config.camera_recording_storage_root).join(path);
-            send_recording_video_file(
-                bot,
-                chat_id,
-                &full_path,
-                &format!("🎞 Часть {}", segment.segment_index),
-            )
-            .await?;
+            match crate::core::camera_recording::recording_file_info(config, &path).await {
+                Ok((full_path, _)) => files.push((segment.segment_index, full_path)),
+                Err(error) => {
+                    missing_files += 1;
+                    log::warn!(
+                        "Recording segment file is unavailable before send-all: user={}, camera={}, session={}, segment={}, path={}, error={:#}",
+                        user_id,
+                        camera_id,
+                        session_id,
+                        segment.id,
+                        path,
+                        error
+                    );
+                }
+            }
         }
+    }
+
+    if files.is_empty() {
+        bot.send_message(
+            chat_id,
+            "Файлы записи недоступны на диске. Проверьте папку хранения записей и логи сервиса.",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if missing_files > 0 {
+        bot.send_message(
+            chat_id,
+            format!(
+                "Часть файлов записи недоступна на диске: {}. Отправляю доступные части.",
+                missing_files
+            ),
+        )
+        .await?;
+    }
+
+    for (segment_index, full_path) in files {
+        send_recording_video_file(
+            bot,
+            chat_id,
+            &full_path,
+            &format!("🎞 Часть {}", segment_index),
+        )
+        .await?;
     }
 
     Ok(())
@@ -1174,13 +1234,39 @@ async fn send_recording_video_file(
     let metadata = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) => {
-            bot.send_message(chat_id, format!("Файл записи не найден: {}", error))
-                .await?;
+            log::warn!(
+                "Recording file disappeared before Telegram send: path={}, error={}",
+                path.display(),
+                error
+            );
+            bot.send_message(
+                chat_id,
+                "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
+            )
+            .await?;
             return Ok(());
         }
     };
+    if !metadata.is_file() {
+        log::warn!("Recording send path is not a file: path={}", path.display());
+        bot.send_message(
+            chat_id,
+            "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
+        )
+        .await?;
+        return Ok(());
+    }
 
     let size = metadata.len();
+    if size == 0 {
+        log::warn!("Recording send file is empty: path={}", path.display());
+        bot.send_message(
+            chat_id,
+            "Файл записи пустой. Проверьте поток камеры и логи сервиса.",
+        )
+        .await?;
+        return Ok(());
+    }
     let (send_path, send_size, compressed) = if size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
         match prepare_telegram_compressed_video(path).await {
             Ok(Some((path, size))) => (path, size, true),
@@ -2315,6 +2401,350 @@ pub async fn handle_rename_recording_rule_group_input(
     .await
 }
 
+pub async fn handle_add_action_group_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let name = match parse_action_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(&bot, &dialogue, &msg, State::AddActionGroup, text).await?;
+            return Ok(());
+        }
+    };
+
+    match crate::db::action_groups::create_action_group(&name, &config.db).await {
+        Ok(group_id) => {
+            let group_id_text = group_id.to_string();
+            let _ = crate::db::activity_log::log(
+                crate::db::activity_log::NewActivity {
+                    user_id: msg.from.as_ref().map(|user| user.id.0),
+                    kind: "action_group",
+                    entity_type: "action_group",
+                    entity_id: Some(&group_id_text),
+                    action: "action_group.create",
+                    status: "ok",
+                    message: Some(&name),
+                },
+                &config.db,
+            )
+            .await;
+            finalize_dialogue(
+                bot,
+                dialogue,
+                msg,
+                config,
+                Some(Payload::Admin(AdminPayload::ActionGroupDetail {
+                    group: group_id,
+                })),
+            )
+            .await
+        }
+        Err(error) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddActionGroup,
+                action_group_error_text(&error),
+            )
+            .await
+        }
+    }
+}
+
+pub async fn handle_rename_action_group_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    group_id: i64,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let name = match parse_action_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::RenameActionGroup { group_id },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    match crate::db::action_groups::rename_action_group(group_id, &name, &config.db).await {
+        Ok(()) => {
+            let group_id_text = group_id.to_string();
+            let _ = crate::db::activity_log::log(
+                crate::db::activity_log::NewActivity {
+                    user_id: msg.from.as_ref().map(|user| user.id.0),
+                    kind: "action_group",
+                    entity_type: "action_group",
+                    entity_id: Some(&group_id_text),
+                    action: "action_group.rename",
+                    status: "ok",
+                    message: Some(&name),
+                },
+                &config.db,
+            )
+            .await;
+            finalize_dialogue(
+                bot,
+                dialogue,
+                msg,
+                config,
+                Some(Payload::Admin(AdminPayload::ActionGroupDetail {
+                    group: group_id,
+                })),
+            )
+            .await
+        }
+        Err(error) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::RenameActionGroup { group_id },
+                action_group_error_text(&error),
+            )
+            .await
+        }
+    }
+}
+
+pub async fn handle_ha_native_alias_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    target_id: i64,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let name = match parse_action_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::RenameHaNativeTarget { target_id },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    crate::db::action_groups::set_ha_native_target_alias(target_id, &name, &config.db).await?;
+    let target_id_text = target_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "ha_native_target",
+            entity_type: "ha_native_target",
+            entity_id: Some(&target_id_text),
+            action: "ha_native_target.alias_update",
+            status: "ok",
+            message: Some(&name),
+        },
+        &config.db,
+    )
+    .await;
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(AdminPayload::HaNativeActionDetail {
+            action: target_id,
+        })),
+    )
+    .await
+}
+
+pub async fn handle_add_action_schedule_time_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (target, command): (
+        crate::db::action_groups::ActionTargetRef,
+        crate::db::action_groups::ActionScheduleCommand,
+    ),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let time_minute = match crate::db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
+        Ok(value) => value,
+        Err(error) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddActionScheduleTime { target, command },
+                error.to_string(),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    match crate::db::action_groups::create_action_schedule(
+        target,
+        command,
+        time_minute,
+        crate::db::action_groups::ALL_DAYS_MASK,
+        &config.db,
+    )
+    .await
+    {
+        Ok(schedule_id) => {
+            let schedule_id_text = schedule_id.to_string();
+            let _ = crate::db::activity_log::log(
+                crate::db::activity_log::NewActivity {
+                    user_id: msg.from.as_ref().map(|user| user.id.0),
+                    kind: "action_group",
+                    entity_type: "action_schedule",
+                    entity_id: Some(&schedule_id_text),
+                    action: "action_group.schedule_create",
+                    status: "ok",
+                    message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
+                },
+                &config.db,
+            )
+            .await;
+            finalize_dialogue(
+                bot,
+                dialogue,
+                msg,
+                config,
+                Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
+                    target,
+                    schedule: schedule_id,
+                })),
+            )
+            .await
+        }
+        Err(error) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddActionScheduleTime { target, command },
+                error.to_string(),
+            )
+            .await
+        }
+    }
+}
+
+pub async fn handle_edit_action_schedule_time_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (target, schedule_id): (crate::db::action_groups::ActionTargetRef, i64),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let time_minute = match crate::db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
+        Ok(value) => value,
+        Err(error) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::EditActionScheduleTime {
+                    target,
+                    schedule_id,
+                },
+                error.to_string(),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let schedule_matches = crate::db::action_groups::get_action_schedule(schedule_id, &config.db)
+        .await?
+        .map(|schedule| schedule.target_ref())
+        .transpose()?
+        .is_some_and(|schedule_target| schedule_target == target);
+    if !schedule_matches {
+        let user_id = msg.from.as_ref().map(|user| user.id.0);
+        let lang = match user_id {
+            Some(user_id) => crate::db::get_user_language(user_id, &config.db)
+                .await?
+                .unwrap_or(config.default_language),
+            None => config.default_language,
+        };
+        let notice = bot
+            .send_message(
+                msg.chat.id,
+                crate::i18n::t(lang, "action_groups.schedule_not_found"),
+            )
+            .await?;
+        crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, notice.id, 8);
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(AdminPayload::ActionSchedules { target })),
+        )
+        .await;
+    }
+
+    crate::db::action_groups::update_action_schedule_time(schedule_id, time_minute, &config.db)
+        .await?;
+    let schedule_id_text = schedule_id.to_string();
+    let _ = crate::db::activity_log::log(
+        crate::db::activity_log::NewActivity {
+            user_id: msg.from.as_ref().map(|user| user.id.0),
+            kind: "action_group",
+            entity_type: "action_schedule",
+            entity_id: Some(&schedule_id_text),
+            action: "action_group.schedule_time_update",
+            status: "ok",
+            message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
+        },
+        &config.db,
+    )
+    .await;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
+            target,
+            schedule: schedule_id,
+        })),
+    )
+    .await
+}
+
 pub async fn handle_recording_rule_wizard_source_value_input(
     bot: Bot,
     msg: Message,
@@ -2911,6 +3341,26 @@ fn parse_recording_rule_group_name(text: &str) -> std::result::Result<String, St
         return Err("Ошибка: название группы должно быть не длиннее 40 символов.".to_string());
     }
     Ok(name.to_string())
+}
+
+fn parse_action_group_name(text: &str) -> std::result::Result<String, String> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Err("Ошибка: название не должно быть пустым.".to_string());
+    }
+    if name.chars().count() > 80 {
+        return Err("Ошибка: название должно быть не длиннее 80 символов.".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn action_group_error_text(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    if text.contains("UNIQUE constraint failed") || text.contains("already exists") {
+        "Ошибка: группа с таким названием уже есть.".to_string()
+    } else {
+        format!("Ошибка: не удалось сохранить: {}", text)
+    }
 }
 
 fn recording_rule_group_error_text(error: &anyhow::Error) -> String {

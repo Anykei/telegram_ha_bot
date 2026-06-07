@@ -1,3 +1,5 @@
+pub(crate) mod action_groups;
+pub(crate) mod action_schedules;
 pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
 pub(crate) mod cameras;

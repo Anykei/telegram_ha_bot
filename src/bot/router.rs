@@ -73,6 +73,21 @@ pub enum State {
         room_id: Option<i64>,
         group_id: i64,
     },
+    AddActionGroup,
+    RenameActionGroup {
+        group_id: i64,
+    },
+    RenameHaNativeTarget {
+        target_id: i64,
+    },
+    AddActionScheduleTime {
+        target: db::action_groups::ActionTargetRef,
+        command: db::action_groups::ActionScheduleCommand,
+    },
+    EditActionScheduleTime {
+        target: db::action_groups::ActionTargetRef,
+        schedule_id: i64,
+    },
     EditRecordingRule {
         room_id: i64,
         rule_id: i64,
@@ -215,6 +230,20 @@ pub enum ControlPayload {
         room: i64,
         device: i64,
         cmd: DeviceCmd,
+    },
+    ActionGroups,
+    ActionGroupDetail {
+        group: i64,
+    },
+    ExecuteActionGroup {
+        group: i64,
+        command: db::action_groups::ActionGroupCommand,
+    },
+    HaNativeActionDetail {
+        action: i64,
+    },
+    ExecuteHaNativeAction {
+        action: i64,
     },
 }
 
@@ -740,6 +769,95 @@ pub enum AdminPayload {
         rule: i64,
         group: i64,
     },
+    ActionGroups,
+    ActionGroupDetail {
+        group: i64,
+    },
+    PromptCreateActionGroup,
+    PromptRenameActionGroup {
+        group: i64,
+    },
+    ConfirmDeleteActionGroup {
+        group: i64,
+    },
+    DeleteActionGroup {
+        group: i64,
+    },
+    ActionGroupItems {
+        group: i64,
+        page: u16,
+        filter: db::action_groups::ActionGroupItemsFilter,
+    },
+    ToggleActionGroupItem {
+        group: i64,
+        device: i64,
+        page: u16,
+        filter: db::action_groups::ActionGroupItemsFilter,
+    },
+    ToggleActionGroupAccess {
+        group: i64,
+    },
+    ToggleActionGroupEnabled {
+        group: i64,
+    },
+    ExecuteActionGroup {
+        group: i64,
+        command: db::action_groups::ActionGroupCommand,
+    },
+    HaNativeActionDetail {
+        action: i64,
+    },
+    ToggleHaNativeActionAccess {
+        action: i64,
+    },
+    ToggleHaNativeActionEnabled {
+        action: i64,
+    },
+    PromptHaNativeActionAlias {
+        action: i64,
+    },
+    ResetHaNativeActionAlias {
+        action: i64,
+    },
+    ExecuteHaNativeAction {
+        action: i64,
+    },
+    ActionSchedules {
+        target: db::action_groups::ActionTargetRef,
+    },
+    ActionScheduleDetail {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
+    PromptCreateActionScheduleTime {
+        target: db::action_groups::ActionTargetRef,
+        command: db::action_groups::ActionScheduleCommand,
+    },
+    PromptEditActionScheduleTime {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
+    ToggleActionScheduleDay {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+        day: u8,
+    },
+    CycleActionScheduleCommand {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
+    ToggleActionScheduleEnabled {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
+    ConfirmDeleteActionSchedule {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
+    DeleteActionSchedule {
+        target: db::action_groups::ActionTargetRef,
+        schedule: i64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -856,6 +974,48 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
     match payload {
         ControlPayload::ListRooms => {
             Ok(super::screens::rooms::render(ctx, RoomViewMode::Control).await?)
+        }
+        ControlPayload::ActionGroups => {
+            Ok(super::screens::action_groups::render_user_list(ctx).await?)
+        }
+        ControlPayload::ActionGroupDetail { group } => {
+            Ok(super::screens::action_groups::render_group_detail(ctx, group, false).await?)
+        }
+        ControlPayload::ExecuteActionGroup { group, command } => {
+            let result = crate::core::action_groups::execute_action_group(
+                group,
+                command,
+                crate::core::action_groups::ActionActor::User(ctx.user_id),
+                ctx.config.clone(),
+            )
+            .await;
+            let mut view =
+                super::screens::action_groups::render_group_detail(ctx, group, false).await?;
+            match result {
+                Ok(result) if result.status() == "ok" => view.notice = Some(result.user_message()),
+                Ok(result) => view.alert = Some(result.user_message()),
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
+        }
+        ControlPayload::HaNativeActionDetail { action } => {
+            Ok(super::screens::action_groups::render_ha_native_detail(ctx, action, false).await?)
+        }
+        ControlPayload::ExecuteHaNativeAction { action } => {
+            let result = crate::core::action_groups::execute_ha_native_target(
+                action,
+                crate::core::action_groups::ActionActor::User(ctx.user_id),
+                ctx.config.clone(),
+            )
+            .await;
+            let mut view =
+                super::screens::action_groups::render_ha_native_detail(ctx, action, false).await?;
+            match result {
+                Ok(result) if result.status() == "ok" => view.notice = Some(result.user_message()),
+                Ok(result) => view.alert = Some(result.user_message()),
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
         }
         ControlPayload::RoomDetail { room } => {
             if !db::access::can_view_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
@@ -1602,6 +1762,23 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
         }
         AdminPayload::WizardCancel => cancel_current_wizard(ctx).await,
         AdminPayload::WizardToggleGroup { group } => {
+            if current_wizard(&ctx).is_none() {
+                return super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(ctx)
+                    .await;
+            }
+            if db::camera_recording_rule_groups::get_group(group, &ctx.config.db)
+                .await?
+                .is_none()
+            {
+                let lang = ctx.lang;
+                let mut view =
+                    super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(
+                        ctx,
+                    )
+                    .await?;
+                view.alert = Some(t(lang, "admin.rule_groups.not_found").to_string());
+                return Ok(view);
+            }
             update_current_wizard(&ctx, |wizard| wizard.toggle_group(group))?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(
@@ -1926,6 +2103,404 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
         }
         AdminPayload::ActivityLog { filter } => {
             Ok(super::screens::admin::list_actions::render_activity_log(ctx, filter).await?)
+        }
+        AdminPayload::ActionGroups => {
+            Ok(super::screens::action_groups::render_admin_list(ctx).await?)
+        }
+        AdminPayload::ActionGroupDetail { group } => {
+            Ok(super::screens::action_groups::render_group_detail(ctx, group, true).await?)
+        }
+        AdminPayload::PromptCreateActionGroup => {
+            Ok(super::screens::action_groups::render_create_group_input(ctx))
+        }
+        AdminPayload::PromptRenameActionGroup { group } => {
+            Ok(super::screens::action_groups::render_rename_group_input(ctx, group))
+        }
+        AdminPayload::ConfirmDeleteActionGroup { group } => {
+            Ok(super::screens::action_groups::render_confirm_delete_group(ctx, group).await?)
+        }
+        AdminPayload::DeleteActionGroup { group } => {
+            let lang = ctx.lang;
+            let result = db::action_groups::delete_action_group(group, &ctx.config.db).await;
+            if result.is_ok() {
+                log_action_activity(
+                    &ctx,
+                    "action_group",
+                    "action_group",
+                    group,
+                    "action_group.delete",
+                    "ok",
+                    None,
+                )
+                .await;
+            }
+            let mut view = super::screens::action_groups::render_admin_list(ctx).await?;
+            match result {
+                Ok(()) => {
+                    view.notice =
+                        Some(crate::i18n::t(lang, "action_groups.group_deleted").to_string())
+                }
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
+        }
+        AdminPayload::ActionGroupItems {
+            group,
+            page,
+            filter,
+        } => Ok(
+            super::screens::action_groups::render_group_items(ctx, group, page, filter).await?,
+        ),
+        AdminPayload::ToggleActionGroupItem {
+            group,
+            device,
+            page,
+            filter,
+        } => {
+            let result =
+                db::action_groups::toggle_action_group_item(group, device, &ctx.config.db).await;
+            if let Ok(selected) = result.as_ref() {
+                let message = format!("device {}", device);
+                log_action_activity(
+                    &ctx,
+                    "action_group",
+                    "action_group",
+                    group,
+                    if *selected {
+                        "action_group.add_item"
+                    } else {
+                        "action_group.remove_item"
+                    },
+                    "ok",
+                    Some(&message),
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_group_items(ctx, group, page, filter).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::ToggleActionGroupAccess { group } => {
+            let result = db::action_groups::toggle_action_group_access(group, &ctx.config.db).await;
+            if let Ok(scope) = result.as_ref() {
+                log_action_activity(
+                    &ctx,
+                    "action_group",
+                    "action_group",
+                    group,
+                    "action_group.access_update",
+                    "ok",
+                    Some(scope),
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_group_detail(ctx, group, true).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::ToggleActionGroupEnabled { group } => {
+            let result =
+                db::action_groups::toggle_action_group_enabled(group, &ctx.config.db).await;
+            if let Ok(enabled) = result.as_ref() {
+                let message = if *enabled { "enabled" } else { "paused" };
+                log_action_activity(
+                    &ctx,
+                    "action_group",
+                    "action_group",
+                    group,
+                    "action_group.enabled_update",
+                    "ok",
+                    Some(message),
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_group_detail(ctx, group, true).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::ExecuteActionGroup { group, command } => {
+            let result = crate::core::action_groups::execute_action_group(
+                group,
+                command,
+                crate::core::action_groups::ActionActor::User(ctx.user_id),
+                ctx.config.clone(),
+            )
+            .await;
+            let mut view =
+                super::screens::action_groups::render_group_detail(ctx, group, true).await?;
+            match result {
+                Ok(result) if result.status() == "ok" => view.notice = Some(result.user_message()),
+                Ok(result) => view.alert = Some(result.user_message()),
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
+        }
+        AdminPayload::HaNativeActionDetail { action } => {
+            Ok(super::screens::action_groups::render_ha_native_detail(ctx, action, true).await?)
+        }
+        AdminPayload::ToggleHaNativeActionAccess { action } => {
+            let result =
+                db::action_groups::toggle_ha_native_target_access(action, &ctx.config.db).await;
+            if let Ok(scope) = result.as_ref() {
+                log_action_activity(
+                    &ctx,
+                    "ha_native_target",
+                    "ha_native_target",
+                    action,
+                    "ha_native_target.access_update",
+                    "ok",
+                    Some(scope),
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_ha_native_detail(ctx, action, true).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::ToggleHaNativeActionEnabled { action } => {
+            let result =
+                db::action_groups::toggle_ha_native_target_enabled(action, &ctx.config.db).await;
+            if let Ok(enabled) = result.as_ref() {
+                let message = if *enabled { "enabled" } else { "paused" };
+                log_action_activity(
+                    &ctx,
+                    "ha_native_target",
+                    "ha_native_target",
+                    action,
+                    "ha_native_target.enabled_update",
+                    "ok",
+                    Some(message),
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_ha_native_detail(ctx, action, true).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::PromptHaNativeActionAlias { action } => {
+            Ok(super::screens::action_groups::render_ha_alias_input(ctx, action))
+        }
+        AdminPayload::ResetHaNativeActionAlias { action } => {
+            let result =
+                db::action_groups::reset_ha_native_target_alias(action, &ctx.config.db).await;
+            if result.is_ok() {
+                log_action_activity(
+                    &ctx,
+                    "ha_native_target",
+                    "ha_native_target",
+                    action,
+                    "ha_native_target.alias_reset",
+                    "ok",
+                    None,
+                )
+                .await;
+            }
+            let mut view =
+                super::screens::action_groups::render_ha_native_detail(ctx, action, true).await?;
+            if let Err(error) = result {
+                view.alert = Some(error.to_string());
+            }
+            Ok(view)
+        }
+        AdminPayload::ExecuteHaNativeAction { action } => {
+            let result = crate::core::action_groups::execute_ha_native_target(
+                action,
+                crate::core::action_groups::ActionActor::User(ctx.user_id),
+                ctx.config.clone(),
+            )
+            .await;
+            let mut view =
+                super::screens::action_groups::render_ha_native_detail(ctx, action, true).await?;
+            match result {
+                Ok(result) if result.status() == "ok" => view.notice = Some(result.user_message()),
+                Ok(result) => view.alert = Some(result.user_message()),
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
+        }
+        AdminPayload::ActionSchedules { target } => {
+            Ok(super::screens::action_groups::render_schedules(ctx, target).await?)
+        }
+        AdminPayload::ActionScheduleDetail { target, schedule } => Ok(
+            super::screens::action_groups::render_schedule_detail(ctx, target, schedule).await?,
+        ),
+        AdminPayload::PromptCreateActionScheduleTime { target, command } => Ok(
+            super::screens::action_groups::render_schedule_time_input(ctx, target, command).await?,
+        ),
+        AdminPayload::PromptEditActionScheduleTime { target, schedule } => Ok(
+            super::screens::action_groups::render_edit_schedule_time_input(ctx, target, schedule)
+                .await?,
+        ),
+        AdminPayload::ToggleActionScheduleDay {
+            target,
+            schedule,
+            day,
+        } => {
+            let lang = ctx.lang;
+            let Some(current) = db::action_groups::get_action_schedule(schedule, &ctx.config.db).await?
+            else {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            };
+            if current.target_ref()? != target {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            }
+            let day_bit = 1_i64 << day;
+            let mut next_mask = current.days_mask ^ day_bit;
+            if next_mask == 0 {
+                next_mask = current.days_mask;
+            }
+            db::action_groups::update_action_schedule_days(schedule, next_mask, &ctx.config.db)
+                .await?;
+            let message = db::action_groups::format_days_mask(next_mask);
+            log_action_activity(
+                &ctx,
+                "action_group",
+                "action_schedule",
+                schedule,
+                "action_group.schedule_days_update",
+                "ok",
+                Some(message),
+            )
+            .await;
+            Ok(
+                super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
+                    .await?,
+            )
+        }
+        AdminPayload::CycleActionScheduleCommand { target, schedule } => {
+            let lang = ctx.lang;
+            let Some(current) = db::action_groups::get_action_schedule(schedule, &ctx.config.db).await?
+            else {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            };
+            if current.target_ref()? != target {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            }
+            match db::action_groups::cycle_action_schedule_command(schedule, &ctx.config.db).await {
+                Ok(command) => {
+                    log_action_activity(
+                        &ctx,
+                        "action_group",
+                        "action_schedule",
+                        schedule,
+                        "action_group.schedule_command_update",
+                        "ok",
+                        Some(&command),
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let mut view =
+                        super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
+                            .await?;
+                    view.alert = Some(error.to_string());
+                    return Ok(view);
+                }
+            }
+            Ok(
+                super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
+                    .await?,
+            )
+        }
+        AdminPayload::ToggleActionScheduleEnabled { target, schedule } => {
+            let lang = ctx.lang;
+            let Some(current) = db::action_groups::get_action_schedule(schedule, &ctx.config.db).await?
+            else {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            };
+            if current.target_ref()? != target {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            }
+            let enabled =
+                db::action_groups::toggle_action_schedule_enabled(schedule, &ctx.config.db).await?;
+            let message = if enabled { "enabled" } else { "paused" };
+            log_action_activity(
+                &ctx,
+                "action_group",
+                "action_schedule",
+                schedule,
+                "action_group.schedule_enabled_update",
+                "ok",
+                Some(message),
+            )
+            .await;
+            Ok(
+                super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
+                    .await?,
+            )
+        }
+        AdminPayload::ConfirmDeleteActionSchedule { target, schedule } => Ok(
+            super::screens::action_groups::render_confirm_delete_schedule(ctx, target, schedule)
+                .await?,
+        ),
+        AdminPayload::DeleteActionSchedule { target, schedule } => {
+            let lang = ctx.lang;
+            let schedule_matches = db::action_groups::get_action_schedule(schedule, &ctx.config.db)
+                .await?
+                .map(|current| current.target_ref())
+                .transpose()?
+                .is_some_and(|current_target| current_target == target);
+            if !schedule_matches {
+                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+                view.alert =
+                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
+                return Ok(view);
+            }
+            let result = db::action_groups::delete_action_schedule(schedule, &ctx.config.db).await;
+            if result.is_ok() {
+                log_action_activity(
+                    &ctx,
+                    "action_group",
+                    "action_schedule",
+                    schedule,
+                    "action_group.schedule_delete",
+                    "ok",
+                    None,
+                )
+                .await;
+            }
+            let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
+            match result {
+                Ok(()) => {
+                    view.notice =
+                        Some(crate::i18n::t(lang, "action_groups.schedule_deleted").to_string())
+                }
+                Err(error) => view.alert = Some(error.to_string()),
+            }
+            Ok(view)
         }
         AdminPayload::RecordingRuleGroups => {
             Ok(super::screens::admin::list_actions::render_recording_rule_groups(ctx).await?)
@@ -2731,6 +3306,31 @@ async fn log_recording_rule_activity(
     .await;
 }
 
+async fn log_action_activity(
+    ctx: &RenderContext,
+    kind: &'static str,
+    entity_type: &'static str,
+    entity_id: i64,
+    action: &'static str,
+    status: &'static str,
+    message: Option<&str>,
+) {
+    let entity_id = entity_id.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(ctx.user_id),
+            kind,
+            entity_type,
+            entity_id: Some(&entity_id),
+            action,
+            status,
+            message,
+        },
+        &ctx.config.db,
+    )
+    .await;
+}
+
 fn active_time_from_preset(
     preset: RecordingRuleActiveTimePreset,
 ) -> anyhow::Result<db::camera_recording_rules::RecordingRuleActiveTime> {
@@ -3463,6 +4063,18 @@ mod tests {
                 device: 2,
                 cmd: DeviceCmd::EnterManualInput,
             },
+            ControlPayload::ActionGroups,
+            ControlPayload::ActionGroupDetail { group: 3 },
+            ControlPayload::ExecuteActionGroup {
+                group: 3,
+                command: db::action_groups::ActionGroupCommand::Toggle,
+            },
+            ControlPayload::ExecuteActionGroup {
+                group: 3,
+                command: db::action_groups::ActionGroupCommand::TurnOn,
+            },
+            ControlPayload::HaNativeActionDetail { action: 4 },
+            ControlPayload::ExecuteHaNativeAction { action: 4 },
         ]
     }
 
@@ -3757,6 +4369,71 @@ mod tests {
                 rule: 2,
                 group: 3,
             },
+            AdminPayload::ActionGroups,
+            AdminPayload::ActionGroupDetail { group: 3 },
+            AdminPayload::PromptCreateActionGroup,
+            AdminPayload::PromptRenameActionGroup { group: 3 },
+            AdminPayload::ConfirmDeleteActionGroup { group: 3 },
+            AdminPayload::DeleteActionGroup { group: 3 },
+            AdminPayload::ActionGroupItems {
+                group: 3,
+                page: 1,
+                filter: db::action_groups::ActionGroupItemsFilter::All,
+            },
+            AdminPayload::ToggleActionGroupItem {
+                group: 3,
+                device: 4,
+                page: 1,
+                filter: db::action_groups::ActionGroupItemsFilter::Selected,
+            },
+            AdminPayload::ToggleActionGroupAccess { group: 3 },
+            AdminPayload::ToggleActionGroupEnabled { group: 3 },
+            AdminPayload::ExecuteActionGroup {
+                group: 3,
+                command: db::action_groups::ActionGroupCommand::TurnOff,
+            },
+            AdminPayload::HaNativeActionDetail { action: 4 },
+            AdminPayload::ToggleHaNativeActionAccess { action: 4 },
+            AdminPayload::ToggleHaNativeActionEnabled { action: 4 },
+            AdminPayload::PromptHaNativeActionAlias { action: 4 },
+            AdminPayload::ResetHaNativeActionAlias { action: 4 },
+            AdminPayload::ExecuteHaNativeAction { action: 4 },
+            AdminPayload::ActionSchedules {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+            },
+            AdminPayload::ActionScheduleDetail {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+                schedule: 5,
+            },
+            AdminPayload::PromptCreateActionScheduleTime {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+                command: db::action_groups::ActionScheduleCommand::TurnOn,
+            },
+            AdminPayload::PromptEditActionScheduleTime {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+                schedule: 5,
+            },
+            AdminPayload::ToggleActionScheduleDay {
+                target: db::action_groups::ActionTargetRef::HaNative(4),
+                schedule: 5,
+                day: 6,
+            },
+            AdminPayload::CycleActionScheduleCommand {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+                schedule: 5,
+            },
+            AdminPayload::ToggleActionScheduleEnabled {
+                target: db::action_groups::ActionTargetRef::BotGroup(3),
+                schedule: 5,
+            },
+            AdminPayload::ConfirmDeleteActionSchedule {
+                target: db::action_groups::ActionTargetRef::HaNative(4),
+                schedule: 5,
+            },
+            AdminPayload::DeleteActionSchedule {
+                target: db::action_groups::ActionTargetRef::HaNative(4),
+                schedule: 5,
+            },
         ];
 
         payloads.extend(
@@ -3890,6 +4567,11 @@ mod tests {
             ControlPayload::RoomDetail { .. } => "ControlPayload::RoomDetail",
             ControlPayload::DeviceControl { .. } => "ControlPayload::DeviceControl",
             ControlPayload::QuickAction { .. } => "ControlPayload::QuickAction",
+            ControlPayload::ActionGroups => "ControlPayload::ActionGroups",
+            ControlPayload::ActionGroupDetail { .. } => "ControlPayload::ActionGroupDetail",
+            ControlPayload::ExecuteActionGroup { .. } => "ControlPayload::ExecuteActionGroup",
+            ControlPayload::HaNativeActionDetail { .. } => "ControlPayload::HaNativeActionDetail",
+            ControlPayload::ExecuteHaNativeAction { .. } => "ControlPayload::ExecuteHaNativeAction",
         }
     }
 
@@ -4154,6 +4836,54 @@ mod tests {
             AdminPayload::ToggleRecordingRuleEditGroupItem { .. } => {
                 "AdminPayload::ToggleRecordingRuleEditGroupItem"
             }
+            AdminPayload::ActionGroups => "AdminPayload::ActionGroups",
+            AdminPayload::ActionGroupDetail { .. } => "AdminPayload::ActionGroupDetail",
+            AdminPayload::PromptCreateActionGroup => "AdminPayload::PromptCreateActionGroup",
+            AdminPayload::PromptRenameActionGroup { .. } => "AdminPayload::PromptRenameActionGroup",
+            AdminPayload::ConfirmDeleteActionGroup { .. } => {
+                "AdminPayload::ConfirmDeleteActionGroup"
+            }
+            AdminPayload::DeleteActionGroup { .. } => "AdminPayload::DeleteActionGroup",
+            AdminPayload::ActionGroupItems { .. } => "AdminPayload::ActionGroupItems",
+            AdminPayload::ToggleActionGroupItem { .. } => "AdminPayload::ToggleActionGroupItem",
+            AdminPayload::ToggleActionGroupAccess { .. } => "AdminPayload::ToggleActionGroupAccess",
+            AdminPayload::ToggleActionGroupEnabled { .. } => {
+                "AdminPayload::ToggleActionGroupEnabled"
+            }
+            AdminPayload::ExecuteActionGroup { .. } => "AdminPayload::ExecuteActionGroup",
+            AdminPayload::HaNativeActionDetail { .. } => "AdminPayload::HaNativeActionDetail",
+            AdminPayload::ToggleHaNativeActionAccess { .. } => {
+                "AdminPayload::ToggleHaNativeActionAccess"
+            }
+            AdminPayload::ToggleHaNativeActionEnabled { .. } => {
+                "AdminPayload::ToggleHaNativeActionEnabled"
+            }
+            AdminPayload::PromptHaNativeActionAlias { .. } => {
+                "AdminPayload::PromptHaNativeActionAlias"
+            }
+            AdminPayload::ResetHaNativeActionAlias { .. } => {
+                "AdminPayload::ResetHaNativeActionAlias"
+            }
+            AdminPayload::ExecuteHaNativeAction { .. } => "AdminPayload::ExecuteHaNativeAction",
+            AdminPayload::ActionSchedules { .. } => "AdminPayload::ActionSchedules",
+            AdminPayload::ActionScheduleDetail { .. } => "AdminPayload::ActionScheduleDetail",
+            AdminPayload::PromptCreateActionScheduleTime { .. } => {
+                "AdminPayload::PromptCreateActionScheduleTime"
+            }
+            AdminPayload::PromptEditActionScheduleTime { .. } => {
+                "AdminPayload::PromptEditActionScheduleTime"
+            }
+            AdminPayload::ToggleActionScheduleDay { .. } => "AdminPayload::ToggleActionScheduleDay",
+            AdminPayload::CycleActionScheduleCommand { .. } => {
+                "AdminPayload::CycleActionScheduleCommand"
+            }
+            AdminPayload::ToggleActionScheduleEnabled { .. } => {
+                "AdminPayload::ToggleActionScheduleEnabled"
+            }
+            AdminPayload::ConfirmDeleteActionSchedule { .. } => {
+                "AdminPayload::ConfirmDeleteActionSchedule"
+            }
+            AdminPayload::DeleteActionSchedule { .. } => "AdminPayload::DeleteActionSchedule",
         }
     }
 

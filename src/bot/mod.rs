@@ -140,6 +140,41 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
             .endpoint(handlers::handle_rename_recording_rule_group_input),
         )
         .branch(
+            dptree::filter(|state: State| matches!(state, State::AddActionGroup))
+                .endpoint(handlers::handle_add_action_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameActionGroup { group_id } => Some(group_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_rename_action_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameHaNativeTarget { target_id } => Some(target_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_ha_native_alias_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::AddActionScheduleTime { target, command } => Some((target, command)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_action_schedule_time_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditActionScheduleTime {
+                    target,
+                    schedule_id,
+                } => Some((target, schedule_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_action_schedule_time_input),
+        )
+        .branch(
             dptree::filter_map(|state: State| match state {
                 State::EditRecordingRule { room_id, rule_id } => Some((room_id, rule_id)),
                 _ => None,

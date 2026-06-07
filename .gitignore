@@ -9,4 +9,5 @@ sqlite:
 .continue
 
 /docs
-/docks/recording-rule-groups/SPEC.md
+/docks/*SPEC*.md
+/docks/**/SPEC.md

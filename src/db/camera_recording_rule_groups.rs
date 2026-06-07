@@ -261,7 +261,7 @@ pub async fn list_groups_visible_to_user(
         return list_groups(pool).await;
     }
 
-    let groups = sqlx::query_as::<_, RecordingRuleGroup>(
+    Ok(sqlx::query_as::<_, RecordingRuleGroup>(
         r#"
         SELECT g.id, g.name, g.enabled, g.access_scope, g.created_at, COUNT(r.id) AS rules_count
         FROM camera_recording_rule_groups g
@@ -273,16 +273,7 @@ pub async fn list_groups_visible_to_user(
         "#,
     )
     .fetch_all(pool)
-    .await?;
-
-    let mut visible = Vec::new();
-    for group in groups {
-        if user_can_access_all_group_cameras(user_id, false, group.id, pool).await? {
-            visible.push(group);
-        }
-    }
-
-    Ok(visible)
+    .await?)
 }
 
 pub async fn can_user_toggle_group(
@@ -301,11 +292,7 @@ pub async fn can_user_toggle_group(
             .fetch_optional(pool)
             .await?;
 
-    if access_scope.as_deref() != Some("all_users") {
-        return Ok(false);
-    }
-
-    user_can_access_all_group_cameras(user_id, false, group_id, pool).await
+    Ok(access_scope.as_deref() == Some("all_users"))
 }
 
 pub async fn toggle_rule_in_group(rule_id: i64, group_id: i64, pool: &SqlitePool) -> Result<bool> {
@@ -448,21 +435,6 @@ pub async fn list_group_cameras_visible_to_user(
         }
     }
     Ok(visible)
-}
-
-async fn user_can_access_all_group_cameras(
-    user_id: u64,
-    is_admin: bool,
-    group_id: i64,
-    pool: &SqlitePool,
-) -> Result<bool> {
-    let cameras = list_group_cameras(group_id, pool).await?;
-    for camera in cameras {
-        if !user_can_access_group_camera(user_id, is_admin, &camera, pool).await? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 async fn user_can_access_group_camera(
@@ -757,7 +729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_users_group_with_inaccessible_camera_is_hidden_from_regular_user() {
+    async fn all_users_group_with_inaccessible_camera_stays_toggleable_for_regular_user() {
         let pool = setup_pool().await;
         let group_id = create_group("Охрана", &pool).await.expect("create group");
         cycle_group_access_scope(group_id, &pool)
@@ -797,8 +769,8 @@ mod tests {
             .await
             .expect("visible groups");
 
-        assert!(visible.is_empty());
-        assert!(!can_user_toggle_group(42, 1, group_id, &pool)
+        assert_eq!(visible.len(), 1);
+        assert!(can_user_toggle_group(42, 1, group_id, &pool)
             .await
             .expect("can toggle"));
     }

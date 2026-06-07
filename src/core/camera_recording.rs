@@ -1,7 +1,7 @@
 use crate::bot::utils::md;
 use crate::db;
 use crate::models::{AppConfig, NotificationData};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use chrono::{Duration, Utc};
 use log::{debug, error, info, warn};
 use std::path::{Path, PathBuf};
@@ -281,6 +281,10 @@ async fn capture_and_store_segment(
     segment_duration: u32,
 ) -> Result<(String, i64)> {
     let bytes = crate::core::cameras::capture_clip(camera, segment_duration).await?;
+    ensure!(
+        !bytes.is_empty(),
+        "camera clip capture returned an empty recording"
+    );
     let relative_path = segment_relative_path(camera.id, session_id, segment_index);
     let final_path = Path::new(&config.camera_recording_storage_root).join(&relative_path);
     let tmp_path = tmp_segment_path(&final_path);
@@ -298,7 +302,46 @@ async fn capture_and_store_segment(
         .await
         .with_context(|| format!("failed to publish recording {}", final_path.display()))?;
 
-    Ok((relative_path, bytes.len() as i64))
+    let metadata = tokio::fs::metadata(&final_path).await.with_context(|| {
+        format!(
+            "failed to stat published recording {}",
+            final_path.display()
+        )
+    })?;
+    ensure!(
+        metadata.is_file(),
+        "published recording path is not a file: {}",
+        final_path.display()
+    );
+    let size_bytes = metadata.len();
+    if size_bytes == 0 {
+        let _ = tokio::fs::remove_file(&final_path).await;
+        anyhow::bail!(
+            "published recording file is empty: {}",
+            final_path.display()
+        );
+    }
+    if size_bytes != bytes.len() as u64 {
+        warn!(
+            "Published recording size differs from captured bytes: session={}, camera={} {}, path={}, captured={} bytes, stored={} bytes",
+            session_id,
+            camera.id,
+            camera.name,
+            final_path.display(),
+            bytes.len(),
+            size_bytes
+        );
+    }
+    info!(
+        "Published recording file: session={}, camera={} {}, path={}, size={} bytes",
+        session_id,
+        camera.id,
+        camera.name,
+        final_path.display(),
+        size_bytes
+    );
+
+    Ok((relative_path, i64::try_from(size_bytes).unwrap_or(i64::MAX)))
 }
 
 fn segment_relative_path(camera_id: i64, session_id: i64, segment_index: i64) -> String {
@@ -315,6 +358,33 @@ fn tmp_segment_path(final_path: &Path) -> PathBuf {
         .map(|name| name.to_string_lossy())
         .unwrap_or_default();
     final_path.with_file_name(format!(".{}.tmp", file_name))
+}
+
+pub(crate) fn recording_file_path(config: &AppConfig, file_path: &str) -> PathBuf {
+    Path::new(&config.camera_recording_storage_root).join(file_path)
+}
+
+pub(crate) async fn recording_file_info(
+    config: &AppConfig,
+    file_path: &str,
+) -> Result<(PathBuf, u64)> {
+    let full_path = recording_file_path(config, file_path);
+    let metadata = tokio::fs::metadata(&full_path)
+        .await
+        .with_context(|| format!("recording file is missing: {}", full_path.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "recording path is not a file: {}",
+        full_path.display()
+    );
+    let size_bytes = metadata.len();
+    ensure!(
+        size_bytes > 0,
+        "recording file is empty: {}",
+        full_path.display()
+    );
+
+    Ok((full_path, size_bytes))
 }
 
 async fn next_segment_index(session_id: i64, config: &Arc<AppConfig>) -> Result<i64> {

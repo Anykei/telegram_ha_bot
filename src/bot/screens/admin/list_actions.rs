@@ -4159,6 +4159,12 @@ pub async fn render_create_recording_rule_group_for_edit_input(
 pub async fn render_create_recording_rule_group_for_wizard_input(
     ctx: RenderContext,
 ) -> Result<View> {
+    if wizard_state(&ctx).is_none() {
+        let mut view = render(ctx).await?;
+        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
+        return Ok(view);
+    }
+
     let lang = ctx.lang;
     Ok(render_wizard_user_input(
         ctx,
@@ -4752,6 +4758,10 @@ pub fn make_keyboard(lang: crate::i18n::Language) -> InlineKeyboardMarkup {
                 filter: ActivityLogFilter::All,
             })
             .to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            t(lang, "admin.action_groups"),
+            Payload::Admin(AdminPayload::ActionGroups).to_string(),
         )],
         vec![InlineKeyboardButton::callback(
             t(lang, "admin.rule_groups"),

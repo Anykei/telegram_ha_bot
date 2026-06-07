@@ -39,6 +39,8 @@ pub trait HomeAssistantClient: Send + Sync {
 
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>>;
 
+    async fn fetch_action_entities(&self) -> Result<Vec<Entity>>;
+
     async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()>;
 
     async fn call_service_with_data(
@@ -87,9 +89,16 @@ impl HAClient {
             return Err(anyhow::anyhow!("HA API Error {}: {}", status, body));
         }
 
-        res.json::<T>()
+        let body = res
+            .text()
             .await
-            .context("Failed to parse template response")
+            .context("Failed to read template response body")?;
+        serde_json::from_str::<T>(&body).with_context(|| {
+            format!(
+                "Failed to parse template response: {}",
+                short_template_response(&body)
+            )
+        })
     }
 
     pub async fn fetch_rooms(&self) -> Result<Vec<Room>> {
@@ -197,10 +206,10 @@ impl HAClient {
               {{%- set items = {} -%}}
               {{%- for eid in items -%}}
               {{
-                "entity_id": "{{{{ eid }}}}",
-                "state": "{{{{ states(eid) }}}}",
-                "friendly_name": "{{{{ state_attr(eid, 'friendly_name') | default('', true) | replace('"', '\\"') }}}}",
-                "device_class": "{{{{ state_attr(eid, 'device_class') | default('', true) }}}}"
+                "entity_id": {{{{ eid | to_json }}}},
+                "state": {{{{ states(eid) | to_json }}}},
+                "name": {{{{ (state_attr(eid, 'friendly_name') | default(eid, true)) | to_json }}}},
+                "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}}
               }} {{{{ "," if not loop.last }}}}
               {{%- endfor -%}}
             ]"#,
@@ -208,6 +217,22 @@ impl HAClient {
         );
 
         self.post_template(&template).await
+    }
+
+    pub async fn fetch_action_entities(&self) -> Result<Vec<Entity>> {
+        let template = r#"[
+          {%- set items = states.script | list + states.scene | list -%}
+          {%- for item in items -%}
+          {
+            "entity_id": {{ item.entity_id | to_json }},
+            "state": {{ item.state | to_json }},
+            "name": {{ (state_attr(item.entity_id, 'friendly_name') | default(item.entity_id, true)) | to_json }},
+            "device_class": {{ (state_attr(item.entity_id, 'device_class') | default('', true)) | to_json }}
+          } {{ "," if not loop.last }}
+          {%- endfor -%}
+        ]"#;
+
+        self.post_template(template).await
     }
 
     pub async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()> {
@@ -255,6 +280,17 @@ impl HAClient {
     }
 }
 
+fn short_template_response(body: &str) -> String {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= 500 {
+        return normalized;
+    }
+
+    let mut short = normalized.chars().take(500).collect::<String>();
+    short.push_str("...");
+    short
+}
+
 #[async_trait::async_trait]
 impl HomeAssistantClient for HAClient {
     async fn health_check(&self) -> Result<()> {
@@ -276,6 +312,10 @@ impl HomeAssistantClient for HAClient {
 
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
         HAClient::fetch_states_by_ids(self, entity_ids).await
+    }
+
+    async fn fetch_action_entities(&self) -> Result<Vec<Entity>> {
+        HAClient::fetch_action_entities(self).await
     }
 
     async fn call_service(&self, domain: &str, service: &str, entity_id: &str) -> Result<()> {

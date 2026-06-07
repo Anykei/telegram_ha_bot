@@ -190,6 +190,10 @@ async fn main() -> Result<()> {
         app_config.clone(),
         cancel_token.clone(),
     );
+    let action_schedule_handle = core::action_schedules::spawn_action_schedule_worker(
+        app_config.clone(),
+        cancel_token.clone(),
+    );
     let maintenance_handle =
         core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
     spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
@@ -216,6 +220,7 @@ async fn main() -> Result<()> {
         ("ha_event_listener", event_listener_handle),
         ("notification_processor", notification_handle),
         ("camera_recording_worker", recording_handle),
+        ("action_schedule_worker", action_schedule_handle),
         ("background_maintenance", maintenance_handle),
     ])
     .await;

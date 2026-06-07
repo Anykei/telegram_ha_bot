@@ -332,10 +332,9 @@ pub async fn render_recording_session(
     let segments =
         crate::db::camera_recording_segments::list_session_segments(session_id, &ctx.config.db)
             .await?;
-    let ready_segments = segments
-        .iter()
-        .filter(|segment| segment.status == "ready" && segment.file_path.is_some())
-        .count();
+    let (sendable_segments, missing_ready_files) =
+        collect_sendable_recording_segments(&ctx.config, session_id, &segments).await;
+    let ready_segments = sendable_segments.len();
     let total_duration: i64 = segments.iter().map(|segment| segment.duration_s).sum();
     let completed = session.completed_at.unwrap_or_else(Utc::now);
     let partial = session.status == "failed" && ready_segments > 0;
@@ -345,10 +344,7 @@ pub async fn render_recording_session(
 
     let mut rows = Vec::new();
     if ready_segments == 1 {
-        if let Some(segment) = segments
-            .iter()
-            .find(|segment| segment.status == "ready" && segment.file_path.is_some())
-        {
+        if let Some(segment) = sendable_segments.first() {
             rows.push(vec![InlineKeyboardButton::callback(
                 t(ctx.lang, "camera.recording.send_video"),
                 Payload::Camera(CameraPayload::SendRecordingSegment {
@@ -407,6 +403,7 @@ pub async fn render_recording_session(
     } else {
         String::new()
     };
+    let disk_warning = recording_disk_warning(ctx.lang, missing_ready_files);
     let failure_details = if session.status == "failed" {
         recording_failure_reason(&session, &segments)
             .map(|reason| {
@@ -422,7 +419,7 @@ pub async fn render_recording_session(
     };
 
     let text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}",
+        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}{}",
         t(ctx.lang, "camera.recording.header"),
         t(ctx.lang, "camera.recording.camera"),
         camera.name,
@@ -440,6 +437,7 @@ pub async fn render_recording_session(
         t(ctx.lang, "camera.recording.keep_until"),
         crate::bot::format::datetime(session.expires_at),
         warning,
+        disk_warning,
         failure_details
     );
 
@@ -454,6 +452,62 @@ pub async fn render_recording_session(
         }),
         ..Default::default()
     })
+}
+
+async fn collect_sendable_recording_segments<'a>(
+    config: &crate::models::AppConfig,
+    session_id: i64,
+    segments: &'a [crate::db::camera_recording_segments::RecordingSegment],
+) -> (
+    Vec<&'a crate::db::camera_recording_segments::RecordingSegment>,
+    usize,
+) {
+    let mut sendable = Vec::new();
+    let mut missing_ready_files = 0usize;
+
+    for segment in segments {
+        if segment.status != "ready" {
+            continue;
+        }
+
+        let Some(file_path) = segment.file_path.as_deref() else {
+            missing_ready_files += 1;
+            continue;
+        };
+
+        match crate::core::camera_recording::recording_file_info(config, file_path).await {
+            Ok(_) => sendable.push(segment),
+            Err(error) => {
+                missing_ready_files += 1;
+                log::debug!(
+                    "Recording segment is not sendable: session={}, segment={}, path={}, error={:#}",
+                    session_id,
+                    segment.id,
+                    file_path,
+                    error
+                );
+            }
+        }
+    }
+
+    (sendable, missing_ready_files)
+}
+
+fn recording_disk_warning(lang: crate::i18n::Language, missing_ready_files: usize) -> String {
+    if missing_ready_files == 0 {
+        return String::new();
+    }
+
+    match lang {
+        crate::i18n::Language::Ru => format!(
+            "\n\n⚠️ Недоступных файлов на диске: {}. Проверьте папку хранения записей.",
+            missing_ready_files
+        ),
+        crate::i18n::Language::En => format!(
+            "\n\n⚠️ Files unavailable on disk: {}. Check the recordings storage folder.",
+            missing_ready_files
+        ),
+    }
 }
 
 fn recording_failure_reason<'a>(
