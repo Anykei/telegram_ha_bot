@@ -114,6 +114,68 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         )
         .branch(
             dptree::filter_map(|state: State| match state {
+                State::AddRecordingRuleGroup { room_id } => Some(room_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_recording_rule_group_input),
+        )
+        .branch(
+            dptree::filter(|state: State| matches!(state, State::AddRecordingRuleGroupForWizard))
+                .endpoint(handlers::handle_add_recording_rule_group_for_wizard_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::AddRecordingRuleGroupForEdit { room_id, rule_id } => {
+                    Some((room_id, rule_id))
+                }
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_recording_rule_group_for_edit_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameRecordingRuleGroup { room_id, group_id } => Some((room_id, group_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_rename_recording_rule_group_input),
+        )
+        .branch(
+            dptree::filter(|state: State| matches!(state, State::AddActionGroup))
+                .endpoint(handlers::handle_add_action_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameActionGroup { group_id } => Some(group_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_rename_action_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameHaNativeTarget { target_id } => Some(target_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_ha_native_alias_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::AddActionScheduleTime { target, command } => Some((target, command)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_action_schedule_time_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditActionScheduleTime {
+                    target,
+                    schedule_id,
+                } => Some((target, schedule_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_action_schedule_time_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
                 State::EditRecordingRule { room_id, rule_id } => Some((room_id, rule_id)),
                 _ => None,
             })
@@ -129,6 +191,13 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 _ => None,
             })
             .endpoint(handlers::handle_edit_recording_rule_number_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditRecordingRuleActiveTime { room_id, rule_id } => Some((room_id, rule_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_edit_recording_rule_active_time_input),
         )
         .branch(
             dptree::filter_map(|state: State| match state {
@@ -148,6 +217,12 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 _ => None,
             })
             .endpoint(handlers::handle_recording_rule_wizard_source_value_input),
+        )
+        .branch(
+            dptree::filter(|state: State| {
+                matches!(state, State::RecordingRuleWizardActiveTimeValue)
+            })
+            .endpoint(handlers::handle_recording_rule_wizard_active_time_input),
         )
         .branch(
             dptree::filter(|state: State| {

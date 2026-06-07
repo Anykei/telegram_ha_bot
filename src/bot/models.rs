@@ -92,6 +92,72 @@ impl View {
 
         final_parts.join("\n")
     }
+
+    pub fn get_plain_text(&self) -> String {
+        let header_title = self
+            .header
+            .clone()
+            .unwrap_or_else(|| format!("🏠 {}", t(self.lang, "app.title")));
+        let separator = "────────────────────";
+
+        let mut status_lines = Vec::new();
+        for item in &self.notifications {
+            let time_ago =
+                crate::core::presentation::StateFormatter::format_last_update(item.last_update);
+
+            status_lines.push(format!(
+                "{} {}: {} {}",
+                item.icon, item.label, item.value, time_ago
+            ));
+        }
+        let status_block = status_lines.join("\n");
+
+        let mut body_parts = Vec::new();
+
+        if let Some(notice_msg) = &self.notice {
+            body_parts.push(format!(
+                "✅ {}\n{}",
+                t(self.lang, "common.notice"),
+                notice_msg
+            ));
+        }
+
+        if let Some(alert_msg) = &self.alert {
+            body_parts.push(format!(
+                "⚠️ {}\n{}",
+                t(self.lang, "common.error"),
+                alert_msg
+            ));
+        }
+
+        if !self.text.is_empty() {
+            body_parts.push(self.text.clone());
+        }
+
+        let mut final_parts = Vec::new();
+
+        final_parts.push(format!("{}\n{}", header_title, separator));
+
+        if !status_block.is_empty() {
+            final_parts.push(status_block);
+            final_parts.push(separator.to_string());
+        }
+
+        let body_content = body_parts.join("\n\n");
+        if !body_content.is_empty() {
+            final_parts.push(body_content);
+        }
+
+        let refreshed_at = Local::now().format("%H:%M:%S").to_string();
+        final_parts.push(separator.to_string());
+        final_parts.push(format!(
+            "{} {}",
+            t(self.lang, "common.updated"),
+            refreshed_at
+        ));
+
+        final_parts.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +181,17 @@ mod tests {
 
         assert!(text.contains("ГОТОВО:"));
         assert!(!text.contains("ОШИБКА:"));
+    }
+
+    #[test]
+    fn plain_text_view_does_not_markdown_escape_body() {
+        let text = View {
+            text: "sensor.kitchen_temp (avg)_1!".to_string(),
+            ..Default::default()
+        }
+        .get_plain_text();
+
+        assert!(text.contains("sensor.kitchen_temp (avg)_1!"));
+        assert!(!text.contains("sensor\\.kitchen"));
     }
 }

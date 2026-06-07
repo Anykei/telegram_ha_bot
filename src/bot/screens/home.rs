@@ -27,6 +27,11 @@ pub fn make_keyboard(root_admin: bool, lang: Language) -> InlineKeyboardMarkup {
     )]];
 
     rows.push(vec![InlineKeyboardButton::callback(
+        t(lang, "home.action_groups"),
+        Payload::Control(ControlPayload::ActionGroups).to_string(),
+    )]);
+
+    rows.push(vec![InlineKeyboardButton::callback(
         t(lang, "home.cameras"),
         Payload::Camera(CameraPayload::ListCameras).to_string(),
     )]);

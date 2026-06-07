@@ -39,6 +39,19 @@ pub async fn start_or_extend_session(
     now: DateTime<Utc>,
     pool: &SqlitePool,
 ) -> Result<SessionAction> {
+    crate::db::log_slow_operation("camera_recording_sessions.start_or_extend_session", async {
+        start_or_extend_session_inner(rule, event_group_id, trigger_summary, now, pool).await
+    })
+    .await
+}
+
+async fn start_or_extend_session_inner(
+    rule: &RecordingRule,
+    event_group_id: &str,
+    trigger_summary: &str,
+    now: DateTime<Utc>,
+    pool: &SqlitePool,
+) -> Result<SessionAction> {
     let mut tx = pool.begin().await?;
 
     let active = sqlx::query_as::<_, RecordingSession>(
@@ -259,7 +272,7 @@ pub async fn count_rule_sessions_since(
 }
 
 pub async fn mark_recording(session_id: i64, pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_sessions
         SET status = 'recording', started_at = COALESCE(started_at, ?), error = NULL
@@ -267,14 +280,17 @@ pub async fn mark_recording(session_id: i64, pool: &SqlitePool) -> Result<()> {
         "#,
     )
     .bind(Utc::now())
-    .bind(session_id)
-    .execute(pool)
+    .bind(session_id);
+    crate::db::log_slow_operation(
+        "camera_recording_sessions.mark_recording",
+        query.execute(pool),
+    )
     .await?;
     Ok(())
 }
 
 pub async fn request_stop(session_id: i64, pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_sessions
         SET stop_after_at = ?
@@ -284,8 +300,11 @@ pub async fn request_stop(session_id: i64, pool: &SqlitePool) -> Result<()> {
         "#,
     )
     .bind(Utc::now())
-    .bind(session_id)
-    .execute(pool)
+    .bind(session_id);
+    crate::db::log_slow_operation(
+        "camera_recording_sessions.request_stop",
+        query.execute(pool),
+    )
     .await?;
     Ok(())
 }
@@ -295,7 +314,7 @@ pub async fn mark_ready(
     completed_at: DateTime<Utc>,
     pool: &SqlitePool,
 ) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_sessions
         SET status = 'ready', completed_at = ?, error = NULL
@@ -303,14 +322,14 @@ pub async fn mark_ready(
         "#,
     )
     .bind(completed_at)
-    .bind(session_id)
-    .execute(pool)
-    .await?;
+    .bind(session_id);
+    crate::db::log_slow_operation("camera_recording_sessions.mark_ready", query.execute(pool))
+        .await?;
     Ok(())
 }
 
 pub async fn mark_failed(session_id: i64, error: &str, pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_sessions
         SET status = 'failed', completed_at = COALESCE(completed_at, ?), error = ?
@@ -319,18 +338,22 @@ pub async fn mark_failed(session_id: i64, error: &str, pool: &SqlitePool) -> Res
     )
     .bind(Utc::now())
     .bind(crate::db::sanitize_error(error))
-    .bind(session_id)
-    .execute(pool)
-    .await?;
+    .bind(session_id);
+    crate::db::log_slow_operation("camera_recording_sessions.mark_failed", query.execute(pool))
+        .await?;
     Ok(())
 }
 
 pub async fn mark_notification_sent(session_id: i64, pool: &SqlitePool) -> Result<()> {
-    sqlx::query("UPDATE camera_recording_sessions SET notification_sent_at = ? WHERE id = ?")
-        .bind(Utc::now())
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    let query =
+        sqlx::query("UPDATE camera_recording_sessions SET notification_sent_at = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(session_id);
+    crate::db::log_slow_operation(
+        "camera_recording_sessions.mark_notification_sent",
+        query.execute(pool),
+    )
+    .await?;
     Ok(())
 }
 

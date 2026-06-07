@@ -1,4 +1,6 @@
-use crate::db::camera_recording_rules::{ConditionLogic, ConditionOperator};
+use crate::db::camera_recording_rules::{
+    ConditionLogic, ConditionOperator, RecordingRuleActiveTime,
+};
 use crate::i18n::Language;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,7 @@ pub struct RecordingRuleWizard {
     pub logic_touched: bool,
     pub tail_seconds: Option<u32>,
     pub retention_days: Option<u32>,
+    pub active_time: RecordingRuleActiveTime,
     pub group_ids: Vec<i64>,
     pub pending_condition: Option<WizardPendingCondition>,
 }
@@ -47,6 +50,7 @@ impl RecordingRuleWizard {
             logic_touched: false,
             tail_seconds: None,
             retention_days: None,
+            active_time: RecordingRuleActiveTime::always(),
             group_ids: Vec::new(),
             pending_condition: None,
         }
@@ -61,6 +65,7 @@ impl RecordingRuleWizard {
         self.logic_touched = false;
         self.tail_seconds = None;
         self.retention_days = None;
+        self.active_time = RecordingRuleActiveTime::always();
         self.group_ids.clear();
         self.pending_condition = None;
     }
@@ -126,17 +131,6 @@ impl RecordingRuleWizard {
 pub struct WizardPendingCondition {
     pub device_id: i64,
     pub operator: Option<ConditionOperator>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WizardRuleSelection {
-    pub room_id: i64,
-    pub camera_id: i64,
-    pub device_id: i64,
-    pub mode: WizardTriggerMode,
-    pub tail_seconds: u32,
-    pub retention_days: u32,
-    pub group_ids: Vec<i64>,
 }
 
 impl WizardTriggerMode {
@@ -318,6 +312,7 @@ pub fn build_source_conditions(
     }
 }
 
+#[cfg(test)]
 pub fn build_conditions(
     entity_id: &str,
     mode: WizardTriggerMode,

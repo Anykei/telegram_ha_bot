@@ -9,6 +9,7 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
     let cameras =
         crate::db::cameras::list_accessible_cameras(ctx.user_id, ctx.is_admin, &ctx.config.db)
             .await?;
+    let cameras_empty = cameras.is_empty();
     let mut rows = Vec::new();
 
     for camera in cameras {
@@ -23,12 +24,17 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    rows.push(vec![InlineKeyboardButton::callback(
+        "🎛 Режимы записи",
+        Payload::Camera(CameraPayload::RecordingGroupModes).to_string(),
+    )]);
+
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Home,
     )]);
 
-    let text = if rows.len() == 1 {
+    let text = if cameras_empty {
         t(ctx.lang, "camera.list.empty").to_string()
     } else {
         t(ctx.lang, "camera.list.pick").to_string()
@@ -40,6 +46,110 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::ListCameras),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_group_modes(ctx: RenderContext) -> Result<View> {
+    let groups = crate::db::camera_recording_rule_groups::list_groups_visible_to_user(
+        ctx.user_id,
+        ctx.config.root_user,
+        &ctx.config.db,
+    )
+    .await?;
+    let mut rows = Vec::new();
+    for group in &groups {
+        let icon = if group.is_enabled() { "✅" } else { "⏸" };
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!("{} {} · {} правил", icon, group.name, group.rules_count),
+            Payload::Camera(CameraPayload::RecordingGroupModeDetail { group: group.id })
+                .to_string(),
+        )]);
+    }
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        Payload::Camera(CameraPayload::ListCameras),
+    )]);
+
+    let text = if groups.is_empty() {
+        "Режимы записи\n\nДоступных режимов пока нет.".to_string()
+    } else {
+        "Режимы записи\n\nВключенная группа разрешает связанные правила. Выключенная группа ставит их на паузу."
+            .to_string()
+    };
+
+    Ok(View {
+        header: Some("🎛 Режимы записи".to_string()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingGroupModes),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_group_mode_detail(ctx: RenderContext, group_id: i64) -> Result<View> {
+    let Some(group) =
+        crate::db::camera_recording_rule_groups::get_group(group_id, &ctx.config.db).await?
+    else {
+        let mut view = render_recording_group_modes(ctx).await?;
+        view.alert = Some("Группа не найдена".to_string());
+        return Ok(view);
+    };
+    if !ctx.is_admin && !group.is_visible_to_all_users() {
+        let mut view = render_recording_group_modes(ctx).await?;
+        view.alert = Some("Группа недоступна".to_string());
+        return Ok(view);
+    }
+
+    let cameras = crate::db::camera_recording_rule_groups::list_group_cameras_visible_to_user(
+        ctx.user_id,
+        ctx.is_admin,
+        group.id,
+        &ctx.config.db,
+    )
+    .await?;
+    let cameras_text = if cameras.is_empty() {
+        "нет камер".to_string()
+    } else {
+        cameras
+            .iter()
+            .map(|camera| camera.camera_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let status = if group.is_enabled() {
+        "включена"
+    } else {
+        "на паузе"
+    };
+    let toggle_label = if group.is_enabled() {
+        "⏸ Поставить на паузу"
+    } else {
+        "▶️ Включить"
+    };
+
+    let rows = vec![
+        vec![InlineKeyboardButton::callback(
+            toggle_label,
+            Payload::Camera(CameraPayload::ToggleRecordingGroupMode { group: group.id })
+                .to_string(),
+        )],
+        vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            Payload::Camera(CameraPayload::RecordingGroupModes),
+        )],
+    ];
+
+    Ok(View {
+        header: Some("🎛 Режим записи".to_string()),
+        notifications: ctx.notifications,
+        text: format!(
+            "{}\n\nСтатус: {}\nПравил: {}\nКамеры: {}",
+            group.name, status, group.rules_count, cameras_text
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingGroupModeDetail { group: group.id }),
         ..Default::default()
     })
 }
@@ -222,10 +332,9 @@ pub async fn render_recording_session(
     let segments =
         crate::db::camera_recording_segments::list_session_segments(session_id, &ctx.config.db)
             .await?;
-    let ready_segments = segments
-        .iter()
-        .filter(|segment| segment.status == "ready" && segment.file_path.is_some())
-        .count();
+    let (sendable_segments, missing_ready_files) =
+        collect_sendable_recording_segments(&ctx.config, session_id, &segments).await;
+    let ready_segments = sendable_segments.len();
     let total_duration: i64 = segments.iter().map(|segment| segment.duration_s).sum();
     let completed = session.completed_at.unwrap_or_else(Utc::now);
     let partial = session.status == "failed" && ready_segments > 0;
@@ -235,10 +344,7 @@ pub async fn render_recording_session(
 
     let mut rows = Vec::new();
     if ready_segments == 1 {
-        if let Some(segment) = segments
-            .iter()
-            .find(|segment| segment.status == "ready" && segment.file_path.is_some())
-        {
+        if let Some(segment) = sendable_segments.first() {
             rows.push(vec![InlineKeyboardButton::callback(
                 t(ctx.lang, "camera.recording.send_video"),
                 Payload::Camera(CameraPayload::SendRecordingSegment {
@@ -297,9 +403,23 @@ pub async fn render_recording_session(
     } else {
         String::new()
     };
+    let disk_warning = recording_disk_warning(ctx.lang, missing_ready_files);
+    let failure_details = if session.status == "failed" {
+        recording_failure_reason(&session, &segments)
+            .map(|reason| {
+                format!(
+                    "\n{}: {}",
+                    t(ctx.lang, "camera.recording.failure_reason"),
+                    shorten_recording_error(reason)
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     let text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}",
+        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}{}",
         t(ctx.lang, "camera.recording.header"),
         t(ctx.lang, "camera.recording.camera"),
         camera.name,
@@ -316,7 +436,9 @@ pub async fn render_recording_session(
         segments.len(),
         t(ctx.lang, "camera.recording.keep_until"),
         crate::bot::format::datetime(session.expires_at),
-        warning
+        warning,
+        disk_warning,
+        failure_details
     );
 
     Ok(View {
@@ -330,6 +452,90 @@ pub async fn render_recording_session(
         }),
         ..Default::default()
     })
+}
+
+async fn collect_sendable_recording_segments<'a>(
+    config: &crate::models::AppConfig,
+    session_id: i64,
+    segments: &'a [crate::db::camera_recording_segments::RecordingSegment],
+) -> (
+    Vec<&'a crate::db::camera_recording_segments::RecordingSegment>,
+    usize,
+) {
+    let mut sendable = Vec::new();
+    let mut missing_ready_files = 0usize;
+
+    for segment in segments {
+        if segment.status != "ready" {
+            continue;
+        }
+
+        let Some(file_path) = segment.file_path.as_deref() else {
+            missing_ready_files += 1;
+            continue;
+        };
+
+        match crate::core::camera_recording::recording_file_info(config, file_path).await {
+            Ok(_) => sendable.push(segment),
+            Err(error) => {
+                missing_ready_files += 1;
+                log::debug!(
+                    "Recording segment is not sendable: session={}, segment={}, path={}, error={:#}",
+                    session_id,
+                    segment.id,
+                    file_path,
+                    error
+                );
+            }
+        }
+    }
+
+    (sendable, missing_ready_files)
+}
+
+fn recording_disk_warning(lang: crate::i18n::Language, missing_ready_files: usize) -> String {
+    if missing_ready_files == 0 {
+        return String::new();
+    }
+
+    match lang {
+        crate::i18n::Language::Ru => format!(
+            "\n\n⚠️ Недоступных файлов на диске: {}. Проверьте папку хранения записей.",
+            missing_ready_files
+        ),
+        crate::i18n::Language::En => format!(
+            "\n\n⚠️ Files unavailable on disk: {}. Check the recordings storage folder.",
+            missing_ready_files
+        ),
+    }
+}
+
+fn recording_failure_reason<'a>(
+    session: &'a crate::db::camera_recording_sessions::RecordingSession,
+    segments: &'a [crate::db::camera_recording_segments::RecordingSegment],
+) -> Option<&'a str> {
+    session
+        .error
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            segments
+                .iter()
+                .filter_map(|segment| segment.error.as_deref())
+                .find(|value| !value.trim().is_empty())
+        })
+}
+
+fn shorten_recording_error(error: &str) -> String {
+    const LIMIT: usize = 280;
+    let normalized = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= LIMIT {
+        return normalized;
+    }
+
+    let mut shortened = normalized.chars().take(LIMIT).collect::<String>();
+    shortened.push_str("...");
+    shortened
 }
 
 async fn recording_session_label(

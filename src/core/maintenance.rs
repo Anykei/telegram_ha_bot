@@ -4,6 +4,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use log::{debug, error, info};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, MessageId};
+use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
@@ -17,12 +18,12 @@ pub fn spawn_background_maintenance(
     bot: Bot,
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
-) {
+) -> JoinHandle<()> {
     info!("Core: Notification processor started");
 
     tokio::spawn(async move {
         start_background_maintenance(bot, config, cancel_token).await;
-    });
+    })
 }
 
 pub async fn start_background_maintenance(

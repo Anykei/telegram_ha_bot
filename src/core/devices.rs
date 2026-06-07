@@ -260,6 +260,18 @@ mod tests {
                 .collect())
         }
 
+        async fn fetch_action_entities(&self) -> anyhow::Result<Vec<Entity>> {
+            Ok(self
+                .states
+                .iter()
+                .filter(|entity| {
+                    entity.entity_id.starts_with("script.")
+                        || entity.entity_id.starts_with("scene.")
+                })
+                .cloned()
+                .collect())
+        }
+
         async fn call_service(
             &self,
             domain: &str,

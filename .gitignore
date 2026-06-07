@@ -9,3 +9,5 @@ sqlite:
 .continue
 
 /docs
+/docks/*SPEC*.md
+/docks/**/SPEC.md

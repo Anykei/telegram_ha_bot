@@ -53,6 +53,7 @@ pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
         camera_id,
         captured_at: None,
         failed_at: None,
+        last_error: None,
         bytes: None,
         refreshing: true,
     });
@@ -83,24 +84,43 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
                 cache.bytes = Some(bytes);
                 cache.captured_at = Some(Utc::now());
                 cache.failed_at = None;
+                cache.last_error = None;
             }
             Ok(_) => {
-                cache.failed_at = Some(Utc::now());
-                log::warn!(
-                    "UI camera background {} returned an empty snapshot; keeping previous background",
-                    camera_id
+                mark_refresh_failed(
+                    cache,
+                    camera_id,
+                    "Snapshot URL вернул пустой файл",
+                    "keeping previous background",
                 );
             }
             Err(error) => {
-                cache.failed_at = Some(Utc::now());
-                log::warn!(
-                    "Failed to refresh UI camera background {}: {}",
-                    camera_id,
-                    error
-                );
+                mark_refresh_failed(cache, camera_id, &error.to_string(), "refresh failed");
             }
         }
     });
+}
+
+fn mark_refresh_failed(cache: &mut UiBackgroundCache, camera_id: i64, error: &str, context: &str) {
+    let repeated = cache.last_error.as_deref() == Some(error);
+    cache.failed_at = Some(Utc::now());
+    cache.last_error = Some(error.to_string());
+
+    if repeated {
+        log::debug!(
+            "UI camera background {} repeated error: {}; {}",
+            camera_id,
+            error,
+            context
+        );
+    } else {
+        log::warn!(
+            "UI camera background {} error: {}; {}",
+            camera_id,
+            error,
+            context
+        );
+    }
 }
 
 pub async fn selected_camera_id(config: &AppConfig) -> Option<i64> {

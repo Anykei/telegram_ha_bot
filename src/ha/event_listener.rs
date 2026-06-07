@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 use std::cmp::min;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::task::JoinHandle;
 
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_util::sync::CancellationToken;
@@ -14,7 +16,7 @@ pub fn spawn_event_listener(
     token: String,
     cancel_token: CancellationToken,
     tx: mpsc::Sender<super::models::NotifyEvent>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         tokio::select! {
             _ = start_event_listener(url, token, cancel_token.clone(), tx) => {
@@ -24,7 +26,7 @@ pub fn spawn_event_listener(
                 info!("Event listener cancelled.");
             }
         }
-    });
+    })
 }
 
 async fn start_event_listener(
@@ -134,7 +136,16 @@ async fn start_event_listener(
                                     .map(String::from),
                             };
 
-                            let _ = tx.send(event).await;
+                            match tx.try_send(event) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(event)) => {
+                                    warn!(
+                                        "HA event queue full, dropping state change {}",
+                                        event.entity_id
+                                    );
+                                }
+                                Err(TrySendError::Closed(_)) => return,
+                            }
                         }
                         _ => {}
                     }

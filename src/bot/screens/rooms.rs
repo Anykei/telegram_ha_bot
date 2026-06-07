@@ -18,7 +18,7 @@ pub async fn render(ctx: RenderContext, mode: RoomViewMode) -> Result<View> {
         let callback_payload = match mode {
             RoomViewMode::Control => Payload::Control(ControlPayload::RoomDetail { room: room.id }),
             RoomViewMode::Settings => {
-                Payload::Settings(SettingsPayload::RoomDetail { room: room.id })
+                ctx.settings_payload(SettingsPayload::RoomDetail { room: room.id })
             }
         };
 
@@ -28,13 +28,14 @@ pub async fn render(ctx: RenderContext, mode: RoomViewMode) -> Result<View> {
         )]);
     }
 
-    rows.push(vec![crate::bot::screens::common::back_button(
-        Payload::Home,
-    )]);
+    rows.push(vec![crate::bot::screens::common::back_button(match mode {
+        RoomViewMode::Control => Payload::Home,
+        RoomViewMode::Settings => ctx.settings_root_back_payload(),
+    })]);
 
     let current_payload = match mode {
         RoomViewMode::Control => Payload::Control(ControlPayload::ListRooms),
-        RoomViewMode::Settings => Payload::Settings(SettingsPayload::ListRooms),
+        RoomViewMode::Settings => ctx.settings_payload(SettingsPayload::ListRooms),
     };
 
     Ok(View {

@@ -91,7 +91,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, mode: RoomViewMode) -> Res
                         })
                     }
                 }
-                RoomViewMode::Settings => Payload::Settings(SettingsPayload::DeviceDetail {
+                RoomViewMode::Settings => ctx.settings_payload(SettingsPayload::DeviceDetail {
                     room: room_id,
                     device: db_dev.id,
                 }),
@@ -106,20 +106,22 @@ pub async fn render(ctx: RenderContext, room_id: i64, mode: RoomViewMode) -> Res
 
     let back_payload = match mode {
         RoomViewMode::Control => Payload::Control(ControlPayload::ListRooms),
-        RoomViewMode::Settings => Payload::Settings(SettingsPayload::ListRooms),
+        RoomViewMode::Settings => ctx.settings_payload(SettingsPayload::ListRooms),
     };
     rows.push(vec![common::back_button(back_payload)]);
+
+    let current_payload = match mode {
+        RoomViewMode::Control => Payload::Control(ControlPayload::RoomDetail { room: room_id }),
+        RoomViewMode::Settings => {
+            ctx.settings_payload(SettingsPayload::RoomDetail { room: room_id })
+        }
+    };
 
     Ok(View {
         notifications: ctx.notifications,
         text: format!("{} {}", header_label, room_display),
         kb: InlineKeyboardMarkup::new(rows),
-        payload: match mode {
-            RoomViewMode::Control => Payload::Control(ControlPayload::RoomDetail { room: room_id }),
-            RoomViewMode::Settings => {
-                Payload::Settings(SettingsPayload::RoomDetail { room: room_id })
-            }
-        },
+        payload: current_payload,
         ..Default::default()
     })
 }
