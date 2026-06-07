@@ -21,16 +21,19 @@ use crate::bot::State;
 use crate::core::commands::{CommandExecution, CommandSource};
 use crate::db;
 use crate::models::AppConfig;
+use crate::models::UiMessageMode;
 
 pub type MyDialogue = Dialogue<State, InMemStorage<State>>;
 
 const TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES: u64 = 50_000_000;
 const TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES: u64 = 500_000;
 const RECORDING_VIDEO_MESSAGE_TTL_SECONDS: u64 = 60;
+const TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS: usize = 1024;
+const TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditViewResult {
-    Updated,
+    Updated(UiMessageMode),
     NotModified,
     MessageMissing,
 }
@@ -1371,8 +1374,15 @@ pub async fn refresh_current_view(
     }
 
     match edit_existing_view(bot, config, user_id, chat_id, message_id, &view, &text).await {
-        Ok(EditViewResult::Updated) => {
-            crate::core::update_user_state(config, user_id, message_id.0, &payload_str).await;
+        Ok(EditViewResult::Updated(mode)) => {
+            crate::core::update_user_state_with_mode(
+                config,
+                user_id,
+                message_id.0,
+                &payload_str,
+                mode,
+            )
+            .await;
             Ok(())
         }
         Ok(EditViewResult::NotModified) => Ok(()),
@@ -1397,7 +1407,7 @@ pub async fn refresh_current_view(
         }
         Err(e) => {
             log_telegram_refresh_error("Live refresh", user_id, &e);
-            Err(e.into())
+            reanchor_view(bot, chat_id, message_id, user_id, view, config.clone()).await
         }
     }
 }
@@ -1435,8 +1445,15 @@ pub async fn update_view(
     let payload_str = view.payload.to_string();
 
     match edit_existing_view(bot, &config, user_id, chat_id, message_id, &view, &text).await {
-        Ok(EditViewResult::Updated) => {
-            crate::core::update_user_state(&config, user_id, message_id.0, &payload_str).await;
+        Ok(EditViewResult::Updated(mode)) => {
+            crate::core::update_user_state_with_mode(
+                &config,
+                user_id,
+                message_id.0,
+                &payload_str,
+                mode,
+            )
+            .await;
             Ok(())
         }
         Ok(EditViewResult::NotModified) => Ok(()),
@@ -1479,6 +1496,32 @@ async fn edit_existing_view(
     text: &str,
 ) -> std::result::Result<EditViewResult, RequestError> {
     let kb = view.kb.clone();
+    let edit_mode = edit_view_mode(config, user_id, text);
+    if edit_mode == UiMessageMode::Text {
+        log::debug!(
+            "UI view for user {} payload {} uses text mode: {} chars, caption limit {}, current message mode {:?}",
+            user_id,
+            view.payload.to_string(),
+            text.chars().count(),
+            TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS,
+            config.sessions.get(&user_id).map(|session| session.ui_message_mode)
+        );
+        let text = telegram_text_message(&view.get_plain_text());
+        let res = bot
+            .edit_message_text(chat_id, message_id, text)
+            .reply_markup(kb)
+            .await;
+
+        return match res {
+            Ok(_) => Ok(EditViewResult::Updated(UiMessageMode::Text)),
+            Err(RequestError::Api(teloxide::ApiError::MessageNotModified)) => {
+                Ok(EditViewResult::NotModified)
+            }
+            Err(e) if is_missing_message_error(&e) => Ok(EditViewResult::MessageMissing),
+            Err(e) => Err(e),
+        };
+    }
+
     let input_file = InputFile::memory(resolve_view_image(view, user_id, config).await);
 
     let media = InputMedia::Photo(
@@ -1493,7 +1536,7 @@ async fn edit_existing_view(
         .await;
 
     match res {
-        Ok(_) => Ok(EditViewResult::Updated),
+        Ok(_) => Ok(EditViewResult::Updated(UiMessageMode::Photo)),
         Err(RequestError::Api(teloxide::ApiError::MessageNotModified)) => {
             Ok(EditViewResult::NotModified)
         }
@@ -1612,6 +1655,30 @@ async fn send_new_view(
     let text = view.get_text();
     let payload_str = view.payload.to_string();
 
+    if should_send_view_as_text(&text) {
+        log::debug!(
+            "New UI view for user {} payload {} uses text mode: {} chars exceed Telegram photo caption limit {}",
+            user_id,
+            view.payload.to_string(),
+            text.chars().count(),
+            TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
+        );
+        let sent = bot
+            .send_message(chat_id, telegram_text_message(&view.get_plain_text()))
+            .reply_markup(view.kb)
+            .await?;
+
+        crate::core::update_user_state_with_mode(
+            &config,
+            user_id,
+            sent.id.0,
+            &payload_str,
+            UiMessageMode::Text,
+        )
+        .await;
+        return Ok(());
+    }
+
     // Исправлено: send_photo принимает InputFile, а не InputMedia
     let image = resolve_view_image(&view, user_id, &config).await;
     let input_file = InputFile::memory(image);
@@ -1624,8 +1691,52 @@ async fn send_new_view(
         .await?;
 
     // Критическая правка: сохраняем ID СООБЩЕНИЯ БОТА (sent.id), а не входящего апдейта
-    crate::core::update_user_state(&config, user_id, sent.id.0, &payload_str).await;
+    crate::core::update_user_state_with_mode(
+        &config,
+        user_id,
+        sent.id.0,
+        &payload_str,
+        UiMessageMode::Photo,
+    )
+    .await;
     Ok(())
+}
+
+fn edit_view_mode(config: &Arc<AppConfig>, user_id: u64, text: &str) -> UiMessageMode {
+    let current_is_text = config
+        .sessions
+        .get(&user_id)
+        .is_some_and(|session| session.ui_message_mode == UiMessageMode::Text);
+
+    if current_is_text || should_send_view_as_text(text) {
+        UiMessageMode::Text
+    } else {
+        UiMessageMode::Photo
+    }
+}
+
+fn should_send_view_as_text(text: &str) -> bool {
+    text.chars().count() > TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
+}
+
+fn telegram_text_message(text: &str) -> String {
+    if text.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS {
+        return text.to_string();
+    }
+
+    let marker = "\n\nСообщение сокращено: экран слишком длинный для Telegram.";
+    let keep_chars = TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS.saturating_sub(marker.chars().count());
+    let mut shortened = text.chars().take(keep_chars).collect::<String>();
+    while shortened.ends_with('\\') {
+        shortened.pop();
+    }
+    log::warn!(
+        "Telegram text view truncated from {} to <= {} chars",
+        text.chars().count(),
+        TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS
+    );
+    shortened.push_str(marker);
+    shortened
 }
 
 // --- ОБРАБОТЧИКИ ДИАЛОГОВ ---
@@ -1704,19 +1815,39 @@ pub async fn handle_state_alias_input(
         .await?;
     config.set_state_alias_cache(&device.entity_id, &original_state, alias.to_string());
 
-    finalize_dialogue(
-        bot,
-        dialogue,
-        msg,
-        config,
-        Some(Payload::Settings(
-            crate::bot::router::SettingsPayload::StateAliases {
-                room: room_id,
-                device: device_id,
-            },
-        )),
-    )
-    .await
+    let target_payload = settings_payload_for_current_session(
+        &config,
+        msg.from.as_ref().map(|user| user.id.0),
+        crate::bot::router::SettingsPayload::StateAliases {
+            room: room_id,
+            device: device_id,
+        },
+    );
+
+    finalize_dialogue(bot, dialogue, msg, config, Some(target_payload)).await
+}
+
+fn settings_payload_for_current_session(
+    config: &Arc<AppConfig>,
+    user_id: Option<u64>,
+    payload: crate::bot::router::SettingsPayload,
+) -> Payload {
+    let Some(user_id) = user_id else {
+        return Payload::Settings(payload);
+    };
+
+    let from_admin_settings = config.sessions.get(&user_id).is_some_and(|session| {
+        matches!(
+            Payload::from_string(&session.current_context),
+            Ok(Payload::AdminSettings(_))
+        )
+    });
+
+    if from_admin_settings {
+        Payload::AdminSettings(payload)
+    } else {
+        Payload::Settings(payload)
+    }
 }
 
 pub async fn handle_add_user_input(
@@ -1906,6 +2037,93 @@ pub async fn handle_add_recording_rule_input(
             finalize_dialogue(bot, dialogue, msg, config, None).await
         }
     }
+}
+
+pub async fn handle_add_recording_rule_group_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    room_id: Option<i64>,
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let name = match parse_recording_rule_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::AddRecordingRuleGroup { room_id },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let group_id = crate::db::camera_recording_rule_groups::create_group(&name, &config.db).await?;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(recording_rule_group_detail_payload(room_id, group_id)),
+    )
+    .await
+}
+
+pub async fn handle_rename_recording_rule_group_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (room_id, group_id): (Option<i64>, i64),
+) -> Result<()> {
+    if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+
+    let name = match parse_recording_rule_group_name(msg.text().unwrap_or("")) {
+        Ok(name) => name,
+        Err(text) => {
+            keep_dialogue_with_error(
+                &bot,
+                &dialogue,
+                &msg,
+                State::RenameRecordingRuleGroup { room_id, group_id },
+                text,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    if let Err(error) =
+        crate::db::camera_recording_rule_groups::rename_group(group_id, &name, &config.db).await
+    {
+        keep_dialogue_with_error(
+            &bot,
+            &dialogue,
+            &msg,
+            State::RenameRecordingRuleGroup { room_id, group_id },
+            recording_rule_group_error_text(&error),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(recording_rule_group_detail_payload(room_id, group_id)),
+    )
+    .await
 }
 
 pub async fn handle_recording_rule_wizard_source_value_input(
@@ -2372,6 +2590,38 @@ fn parse_user_id(msg: &Message) -> std::result::Result<u64, &'static str> {
                 Ok(id)
             }
         })
+}
+
+fn parse_recording_rule_group_name(text: &str) -> std::result::Result<String, String> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Err("Ошибка: название группы не должно быть пустым.".to_string());
+    }
+    if name.chars().count() > 40 {
+        return Err("Ошибка: название группы должно быть не длиннее 40 символов.".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn recording_rule_group_error_text(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    if text.contains("already exists") || text.contains("UNIQUE constraint failed") {
+        "Ошибка: группа с таким названием уже есть.".to_string()
+    } else if text.contains("not found") {
+        "Ошибка: группа не найдена.".to_string()
+    } else {
+        format!("Ошибка: не удалось сохранить группу: {}", text)
+    }
+}
+
+fn recording_rule_group_detail_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::RecordingRuleGroupDetailForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::RecordingRuleGroupDetail { group: group_id },
+    })
 }
 
 #[derive(Debug)]
@@ -2867,6 +3117,22 @@ mod tests {
         let image = non_empty_image_or_placeholder(Some(&[]), "test image");
 
         assert_eq!(image, crate::bot::utils::UI_PLACEHOLDER_BYTES);
+    }
+
+    #[test]
+    fn long_view_text_uses_text_message_mode() {
+        let text = "x".repeat(TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS + 1);
+
+        assert!(should_send_view_as_text(&text));
+    }
+
+    #[test]
+    fn telegram_text_message_is_truncated_to_limit() {
+        let text = "x".repeat(TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS + 100);
+        let shortened = telegram_text_message(&text);
+
+        assert!(shortened.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS);
+        assert!(shortened.contains("Сообщение сокращено"));
     }
 
     #[test]

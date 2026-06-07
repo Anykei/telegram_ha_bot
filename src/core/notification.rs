@@ -6,9 +6,10 @@ use teloxide::prelude::ChatId;
 use teloxide::types::MessageId;
 use teloxide::Bot;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::bot::router::{ControlPayload, Payload};
+use crate::bot::router::{AdminPayload, ControlPayload, Payload};
 use crate::bot::utils::md;
 use crate::db;
 use crate::ha::NotifyEvent;
@@ -19,39 +20,20 @@ pub fn spawn_notification_processor(
     bot: Bot,
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
-) {
+) -> JoinHandle<()> {
     info!("Core: Notification processor started");
 
     tokio::spawn(async move {
-        // Create bounded task queue (max 32 events waiting)
-        let (queue_tx, queue_rx) = mpsc::channel::<NotifyEvent>(32);
-
-        // Spawn worker task that consumes from bounded queue
-        let worker_config = config.clone();
-        let worker_bot = bot.clone();
-        let worker_cancel = cancel_token.clone();
-
-        tokio::spawn(async move {
-            let mut queue = queue_rx;
-            loop {
-                tokio::select! {
-                    Some(event) = queue.recv() => {
-                        if let Err(e) = process_and_dispatch(worker_bot.clone(), worker_config.clone(), event).await {
-                            error!("Core: Error processing event: {}", e);
-                        }
-                    }
-                    _ = worker_cancel.cancelled() => break,
-                }
-            }
-        });
-
-        // Main loop: forward events from HA to bounded queue
         loop {
             tokio::select! {
-                Some(event) = rx.recv() => {
-                    // Send to bounded queue (returns error if queue is full)
-                    if let Err(e) = queue_tx.send(event).await {
-                        warn!("Core: Event queue full (capacity 32), dropping event: {}", e);
+                event = rx.recv() => {
+                    match event {
+                        Some(event) => {
+                            if let Err(e) = process_and_dispatch(bot.clone(), config.clone(), event).await {
+                                error!("Core: Error processing event: {}", e);
+                            }
+                        }
+                        None => break,
                     }
                 }
                 _ = cancel_token.cancelled() => {
@@ -60,7 +42,7 @@ pub fn spawn_notification_processor(
                 }
             }
         }
-    });
+    })
 }
 
 async fn process_and_dispatch(
@@ -71,7 +53,7 @@ async fn process_and_dispatch(
     if event.new_state == event.old_state {
         return Ok(());
     }
-    info!("Core: New state change {}", event.entity_id,);
+    log::debug!("Core: New state change {}", event.entity_id);
 
     db::device_event_log::EventLogger::record_event(&event.entity_id, &event.new_state, &config.db)
         .await?;
@@ -105,6 +87,7 @@ async fn process_and_dispatch(
         let is_subscriber = recipients_set.contains(&user_id);
 
         if (is_watching || is_subscriber)
+            && is_live_refresh_allowed(session)
             && !session.is_ui_refresh_blocked(now)
             && can_refresh_after_event(session, now, config.event_refresh_min_interval_s)
         {
@@ -124,17 +107,18 @@ async fn process_and_dispatch(
         let b = bot.clone();
         let c = config.clone();
 
-        tokio::spawn(async move {
-            let _ = crate::bot::handlers::refresh_current_view(
-                &b,
-                &c,
-                user_id,
-                ChatId(user_id as i64),
-                message_id,
-                &context,
-            )
-            .await;
-        });
+        if let Err(error) = crate::bot::handlers::refresh_current_view(
+            &b,
+            &c,
+            user_id,
+            ChatId(user_id as i64),
+            message_id,
+            &context,
+        )
+        .await
+        {
+            warn!("Live refresh for user {} failed: {}", user_id, error);
+        }
     }
 
     // let recipients = db::subscriptions::get_subscribers(&config.db, &event.entity_id).await?;
@@ -219,6 +203,13 @@ fn is_user_watching_room(session: &UserSession, room_id: i64) -> bool {
     }
 }
 
+fn is_live_refresh_allowed(session: &UserSession) -> bool {
+    !matches!(
+        Payload::from_string(&session.current_context),
+        Ok(Payload::Admin(AdminPayload::ActivityLog { .. }))
+    )
+}
+
 fn can_refresh_after_event(session: &UserSession, now: DateTime<Utc>, min_interval_s: u64) -> bool {
     session
         .last_ui_refresh_at
@@ -237,6 +228,7 @@ mod tests {
         UserSession {
             last_menu_id: 1,
             current_context: payload.to_string(),
+            ui_message_mode: crate::models::UiMessageMode::Photo,
             header_entities: HashSet::new(),
             recording_rule_wizard: None,
             last_ui_refresh_at: None,
@@ -258,6 +250,7 @@ mod tests {
         let session = UserSession {
             last_menu_id: 1,
             current_context: r#"{"Control":{"RoomDetail":{"room":42}}}"#.to_string(),
+            ui_message_mode: crate::models::UiMessageMode::Photo,
             header_entities: HashSet::new(),
             recording_rule_wizard: None,
             last_ui_refresh_at: None,
@@ -266,6 +259,15 @@ mod tests {
         };
 
         assert!(!is_user_watching_room(&session, 42));
+    }
+
+    #[test]
+    fn activity_log_is_not_live_refreshed_by_ha_events() {
+        let session = session_for(Payload::Admin(AdminPayload::ActivityLog {
+            filter: crate::bot::router::ActivityLogFilter::All,
+        }));
+
+        assert!(!is_live_refresh_allowed(&session));
     }
 
     #[test]

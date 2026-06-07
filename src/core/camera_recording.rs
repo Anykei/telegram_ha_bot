@@ -6,9 +6,13 @@ use chrono::{Duration, Utc};
 use log::{debug, error, info, warn};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 use teloxide::Bot;
 use tokio::sync::{mpsc, Semaphore};
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
+
+const RECORDING_SHUTDOWN_TIMEOUT: StdDuration = StdDuration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct RecordingJob {
@@ -20,54 +24,120 @@ pub fn spawn_recording_worker(
     bot: Bot,
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(error) = recover_stale_recordings(&config).await {
             error!("Camera recording recovery failed: {}", error);
         }
 
         let semaphore = Arc::new(Semaphore::new(config.camera_recording_max_parallel_jobs));
+        let mut active_jobs = JoinSet::new();
         info!(
             "Core: Camera recording worker started, parallel jobs={}",
             config.camera_recording_max_parallel_jobs
         );
 
+        let mut accepting_jobs = true;
         loop {
             tokio::select! {
-                Some(job) = rx.recv() => {
-                    let semaphore = semaphore.clone();
-                    let config = config.clone();
-                    let bot = bot.clone();
-                    let permit = tokio::select! {
-                        permit = semaphore.acquire_owned() => {
-                            match permit {
-                                Ok(permit) => permit,
-                                Err(error) => {
-                                    error!("Camera recording semaphore closed: {}", error);
-                                    continue;
+                job = rx.recv(), if accepting_jobs => {
+                    match job {
+                        Some(job) => {
+                            let semaphore = semaphore.clone();
+                            let config = config.clone();
+                            let bot = bot.clone();
+                            let permit = tokio::select! {
+                                permit = semaphore.acquire_owned() => {
+                                    match permit {
+                                        Ok(permit) => permit,
+                                        Err(error) => {
+                                            error!("Camera recording semaphore closed: {}", error);
+                                            continue;
+                                        }
+                                    }
                                 }
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            info!("Core: Camera recording worker stopped");
-                            break;
-                        }
-                    };
+                                _ = cancel_token.cancelled() => {
+                                    info!("Core: Camera recording worker stopping");
+                                    break;
+                                }
+                            };
 
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        if let Err(error) = process_recording_job(bot, config, job).await {
-                            error!("Camera recording job failed: {}", error);
+                            active_jobs.spawn(async move {
+                                let _permit = permit;
+                                if let Err(error) = process_recording_job(bot, config, job).await {
+                                    error!("Camera recording job failed: {}", error);
+                                }
+                            });
                         }
-                    });
+                        None => accepting_jobs = false,
+                    }
+                }
+                result = active_jobs.join_next(), if !active_jobs.is_empty() => {
+                    if let Some(result) = result {
+                        log_recording_task_result(result);
+                    }
                 }
                 _ = cancel_token.cancelled() => {
-                    info!("Core: Camera recording worker stopped");
+                    info!("Core: Camera recording worker stopping");
                     break;
+                }
+                else => {
+                    if !accepting_jobs && active_jobs.is_empty() {
+                        break;
+                    }
                 }
             }
         }
-    });
+
+        wait_for_recording_jobs(&mut active_jobs).await;
+        info!("Core: Camera recording worker stopped");
+    })
+}
+
+async fn wait_for_recording_jobs(active_jobs: &mut JoinSet<()>) {
+    if active_jobs.is_empty() {
+        return;
+    }
+
+    let timeout = tokio::time::sleep(RECORDING_SHUTDOWN_TIMEOUT);
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            result = active_jobs.join_next(), if !active_jobs.is_empty() => {
+                if let Some(result) = result {
+                    log_recording_task_result(result);
+                }
+
+                if active_jobs.is_empty() {
+                    return;
+                }
+            }
+            _ = &mut timeout => {
+                warn!(
+                    "Camera recording worker still has {} active job(s) after {:?}; aborting them before database shutdown",
+                    active_jobs.len(),
+                    RECORDING_SHUTDOWN_TIMEOUT
+                );
+                active_jobs.abort_all();
+
+                while let Some(result) = active_jobs.join_next().await {
+                    log_recording_task_result(result);
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn log_recording_task_result(result: Result<(), JoinError>) {
+    if let Err(error) = result {
+        if error.is_cancelled() {
+            warn!("Camera recording job was aborted during shutdown");
+        } else {
+            error!("Camera recording task join failed: {}", error);
+        }
+    }
 }
 
 async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJob) -> Result<()> {
@@ -98,6 +168,10 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
         return Ok(());
     };
 
+    info!(
+        "Camera recording session {} started: camera={} {}, rule={}, trigger={}",
+        session.id, camera.id, camera.name, rule.id, session.trigger_summary
+    );
     db::camera_recording_sessions::mark_recording(session.id, &config.db).await?;
 
     let mut segment_index = next_segment_index(session.id, &config).await?;
@@ -137,6 +211,10 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
         )
         .await?;
 
+        info!(
+            "Camera recording segment {} started: session={}, camera={} {}, index={}, duration={}s",
+            segment_id, session.id, camera.id, camera.name, segment_index, segment_duration
+        );
         match capture_and_store_segment(
             &config,
             &camera,
@@ -158,9 +236,22 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
                 let _ =
                     db::camera_health::mark_recording_ok(session.camera_id, size_bytes, &config.db)
                         .await;
+                info!(
+                    "Camera recording segment {} ready: session={}, camera={} {}, size={} bytes",
+                    segment_id, session.id, camera.id, camera.name, size_bytes
+                );
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = crate::core::cameras::sanitize_camera_error(&error);
+                error!(
+                    "Camera recording segment {} failed: session={}, camera={} {}, duration={}s, error={}",
+                    segment_id,
+                    session.id,
+                    camera.id,
+                    camera.name,
+                    segment_duration,
+                    message
+                );
                 let _ =
                     db::camera_health::mark_error(session.camera_id, &message, &config.db).await;
                 db::camera_recording_segments::mark_failed(segment_id, &message, &config.db)

@@ -20,10 +20,14 @@ use anyhow::{anyhow, Context, Result};
 use log::info;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 pub use user::*;
+
+const SLOW_SQLITE_OPERATION_WARNING: Duration = Duration::from_secs(2);
 
 pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
     prepare_db_dir(db_url).context("Error preparing db dir")?;
@@ -33,7 +37,7 @@ pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(std::time::Duration::from_secs(5));
+        .busy_timeout(std::time::Duration::from_secs(30));
 
     let pool = SqlitePool::connect_with(opts)
         .await
@@ -63,6 +67,21 @@ pub(crate) fn sanitize_error(error: &str) -> String {
         value.truncate(500);
     }
     value
+}
+
+pub(crate) async fn log_slow_operation<T, F>(operation: &'static str, future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let started_at = Instant::now();
+    let result = future.await;
+    let elapsed = started_at.elapsed();
+
+    if elapsed >= SLOW_SQLITE_OPERATION_WARNING {
+        log::warn!("Slow SQLite operation {} took {:?}", operation, elapsed);
+    }
+
+    result
 }
 
 fn prepare_db_dir(uri: &str) -> Result<()> {

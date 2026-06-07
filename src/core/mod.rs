@@ -244,16 +244,35 @@ impl AppConfig {
 // }
 // }
 
-pub async fn update_user_state(config: &Arc<AppConfig>, user_id: u64, msg_id: i32, context: &str) {
-    info!("UPDATE USER STATE: user: {}, context: {}", user_id, context);
+pub async fn update_user_state_with_mode(
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    msg_id: i32,
+    context: &str,
+    ui_message_mode: crate::models::UiMessageMode,
+) {
     let context_owned = context.to_string();
     let now = Utc::now();
+    let previous_context = config
+        .sessions
+        .get(&user_id)
+        .map(|session| session.current_context.clone());
+
+    if previous_context.as_deref() == Some(context) {
+        debug!(
+            "REFRESH USER STATE: user: {}, context: {}",
+            user_id, context
+        );
+    } else {
+        info!("UPDATE USER STATE: user: {}, context: {}", user_id, context);
+    }
 
     config.sessions.insert(
         user_id,
         UserSession {
             last_menu_id: msg_id,
             current_context: context_owned.clone(),
+            ui_message_mode,
             header_entities: config
                 .sessions
                 .get(&user_id)

@@ -21,6 +21,13 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
     if candidates.is_empty() {
         return Ok(());
     }
+    log::info!(
+        "Camera recording matcher: event {} {} -> {}, candidate_rules={}",
+        event.entity_id,
+        event.old_state,
+        event.new_state,
+        candidates.len()
+    );
 
     let event_group_id = format!(
         "{}:{}:{}",
@@ -31,14 +38,32 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
 
     for (rule, conditions) in candidates {
         if !rule.is_enabled() || conditions.is_empty() {
+            log::debug!(
+                "Camera recording rule {} skipped: enabled={}, conditions={}",
+                rule.id,
+                rule.is_enabled(),
+                conditions.len()
+            );
             continue;
         }
 
         if !db::camera_recording_rule_groups::rule_groups_enabled(rule.id, &config.db).await? {
+            log::debug!(
+                "Camera recording rule {} skipped: all assigned groups are disabled",
+                rule.id
+            );
             continue;
         }
 
         if !matches_rule(&config, event, &conditions, rule.logic()).await? {
+            log::debug!(
+                "Camera recording rule {} did not match event {} {} -> {} with logic {:?}",
+                rule.id,
+                event.entity_id,
+                event.old_state,
+                event.new_state,
+                rule.logic()
+            );
             continue;
         }
 
@@ -58,6 +83,13 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
         .await?
         {
             db::camera_recording_sessions::SessionAction::Created(session_id) => {
+                log::info!(
+                    "Camera recording rule {} matched: created session {}, camera={}, trigger={}",
+                    rule.id,
+                    session_id,
+                    rule.camera_id,
+                    trigger_summary
+                );
                 let rule_id = rule.id.to_string();
                 let _ = db::activity_log::log(
                     db::activity_log::NewActivity {
@@ -74,7 +106,9 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
                 .await;
                 let job = crate::core::camera_recording::RecordingJob { session_id };
                 match config.camera_recording_tx.try_send(job) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        log::info!("Camera recording session {} queued for worker", session_id);
+                    }
                     Err(TrySendError::Full(_)) => {
                         db::camera_recording_sessions::mark_failed(
                             session_id,
@@ -94,10 +128,21 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
                             &config.db,
                         )
                         .await?;
+                        log::error!(
+                            "Camera recording queue is closed, session {} failed",
+                            session_id
+                        );
                     }
                 }
             }
             db::camera_recording_sessions::SessionAction::Extended(session_id) => {
+                log::info!(
+                    "Camera recording rule {} matched: extended session {}, camera={}, trigger={}",
+                    rule.id,
+                    session_id,
+                    rule.camera_id,
+                    trigger_summary
+                );
                 let rule_id = rule.id.to_string();
                 let _ = db::activity_log::log(
                     db::activity_log::NewActivity {
@@ -112,9 +157,15 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
                     &config.db,
                 )
                 .await;
-                log::debug!("Camera recording session {} extended", session_id);
             }
-            db::camera_recording_sessions::SessionAction::SkippedCooldown => {}
+            db::camera_recording_sessions::SessionAction::SkippedCooldown => {
+                log::info!(
+                    "Camera recording rule {} matched but skipped by cooldown, camera={}, trigger={}",
+                    rule.id,
+                    rule.camera_id,
+                    trigger_summary
+                );
+            }
         }
     }
 

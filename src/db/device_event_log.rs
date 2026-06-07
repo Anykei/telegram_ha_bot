@@ -8,12 +8,13 @@ pub struct EventLogger;
 
 impl EventLogger {
     pub async fn record_event(eid: &str, state: &str, pool: &SqlitePool) -> Result<()> {
-        sqlx::query("INSERT INTO device_event_log (entity_id, state, created_at) VALUES (?, ?, ?)")
-            .bind(eid)
-            .bind(state)
-            .bind(Utc::now())
-            .execute(pool)
-            .await?;
+        let query = sqlx::query(
+            "INSERT INTO device_event_log (entity_id, state, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(eid)
+        .bind(state)
+        .bind(Utc::now());
+        crate::db::log_slow_operation("device_event_log.record_event", query.execute(pool)).await?;
         Ok(())
     }
 

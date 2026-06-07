@@ -10,6 +10,7 @@ use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::types::{ChatId, MessageId};
 use teloxide::update_listeners::Polling;
 use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 extern crate pretty_env_logger;
@@ -17,7 +18,7 @@ extern crate pretty_env_logger;
 extern crate log;
 
 use crate::config::EnvPaths;
-use crate::models::{AppConfig, RuntimeStatus};
+use crate::models::{AppConfig, RuntimeStatus, UiMessageMode};
 use crate::options::AppOptions;
 
 mod bot;
@@ -31,6 +32,8 @@ mod models;
 mod options;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(12);
+const BACKGROUND_TASK_ABORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -127,6 +130,7 @@ async fn main() -> Result<()> {
             crate::models::UserSession {
                 last_menu_id: mid,
                 current_context: context,
+                ui_message_mode: UiMessageMode::Photo,
                 header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
                 recording_rule_wizard: None,
                 last_ui_refresh_at: None,
@@ -156,7 +160,7 @@ async fn main() -> Result<()> {
     }
 
     let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
-    ha::spawn_event_listener(
+    let event_listener_handle = ha::spawn_event_listener(
         paths.ha_url.clone(),
         paths.ha_token.clone(),
         cancel_token.clone(),
@@ -174,14 +178,20 @@ async fn main() -> Result<()> {
         (dispatcher, bot)
     };
 
-    core::spawn_notification_processor(rx, _bot.clone(), app_config.clone(), cancel_token.clone());
-    core::camera_recording::spawn_recording_worker(
+    let notification_handle = core::spawn_notification_processor(
+        rx,
+        _bot.clone(),
+        app_config.clone(),
+        cancel_token.clone(),
+    );
+    let recording_handle = core::camera_recording::spawn_recording_worker(
         recording_rx,
         _bot.clone(),
         app_config.clone(),
         cancel_token.clone(),
     );
-    core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
+    let maintenance_handle =
+        core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
     spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
 
     let update_listener = Polling::builder(_bot.clone())
@@ -200,12 +210,65 @@ async fn main() -> Result<()> {
     }
 
     info!("Graceful Shutdown...");
+    cancel_token.cancel();
+
+    wait_for_background_tasks(vec![
+        ("ha_event_listener", event_listener_handle),
+        ("notification_processor", notification_handle),
+        ("camera_recording_worker", recording_handle),
+        ("background_maintenance", maintenance_handle),
+    ])
+    .await;
 
     app_config.db.close().await;
 
     info!("Database connection closed.");
     info!("Shutting down...");
     Ok(())
+}
+
+async fn wait_for_background_tasks(handles: Vec<(&'static str, JoinHandle<()>)>) {
+    let mut waits = JoinSet::new();
+    for (name, handle) in handles {
+        waits.spawn(wait_for_background_task(name, handle));
+    }
+
+    while let Some(result) = waits.join_next().await {
+        if let Err(error) = result {
+            error!("Background task waiter failed: {}", error);
+        }
+    }
+}
+
+async fn wait_for_background_task(name: &'static str, mut handle: JoinHandle<()>) {
+    tokio::select! {
+        result = &mut handle => log_background_task_result(name, result),
+        _ = tokio::time::sleep(BACKGROUND_TASK_SHUTDOWN_TIMEOUT) => {
+            warn!(
+                "Background task {} did not stop within {:?}; aborting before database shutdown",
+                name,
+                BACKGROUND_TASK_SHUTDOWN_TIMEOUT
+            );
+            handle.abort();
+
+            match tokio::time::timeout(BACKGROUND_TASK_ABORT_TIMEOUT, &mut handle).await {
+                Ok(result) => log_background_task_result(name, result),
+                Err(_) => error!(
+                    "Background task {} did not finish after abort within {:?}",
+                    name,
+                    BACKGROUND_TASK_ABORT_TIMEOUT
+                ),
+            }
+        }
+    }
+}
+
+fn log_background_task_result(name: &str, result: std::result::Result<(), tokio::task::JoinError>) {
+    match result {
+        Ok(()) => info!("Background task {} stopped.", name),
+        Err(error) if error.is_cancelled() => warn!("Background task {} was aborted.", name),
+        Err(error) => error!("Background task {} failed: {}", name, error),
+    }
 }
 
 fn spawn_shutdown_signal_handler(

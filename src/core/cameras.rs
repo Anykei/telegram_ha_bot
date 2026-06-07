@@ -37,15 +37,30 @@ pub async fn capture_snapshot(camera: &Camera) -> Result<Vec<u8>> {
 }
 
 async fn fetch_snapshot(snapshot_url: &str) -> Result<Vec<u8>> {
-    let response = reqwest::get(snapshot_url)
-        .await
-        .with_context(|| format!("Не удалось запросить snapshot URL: {}", snapshot_url))?;
+    let safe_url = safe_stream_label(snapshot_url);
+    let response = reqwest::get(snapshot_url).await.map_err(|error| {
+        anyhow!(
+            "Не удалось запросить snapshot URL {}: {}",
+            safe_url,
+            sanitize_camera_error_text(&error.to_string())
+        )
+    })?;
 
     if !response.status().is_success() {
         return Err(anyhow!("Snapshot URL вернул статус {}", response.status()));
     }
 
-    let bytes = response.bytes().await?.to_vec();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "Не удалось прочитать snapshot response {}: {}",
+                safe_url,
+                sanitize_camera_error_text(&error.to_string())
+            )
+        })?
+        .to_vec();
     if bytes.is_empty() {
         return Err(anyhow!("Snapshot URL вернул пустой файл"));
     }
@@ -57,6 +72,14 @@ pub async fn capture_clip(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
     let camera = camera.clone();
     let timeout = Duration::from_secs(seconds as u64 + 25);
 
+    log::info!(
+        "Camera clip capture requested: camera={} {}, duration={}s, timeout={}s, stream={}",
+        camera.id,
+        camera.name,
+        seconds,
+        timeout.as_secs(),
+        safe_stream_label(&camera.stream_url)
+    );
     run_camera_job(timeout, move || capture_clip_blocking(&camera, seconds)).await
 }
 
@@ -529,6 +552,13 @@ fn make_even_nearest(value: u32) -> u32 {
 }
 
 fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Result<()> {
+    log::info!(
+        "Camera remux started: camera={} {}, duration={}s, output={}",
+        camera.id,
+        camera.name,
+        seconds,
+        output_path.display()
+    );
     let mut input_ctx = open_camera_input(&camera.stream_url)?;
     let input_stream = input_ctx
         .streams()
@@ -613,8 +643,88 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
     output_ctx
         .write_trailer()
         .context("Не удалось записать MP4 trailer")?;
+    log::info!(
+        "Camera remux finished: camera={} {}, packets={}, output={}",
+        camera.id,
+        camera.name,
+        wrote_packets,
+        output_path
+    );
 
     Ok(())
+}
+
+fn safe_stream_label(stream_url: &str) -> String {
+    if let Some((scheme, rest)) = stream_url.split_once("://") {
+        let host = rest
+            .rsplit_once('@')
+            .map(|(_, value)| value)
+            .unwrap_or(rest)
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("");
+        if host.is_empty() {
+            return format!("{}://<hidden>", scheme);
+        }
+
+        return format!("{}://{}", scheme, host);
+    }
+
+    stream_url
+        .split('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<hidden>")
+        .to_string()
+}
+
+pub(crate) fn sanitize_camera_error(error: &anyhow::Error) -> String {
+    sanitize_camera_error_text(&format!("{:#}", error))
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn sanitize_camera_error_text(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut offset = 0;
+
+    while let Some(relative_start) = find_next_media_url(&text[offset..]) {
+        let start = offset + relative_start;
+        result.push_str(&text[offset..start]);
+
+        let url_len = media_url_len(&text[start..]);
+        let end = start + url_len;
+        result.push_str(&safe_stream_label(&text[start..end]));
+        offset = end;
+    }
+
+    result.push_str(&text[offset..]);
+    result
+}
+
+fn find_next_media_url(text: &str) -> Option<usize> {
+    ["rtsp://", "rtsps://", "http://", "https://"]
+        .iter()
+        .filter_map(|scheme| text.find(scheme))
+        .min()
+}
+
+fn media_url_len(text: &str) -> usize {
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']') {
+            return idx;
+        }
+
+        if ch == ':' && chars.peek().is_some_and(|(_, next)| next.is_whitespace()) {
+            return idx;
+        }
+    }
+
+    text.len()
 }
 
 fn normalize_packet_timestamps(
@@ -678,8 +788,13 @@ fn open_camera_input(stream_url: &str) -> Result<format::context::Input> {
     options.set("timeout", "5000000");
     options.set("stimeout", "5000000");
 
-    format::input_with_dictionary(stream_url, options)
-        .with_context(|| format!("Не удалось открыть видеопоток {}", stream_url))
+    format::input_with_dictionary(stream_url, options).map_err(|error| {
+        anyhow!(
+            "Не удалось открыть видеопоток {}: {}",
+            safe_stream_label(stream_url),
+            sanitize_camera_error_text(&error.to_string())
+        )
+    })
 }
 
 fn read_temp_file(path: PathBuf, command_result: Result<()>) -> Result<Vec<u8>> {
@@ -764,5 +879,34 @@ mod tests {
             tmp_output_path(path),
             PathBuf::from("data/recordings/.camera_3_session_1_segment_1.telegram.tmp.mp4")
         );
+    }
+
+    #[test]
+    fn safe_stream_label_hides_credentials() {
+        assert_eq!(
+            safe_stream_label("rtsp://user:secret@192.168.1.20:554/live?token=abc"),
+            "rtsp://192.168.1.20:554"
+        );
+        assert_eq!(
+            safe_stream_label("http://camera.local/snapshot?token=abc"),
+            "http://camera.local"
+        );
+        assert_eq!(
+            safe_stream_label("http://camera.local?token=abc"),
+            "http://camera.local"
+        );
+    }
+
+    #[test]
+    fn camera_error_text_redacts_media_urls() {
+        let text = sanitize_camera_error_text(
+            "failed rtsp://user:secret@192.168.1.20:554/live?token=abc: denied; snapshot https://camera.local/snapshot?token=abc",
+        );
+
+        assert!(text.contains("rtsp://192.168.1.20:554"));
+        assert!(text.contains("https://camera.local"));
+        assert!(!text.contains("secret"));
+        assert!(!text.contains("token=abc"));
+        assert!(!text.contains("/snapshot"));
     }
 }

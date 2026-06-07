@@ -102,6 +102,8 @@ pub fn t(lang: Language, key: &str) -> &str {
 
         (Language::Ru, "admin.menu") => "Админ меню",
         (Language::En, "admin.menu") => "Admin menu",
+        (Language::Ru, "admin.version") => "Версия бота",
+        (Language::En, "admin.version") => "Bot version",
         (Language::Ru, "admin.users") => "👥 Список пользователей",
         (Language::En, "admin.users") => "👥 Users",
         (Language::Ru, "admin.status") => "📊 Статус системы",
@@ -194,20 +196,78 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::En, "admin.rule_groups") => "🧩 Rule groups",
         (Language::Ru, "admin.rule_groups.create_defaults") => "➕ Создать базовые",
         (Language::En, "admin.rule_groups.create_defaults") => "➕ Create defaults",
+        (Language::Ru, "admin.rule_groups.create_custom") => "➕ Создать группу",
+        (Language::En, "admin.rule_groups.create_custom") => "➕ Create group",
         (Language::Ru, "admin.rule_groups.empty") => {
-            "Группы правил\n\nГрупп пока нет. Нажмите «Создать базовые»."
+            "Группы правил\n\nГрупп пока нет. Создайте свою группу или нажмите «Создать базовые»."
         }
         (Language::En, "admin.rule_groups.empty") => {
-            "Rule groups\n\nThere are no groups yet. Tap “Create defaults”."
+            "Rule groups\n\nThere are no groups yet. Create your own group or tap “Create defaults”."
         }
         (Language::Ru, "admin.rule_groups.hint") => {
-            "Группы правил\n\nНажатие включает или ставит группу на паузу. В карточке правила можно добавить правило в группу."
+            "Группы правил\n\nНажмите группу, чтобы открыть управление. В карточке правила можно добавить правило в группу."
         }
         (Language::En, "admin.rule_groups.hint") => {
-            "Rule groups\n\nTap a group to enable it or pause it. A rule can be added to a group from the rule card."
+            "Rule groups\n\nTap a group to manage it. A rule can be added to a group from the rule card."
         }
         (Language::Ru, "admin.rule_groups.rules_count") => "правил",
         (Language::En, "admin.rule_groups.rules_count") => "rules",
+        (Language::Ru, "admin.rule_groups.detail") => "Группа правил",
+        (Language::En, "admin.rule_groups.detail") => "Rule group",
+        (Language::Ru, "admin.rule_groups.name") => "Название",
+        (Language::En, "admin.rule_groups.name") => "Name",
+        (Language::Ru, "admin.rule_groups.current_name") => "Текущее название",
+        (Language::En, "admin.rule_groups.current_name") => "Current name",
+        (Language::Ru, "admin.rule_groups.status") => "Статус",
+        (Language::En, "admin.rule_groups.status") => "Status",
+        (Language::Ru, "admin.rule_groups.enabled") => "включена",
+        (Language::En, "admin.rule_groups.enabled") => "enabled",
+        (Language::Ru, "admin.rule_groups.paused") => "на паузе",
+        (Language::En, "admin.rule_groups.paused") => "paused",
+        (Language::Ru, "admin.rule_groups.enable") => "▶️ Включить",
+        (Language::En, "admin.rule_groups.enable") => "▶️ Enable",
+        (Language::Ru, "admin.rule_groups.pause") => "⏸ Пауза",
+        (Language::En, "admin.rule_groups.pause") => "⏸ Pause",
+        (Language::Ru, "admin.rule_groups.rename") => "✏️ Переименовать",
+        (Language::En, "admin.rule_groups.rename") => "✏️ Rename",
+        (Language::Ru, "admin.rule_groups.delete") => "🗑 Удалить",
+        (Language::En, "admin.rule_groups.delete") => "🗑 Delete",
+        (Language::Ru, "admin.rule_groups.detail_hint") => {
+            "Удаление группы не удаляет правила записи, а только убирает связь с группой."
+        }
+        (Language::En, "admin.rule_groups.detail_hint") => {
+            "Deleting a group does not delete recording rules; it only removes group links."
+        }
+        (Language::Ru, "admin.rule_groups.create_title") => "Создание группы правил",
+        (Language::En, "admin.rule_groups.create_title") => "Create rule group",
+        (Language::Ru, "admin.rule_groups.create_prompt") => {
+            "Введите название группы. Например: Охрана, Ночь, Двери."
+        }
+        (Language::En, "admin.rule_groups.create_prompt") => {
+            "Enter a group name. For example: Security, Night, Doors."
+        }
+        (Language::Ru, "admin.rule_groups.rename_title") => "Переименование группы",
+        (Language::En, "admin.rule_groups.rename_title") => "Rename group",
+        (Language::Ru, "admin.rule_groups.rename_prompt") => "Введите новое название группы.",
+        (Language::En, "admin.rule_groups.rename_prompt") => "Enter a new group name.",
+        (Language::Ru, "admin.rule_groups.not_found") => "Группа не найдена",
+        (Language::En, "admin.rule_groups.not_found") => "Group not found",
+        (Language::Ru, "admin.rule_groups.deleted") => "Группа удалена",
+        (Language::En, "admin.rule_groups.deleted") => "Group deleted",
+        (Language::Ru, "admin.rule_groups.enabled_notice") => "Группа включена",
+        (Language::En, "admin.rule_groups.enabled_notice") => "Group enabled",
+        (Language::Ru, "admin.rule_groups.paused_notice") => "Группа поставлена на паузу",
+        (Language::En, "admin.rule_groups.paused_notice") => "Group paused",
+        (Language::Ru, "admin.rule_groups.delete_title") => "Удаление группы правил",
+        (Language::En, "admin.rule_groups.delete_title") => "Delete rule group",
+        (Language::Ru, "admin.rule_groups.delete_confirm") => {
+            "Удалить группу правил? Сами правила записи останутся, будет удалена только связь с группой."
+        }
+        (Language::En, "admin.rule_groups.delete_confirm") => {
+            "Delete this rule group? Recording rules will remain; only group links will be removed."
+        }
+        (Language::Ru, "admin.rule_groups.delete_failed") => "Не удалось удалить группу",
+        (Language::En, "admin.rule_groups.delete_failed") => "Failed to delete group",
         (Language::Ru, "admin.camera.health") => "🩺 Health",
         (Language::En, "admin.camera.health") => "🩺 Health",
         (Language::Ru, "admin.camera.health.check_now") => "🔄 Проверить сейчас",
@@ -282,6 +342,8 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::En, "camera.recording.files") => "Files",
         (Language::Ru, "camera.recording.keep_until") => "Хранить до",
         (Language::En, "camera.recording.keep_until") => "Keep until",
+        (Language::Ru, "camera.recording.failure_reason") => "Причина",
+        (Language::En, "camera.recording.failure_reason") => "Reason",
         (Language::Ru, "camera.recording.partial_warning") => {
             "⚠️ Запись завершилась с ошибкой. Доступны готовые части."
         }

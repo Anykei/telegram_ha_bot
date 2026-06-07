@@ -29,7 +29,7 @@ pub async fn create_segment(
     expires_at: DateTime<Utc>,
     pool: &SqlitePool,
 ) -> Result<i64> {
-    let result = sqlx::query(
+    let query = sqlx::query(
         r#"
         INSERT INTO camera_recording_segments (
             session_id, camera_id, segment_index, duration_s, status, started_at, expires_at
@@ -42,8 +42,11 @@ pub async fn create_segment(
     .bind(segment_index)
     .bind(duration_s)
     .bind(Utc::now())
-    .bind(expires_at)
-    .execute(pool)
+    .bind(expires_at);
+    let result = crate::db::log_slow_operation(
+        "camera_recording_segments.create_segment",
+        query.execute(pool),
+    )
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -56,7 +59,7 @@ pub async fn mark_ready(
     completed_at: DateTime<Utc>,
     pool: &SqlitePool,
 ) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_segments
         SET status = 'ready',
@@ -70,15 +73,15 @@ pub async fn mark_ready(
     .bind(file_path)
     .bind(size_bytes)
     .bind(completed_at)
-    .bind(segment_id)
-    .execute(pool)
-    .await?;
+    .bind(segment_id);
+    crate::db::log_slow_operation("camera_recording_segments.mark_ready", query.execute(pool))
+        .await?;
 
     Ok(())
 }
 
 pub async fn mark_failed(segment_id: i64, error: &str, pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         UPDATE camera_recording_segments
         SET status = 'failed',
@@ -89,9 +92,9 @@ pub async fn mark_failed(segment_id: i64, error: &str, pool: &SqlitePool) -> Res
     )
     .bind(Utc::now())
     .bind(crate::db::sanitize_error(error))
-    .bind(segment_id)
-    .execute(pool)
-    .await?;
+    .bind(segment_id);
+    crate::db::log_slow_operation("camera_recording_segments.mark_failed", query.execute(pool))
+        .await?;
 
     Ok(())
 }

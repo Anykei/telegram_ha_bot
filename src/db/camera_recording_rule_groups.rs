@@ -33,6 +33,22 @@ pub async fn list_groups(pool: &SqlitePool) -> Result<Vec<RecordingRuleGroup>> {
     .await?)
 }
 
+pub async fn get_group(group_id: i64, pool: &SqlitePool) -> Result<Option<RecordingRuleGroup>> {
+    Ok(sqlx::query_as::<_, RecordingRuleGroup>(
+        r#"
+        SELECT g.id, g.name, g.enabled, g.created_at, COUNT(r.id) AS rules_count
+        FROM camera_recording_rule_groups g
+        LEFT JOIN camera_recording_rule_group_items i ON i.group_id = g.id
+        LEFT JOIN camera_recording_rules r ON r.id = i.rule_id AND r.deleted_at IS NULL
+        WHERE g.id = ?
+        GROUP BY g.id, g.name, g.enabled, g.created_at
+        "#,
+    )
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 pub async fn create_group(name: &str, pool: &SqlitePool) -> Result<i64> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -62,6 +78,61 @@ pub async fn ensure_default_groups(pool: &SqlitePool) -> Result<()> {
     for name in ["Охрана", "Тест", "Ночь", "Двери"] {
         create_group(name, pool).await?;
     }
+    Ok(())
+}
+
+pub async fn rename_group(group_id: i64, name: &str, pool: &SqlitePool) -> Result<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Group name is empty"));
+    }
+
+    let existing_id: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM camera_recording_rule_groups WHERE name = ?")
+            .bind(trimmed)
+            .fetch_optional(pool)
+            .await?;
+    if existing_id.is_some_and(|id| id != group_id) {
+        return Err(anyhow!("Group name already exists"));
+    }
+
+    let result = sqlx::query(
+        r#"
+        UPDATE camera_recording_rule_groups
+        SET name = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        "#,
+    )
+    .bind(trimmed)
+    .bind(group_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule group not found"));
+    }
+
+    Ok(())
+}
+
+pub async fn delete_group(group_id: i64, pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM camera_recording_rule_group_items WHERE group_id = ?")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let result = sqlx::query("DELETE FROM camera_recording_rule_groups WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(anyhow!("Recording rule group not found"));
+    }
+
+    tx.commit().await?;
     Ok(())
 }
 

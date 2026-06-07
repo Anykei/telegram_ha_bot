@@ -12,11 +12,18 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 pub struct UserSession {
     pub last_menu_id: i32,
     pub current_context: String,
+    pub ui_message_mode: UiMessageMode,
     pub header_entities: HashSet<String>,
     pub recording_rule_wizard: Option<crate::bot::recording_rule_wizard::RecordingRuleWizard>,
     pub last_ui_refresh_at: Option<DateTime<Utc>>,
     pub ui_refresh_blocked_until: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiMessageMode {
+    Photo,
+    Text,
 }
 
 impl UserSession {
@@ -149,6 +156,7 @@ pub struct UiBackgroundCache {
     pub camera_id: i64,
     pub captured_at: Option<DateTime<Utc>>,
     pub failed_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
     pub bytes: Option<Vec<u8>>,
     pub refreshing: bool,
 }

@@ -1,5 +1,5 @@
 use crate::bot::models::View;
-use crate::bot::router::{Payload, RenderContext, SettingsPayload};
+use crate::bot::router::{RenderContext, SettingsPayload};
 
 use crate::db;
 use anyhow::{Context, Result};
@@ -66,7 +66,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
     };
     rows.push(vec![InlineKeyboardButton::callback(
         format!("{} {}", sub_icon, sub_label),
-        Payload::Settings(SettingsPayload::ToggleNotify {
+        ctx.settings_payload(SettingsPayload::ToggleNotify {
             room: room_id,
             device: device_id,
         })
@@ -81,7 +81,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         };
         rows.push(vec![InlineKeyboardButton::callback(
             format!("{} {}", hide_icon, hide_label),
-            Payload::Settings(SettingsPayload::ToggleHide {
+            ctx.settings_payload(SettingsPayload::ToggleHide {
                 room: room_id,
                 device: device_id,
             })
@@ -90,7 +90,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
 
         rows.push(vec![InlineKeyboardButton::callback(
             "✏️ Изменить имя",
-            Payload::Settings(SettingsPayload::EditName {
+            ctx.settings_payload(SettingsPayload::EditName {
                 room: room_id,
                 device: device_id,
             })
@@ -99,7 +99,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
 
         rows.push(vec![InlineKeyboardButton::callback(
             "🏷 Алиасы состояний",
-            Payload::Settings(SettingsPayload::StateAliases {
+            ctx.settings_payload(SettingsPayload::StateAliases {
                 room: room_id,
                 device: device_id,
             })
@@ -113,7 +113,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         };
         rows.push(vec![InlineKeyboardButton::callback(
             format!("{} {}", critical_icon, critical_label),
-            Payload::Settings(SettingsPayload::ToggleCritical {
+            ctx.settings_payload(SettingsPayload::ToggleCritical {
                 room: room_id,
                 device: device_id,
             })
@@ -124,18 +124,20 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
     // Кнопка "Назад"
     rows.push(vec![InlineKeyboardButton::callback(
         "⬅️ Назад к списку",
-        Payload::Settings(SettingsPayload::RoomDetail { room: room_id }).to_string(),
+        ctx.settings_payload(SettingsPayload::RoomDetail { room: room_id })
+            .to_string(),
     )]);
 
+    let current_payload = ctx.settings_payload(SettingsPayload::DeviceDetail {
+        room: room_id,
+        device: device_id,
+    });
     Ok(View {
         // header: Some("⚙️ Параметры".into()),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
-        payload: Payload::Settings(SettingsPayload::DeviceDetail {
-            room: room_id,
-            device: device_id,
-        }),
+        payload: current_payload,
         ..Default::default()
     })
 }
@@ -246,7 +248,7 @@ pub async fn render_state_aliases(
             };
             rows.push(vec![InlineKeyboardButton::callback(
                 edit_label,
-                Payload::Settings(SettingsPayload::EditStateAlias {
+                ctx.settings_payload(SettingsPayload::EditStateAlias {
                     room: room_id,
                     device: device_id,
                     state: state.clone(),
@@ -257,7 +259,7 @@ pub async fn render_state_aliases(
             if aliases.contains_key(state) {
                 rows.push(vec![InlineKeyboardButton::callback(
                     format!("🧹 Сбросить `{}`", state),
-                    Payload::Settings(SettingsPayload::ResetStateAlias {
+                    ctx.settings_payload(SettingsPayload::ResetStateAlias {
                         room: room_id,
                         device: device_id,
                         state: state.clone(),
@@ -269,7 +271,7 @@ pub async fn render_state_aliases(
 
         rows.push(vec![InlineKeyboardButton::callback(
             inversion_label,
-            Payload::Settings(SettingsPayload::ToggleStateInversion {
+            ctx.settings_payload(SettingsPayload::ToggleStateInversion {
                 room: room_id,
                 device: device_id,
             })
@@ -279,21 +281,22 @@ pub async fn render_state_aliases(
 
     rows.push(vec![InlineKeyboardButton::callback(
         "⬅️ Назад к устройству",
-        Payload::Settings(SettingsPayload::DeviceDetail {
+        ctx.settings_payload(SettingsPayload::DeviceDetail {
             room: room_id,
             device: device_id,
         })
         .to_string(),
     )]);
 
+    let current_payload = ctx.settings_payload(SettingsPayload::StateAliases {
+        room: room_id,
+        device: device_id,
+    });
     Ok(View {
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
-        payload: Payload::Settings(SettingsPayload::StateAliases {
-            room: room_id,
-            device: device_id,
-        }),
+        payload: current_payload,
         ..Default::default()
     })
 }

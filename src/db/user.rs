@@ -172,7 +172,7 @@ pub async fn save_user_session(
         return;
     }
 
-    let res = sqlx::query(
+    let query = sqlx::query(
         r#"
         INSERT INTO users (id, last_menu_id, current_context, last_seen_at)
         VALUES (?, ?, ?, ?)
@@ -185,9 +185,8 @@ pub async fn save_user_session(
     .bind(uid)
     .bind(msg_id)
     .bind(ctx)
-    .bind(last_seen_at)
-    .execute(pool)
-    .await;
+    .bind(last_seen_at);
+    let res = crate::db::log_slow_operation("save_user_session", query.execute(pool)).await;
 
     match res {
         Ok(result) => {

@@ -297,9 +297,22 @@ pub async fn render_recording_session(
     } else {
         String::new()
     };
+    let failure_details = if session.status == "failed" {
+        recording_failure_reason(&session, &segments)
+            .map(|reason| {
+                format!(
+                    "\n{}: {}",
+                    t(ctx.lang, "camera.recording.failure_reason"),
+                    shorten_recording_error(reason)
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     let text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}",
+        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}",
         t(ctx.lang, "camera.recording.header"),
         t(ctx.lang, "camera.recording.camera"),
         camera.name,
@@ -316,7 +329,8 @@ pub async fn render_recording_session(
         segments.len(),
         t(ctx.lang, "camera.recording.keep_until"),
         crate::bot::format::datetime(session.expires_at),
-        warning
+        warning,
+        failure_details
     );
 
     Ok(View {
@@ -330,6 +344,34 @@ pub async fn render_recording_session(
         }),
         ..Default::default()
     })
+}
+
+fn recording_failure_reason<'a>(
+    session: &'a crate::db::camera_recording_sessions::RecordingSession,
+    segments: &'a [crate::db::camera_recording_segments::RecordingSegment],
+) -> Option<&'a str> {
+    session
+        .error
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            segments
+                .iter()
+                .filter_map(|segment| segment.error.as_deref())
+                .find(|value| !value.trim().is_empty())
+        })
+}
+
+fn shorten_recording_error(error: &str) -> String {
+    const LIMIT: usize = 280;
+    let normalized = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= LIMIT {
+        return normalized;
+    }
+
+    let mut shortened = normalized.chars().take(LIMIT).collect::<String>();
+    shortened.push_str("...");
+    shortened
 }
 
 async fn recording_session_label(

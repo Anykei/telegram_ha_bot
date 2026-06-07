@@ -114,6 +114,20 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         )
         .branch(
             dptree::filter_map(|state: State| match state {
+                State::AddRecordingRuleGroup { room_id } => Some(room_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_add_recording_rule_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::RenameRecordingRuleGroup { room_id, group_id } => Some((room_id, group_id)),
+                _ => None,
+            })
+            .endpoint(handlers::handle_rename_recording_rule_group_input),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
                 State::EditRecordingRule { room_id, rule_id } => Some((room_id, rule_id)),
                 _ => None,
             })

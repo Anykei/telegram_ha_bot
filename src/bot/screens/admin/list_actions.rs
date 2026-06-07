@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 pub async fn render(ctx: RenderContext) -> Result<View> {
-    let text = t(ctx.lang, "admin.menu").to_string();
+    let text = admin_menu_text(ctx.lang);
     let kb = make_keyboard(ctx.lang);
 
     Ok(View {
@@ -27,6 +27,15 @@ pub async fn render(ctx: RenderContext) -> Result<View> {
         payload: Payload::Admin(AdminPayload::ListActions),
         ..Default::default()
     })
+}
+
+fn admin_menu_text(lang: crate::i18n::Language) -> String {
+    format!(
+        "{}\n{}: v{}",
+        t(lang, "admin.menu"),
+        t(lang, "admin.version"),
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 pub async fn render_users(ctx: RenderContext) -> Result<View> {
@@ -3306,32 +3315,23 @@ async fn render_recording_rule_groups_with_back(
     room_id: Option<i64>,
 ) -> Result<View> {
     let groups = crate::db::camera_recording_rule_groups::list_groups(&ctx.config.db).await?;
-    let back_payload = room_id
-        .map(|room| Payload::Admin(AdminPayload::RecordingRules { room }))
-        .unwrap_or(Payload::Admin(AdminPayload::ListActions));
-    let current_payload = room_id
-        .map(|room| Payload::Admin(AdminPayload::RecordingRuleGroupsForRoom { room }))
-        .unwrap_or(Payload::Admin(AdminPayload::RecordingRuleGroups));
-    let ensure_payload = room_id
-        .map(|room| Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForRoom { room }))
-        .unwrap_or(Payload::Admin(AdminPayload::EnsureDefaultRuleGroups));
+    let back_payload = recording_rule_groups_back_payload(room_id);
+    let current_payload = recording_rule_groups_payload(room_id);
+    let ensure_payload = recording_rule_groups_defaults_payload(room_id);
+    let create_payload = recording_rule_group_create_payload(room_id);
     let mut rows = Vec::new();
-    rows.push(vec![InlineKeyboardButton::callback(
-        t(ctx.lang, "admin.rule_groups.create_defaults"),
-        ensure_payload.to_string(),
-    )]);
+    rows.push(vec![
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.create_custom"),
+            create_payload.to_string(),
+        ),
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "admin.rule_groups.create_defaults"),
+            ensure_payload.to_string(),
+        ),
+    ]);
     for group in &groups {
         let icon = if group.is_enabled() { "✅" } else { "⏸" };
-        let toggle_payload = room_id
-            .map(|room| {
-                Payload::Admin(AdminPayload::ToggleRecordingRuleGroupForRoom {
-                    room,
-                    group: group.id,
-                })
-            })
-            .unwrap_or(Payload::Admin(AdminPayload::ToggleRecordingRuleGroup {
-                group: group.id,
-            }));
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "{} {} · {} {}",
@@ -3340,7 +3340,7 @@ async fn render_recording_rule_groups_with_back(
                 t(ctx.lang, "admin.rule_groups.rules_count"),
                 group.rules_count
             ),
-            toggle_payload.to_string(),
+            recording_rule_group_detail_payload(room_id, group.id).to_string(),
         )]);
     }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
@@ -3361,6 +3361,196 @@ async fn render_recording_rule_groups_with_back(
         kb: InlineKeyboardMarkup::new(rows),
         payload: current_payload,
         ..Default::default()
+    })
+}
+
+pub async fn render_recording_rule_group_detail(ctx: RenderContext, group_id: i64) -> Result<View> {
+    render_recording_rule_group_detail_with_back(ctx, None, group_id).await
+}
+
+pub async fn render_recording_rule_group_detail_for_room(
+    ctx: RenderContext,
+    room_id: i64,
+    group_id: i64,
+) -> Result<View> {
+    render_recording_rule_group_detail_with_back(ctx, Some(room_id), group_id).await
+}
+
+async fn render_recording_rule_group_detail_with_back(
+    ctx: RenderContext,
+    room_id: Option<i64>,
+    group_id: i64,
+) -> Result<View> {
+    let Some(group) =
+        crate::db::camera_recording_rule_groups::get_group(group_id, &ctx.config.db).await?
+    else {
+        let lang = ctx.lang;
+        let mut view = render_recording_rule_groups_with_back(ctx, room_id).await?;
+        view.alert = Some(t(lang, "admin.rule_groups.not_found").to_string());
+        return Ok(view);
+    };
+
+    let status = if group.is_enabled() {
+        t(ctx.lang, "admin.rule_groups.enabled")
+    } else {
+        t(ctx.lang, "admin.rule_groups.paused")
+    };
+    let toggle_label = if group.is_enabled() {
+        t(ctx.lang, "admin.rule_groups.pause")
+    } else {
+        t(ctx.lang, "admin.rule_groups.enable")
+    };
+
+    let rows = vec![
+        vec![InlineKeyboardButton::callback(
+            toggle_label,
+            recording_rule_group_toggle_detail_payload(room_id, group.id).to_string(),
+        )],
+        vec![
+            InlineKeyboardButton::callback(
+                t(ctx.lang, "admin.rule_groups.rename"),
+                recording_rule_group_rename_payload(room_id, group.id).to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                t(ctx.lang, "admin.rule_groups.delete"),
+                recording_rule_group_confirm_delete_payload(room_id, group.id).to_string(),
+            ),
+        ],
+        vec![crate::bot::screens::common::back_button_lang(
+            ctx.lang,
+            recording_rule_groups_payload(room_id),
+        )],
+    ];
+
+    let text = format!(
+        "{}\n\n{}: {}\n{}: {}\n{}: {}\n\n{}",
+        t(ctx.lang, "admin.rule_groups.detail"),
+        t(ctx.lang, "admin.rule_groups.name"),
+        group.name,
+        t(ctx.lang, "admin.rule_groups.status"),
+        status,
+        t(ctx.lang, "admin.rule_groups.rules_count"),
+        group.rules_count,
+        t(ctx.lang, "admin.rule_groups.detail_hint"),
+    );
+
+    Ok(View {
+        header: Some(t(ctx.lang, "admin.rule_groups").to_string()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: recording_rule_group_detail_payload(room_id, group.id),
+        ..Default::default()
+    })
+}
+
+pub async fn render_create_recording_rule_group_input(
+    ctx: RenderContext,
+    room_id: Option<i64>,
+) -> Result<View> {
+    let lang = ctx.lang;
+    Ok(render_user_input(
+        ctx,
+        State::AddRecordingRuleGroup { room_id },
+        t(lang, "admin.rule_groups.create_title"),
+        t(lang, "admin.rule_groups.create_prompt"),
+        recording_rule_group_create_payload(room_id),
+        recording_rule_groups_payload(room_id),
+    ))
+}
+
+pub async fn render_rename_recording_rule_group_input(
+    ctx: RenderContext,
+    room_id: Option<i64>,
+    group_id: i64,
+) -> Result<View> {
+    let Some(group) =
+        crate::db::camera_recording_rule_groups::get_group(group_id, &ctx.config.db).await?
+    else {
+        let lang = ctx.lang;
+        let mut view = render_recording_rule_groups_with_back(ctx, room_id).await?;
+        view.alert = Some(t(lang, "admin.rule_groups.not_found").to_string());
+        return Ok(view);
+    };
+
+    let lang = ctx.lang;
+    Ok(render_user_input(
+        ctx,
+        State::RenameRecordingRuleGroup { room_id, group_id },
+        t(lang, "admin.rule_groups.rename_title"),
+        &format!(
+            "{}\n\n{}: {}",
+            t(lang, "admin.rule_groups.rename_prompt"),
+            t(lang, "admin.rule_groups.current_name"),
+            group.name
+        ),
+        recording_rule_group_rename_payload(room_id, group_id),
+        recording_rule_group_detail_payload(room_id, group_id),
+    ))
+}
+
+fn recording_rule_groups_back_payload(room_id: Option<i64>) -> Payload {
+    room_id
+        .map(|room| Payload::Admin(AdminPayload::RecordingRules { room }))
+        .unwrap_or(Payload::Admin(AdminPayload::ListActions))
+}
+
+fn recording_rule_groups_payload(room_id: Option<i64>) -> Payload {
+    room_id
+        .map(|room| Payload::Admin(AdminPayload::RecordingRuleGroupsForRoom { room }))
+        .unwrap_or(Payload::Admin(AdminPayload::RecordingRuleGroups))
+}
+
+fn recording_rule_groups_defaults_payload(room_id: Option<i64>) -> Payload {
+    room_id
+        .map(|room| Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForRoom { room }))
+        .unwrap_or(Payload::Admin(AdminPayload::EnsureDefaultRuleGroups))
+}
+
+fn recording_rule_group_detail_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::RecordingRuleGroupDetailForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::RecordingRuleGroupDetail { group: group_id },
+    })
+}
+
+fn recording_rule_group_create_payload(room_id: Option<i64>) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::PromptCreateRecordingRuleGroupForRoom { room },
+        None => AdminPayload::PromptCreateRecordingRuleGroup,
+    })
+}
+
+fn recording_rule_group_rename_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::PromptRenameRecordingRuleGroupForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::PromptRenameRecordingRuleGroup { group: group_id },
+    })
+}
+
+fn recording_rule_group_toggle_detail_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::ToggleRecordingRuleGroupDetailForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::ToggleRecordingRuleGroupDetail { group: group_id },
+    })
+}
+
+fn recording_rule_group_confirm_delete_payload(room_id: Option<i64>, group_id: i64) -> Payload {
+    Payload::Admin(match room_id {
+        Some(room) => AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom {
+            room,
+            group: group_id,
+        },
+        None => AdminPayload::ConfirmDeleteRecordingRuleGroup { group: group_id },
     })
 }
 
@@ -3762,7 +3952,7 @@ pub fn make_keyboard(lang: crate::i18n::Language) -> InlineKeyboardMarkup {
         )],
         vec![InlineKeyboardButton::callback(
             t(lang, "admin.settings"),
-            Payload::Settings(SettingsPayload::ListRooms).to_string(),
+            Payload::AdminSettings(SettingsPayload::ListRooms).to_string(),
         )],
     ];
 
@@ -3776,6 +3966,14 @@ pub fn make_keyboard(lang: crate::i18n::Language) -> InlineKeyboardMarkup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_menu_shows_package_version() {
+        let text = admin_menu_text(crate::i18n::Language::Ru);
+
+        assert!(text.contains("Версия бота"));
+        assert!(text.contains(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn ui_refresh_block_summary_ignores_expired_blocks() {

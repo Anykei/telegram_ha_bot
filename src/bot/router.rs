@@ -20,6 +20,13 @@ pub struct RenderContext {
     pub notifications: Vec<HeaderItem>,
     pub is_admin: bool,
     pub lang: Language,
+    pub settings_origin: SettingsOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsOrigin {
+    Home,
+    Admin,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
@@ -53,6 +60,13 @@ pub enum State {
     },
     AddRecordingRule {
         room_id: i64,
+    },
+    AddRecordingRuleGroup {
+        room_id: Option<i64>,
+    },
+    RenameRecordingRuleGroup {
+        room_id: Option<i64>,
+        group_id: i64,
     },
     EditRecordingRule {
         room_id: i64,
@@ -167,6 +181,7 @@ pub enum Payload {
     Admin(AdminPayload),
     InDev,
     Command(CommandPayload),
+    AdminSettings(SettingsPayload),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -432,10 +447,49 @@ pub enum AdminPayload {
     RecordingRuleGroupsForRoom {
         room: i64,
     },
+    RecordingRuleGroupDetail {
+        group: i64,
+    },
+    RecordingRuleGroupDetailForRoom {
+        room: i64,
+        group: i64,
+    },
+    PromptCreateRecordingRuleGroup,
+    PromptCreateRecordingRuleGroupForRoom {
+        room: i64,
+    },
+    PromptRenameRecordingRuleGroup {
+        group: i64,
+    },
+    PromptRenameRecordingRuleGroupForRoom {
+        room: i64,
+        group: i64,
+    },
     ToggleRecordingRuleGroup {
         group: i64,
     },
     ToggleRecordingRuleGroupForRoom {
+        room: i64,
+        group: i64,
+    },
+    ToggleRecordingRuleGroupDetail {
+        group: i64,
+    },
+    ToggleRecordingRuleGroupDetailForRoom {
+        room: i64,
+        group: i64,
+    },
+    ConfirmDeleteRecordingRuleGroup {
+        group: i64,
+    },
+    ConfirmDeleteRecordingRuleGroupForRoom {
+        room: i64,
+        group: i64,
+    },
+    DeleteRecordingRuleGroup {
+        group: i64,
+    },
+    DeleteRecordingRuleGroupForRoom {
         room: i64,
         group: i64,
     },
@@ -610,6 +664,22 @@ pub enum ActivityLogFilter {
     Recording,
 }
 
+impl RenderContext {
+    pub fn settings_payload(&self, payload: SettingsPayload) -> Payload {
+        match self.settings_origin {
+            SettingsOrigin::Home => Payload::Settings(payload),
+            SettingsOrigin::Admin => Payload::AdminSettings(payload),
+        }
+    }
+
+    pub fn settings_root_back_payload(&self) -> Payload {
+        match self.settings_origin {
+            SettingsOrigin::Home => Payload::Home,
+            SettingsOrigin::Admin => Payload::Admin(AdminPayload::ListActions),
+        }
+    }
+}
+
 impl Payload {
     /// Сериализация в компактную Base64 строку.
     /// JSON (67 байт) -> Binary (~12 байт) -> Base64 (~16 символов).
@@ -650,7 +720,7 @@ pub async fn router(
         .flatten()
         .unwrap_or(config.default_language);
 
-    info!(
+    debug!(
         "ROUTER CALL: user_id={}, payload {}",
         user_id,
         payload.to_string()
@@ -662,6 +732,7 @@ pub async fn router(
         notifications,
         is_admin,
         lang,
+        settings_origin: SettingsOrigin::Home,
     };
 
     let mut view = match payload {
@@ -672,6 +743,11 @@ pub async fn router(
         Payload::Command(_) => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
         Payload::Admin(sub_payload) => router_admin(ctx, sub_payload).await?,
         Payload::InDev => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
+        Payload::AdminSettings(sub_payload) => {
+            let mut ctx = ctx;
+            ctx.settings_origin = SettingsOrigin::Admin;
+            router_settings(ctx, sub_payload).await?
+        }
     };
     let final_lang = db::get_user_language(user_id, &config.db)
         .await
@@ -927,10 +1003,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
         }
         SettingsPayload::RoomDetail { room } => {
             if !db::access::can_view_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::ListRooms),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::ListRooms);
+                return Ok(access_denied_view(ctx, back));
             }
 
             Ok(room::render(ctx, room, RoomViewMode::Settings).await?)
@@ -939,10 +1013,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             if !db::access::can_view_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db)
                 .await?
             {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             Ok(super::screens::settings::device_settings::render(ctx, room, device).await?)
@@ -956,10 +1028,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             )
             .await?
             {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let dev = db::devices::get_device_by_id(device, &ctx.config.db)
@@ -976,10 +1046,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
 
         SettingsPayload::ToggleHide { room, device } => {
             if !ctx.is_admin {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let dev = db::devices::get_device_by_id(device, &ctx.config.db)
@@ -992,10 +1060,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             if !db::access::can_view_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db)
                 .await?
             {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             super::screens::settings::device_settings::render_state_aliases(ctx, room, device).await
@@ -1006,10 +1072,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             state,
         } => {
             if !ctx.is_admin {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let dev = db::devices::get_device_by_id(device, &ctx.config.db)
@@ -1017,6 +1081,12 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
                 .context("Device not found")?;
             let current_alias =
                 db::devices::get_state_alias(&dev.entity_id, &state, &ctx.config.db).await?;
+            let current_payload = ctx.settings_payload(SettingsPayload::EditStateAlias {
+                room,
+                device,
+                state: state.clone(),
+            });
+            let back_payload = ctx.settings_payload(SettingsPayload::StateAliases { room, device });
             Ok(super::screens::admin::list_actions::render_user_input(
                 ctx,
                 State::WaitingForStateAlias {
@@ -1030,12 +1100,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
                     state,
                     current_alias.unwrap_or_else(|| "не задан".to_string())
                 ),
-                Payload::Settings(SettingsPayload::EditStateAlias {
-                    room,
-                    device,
-                    state,
-                }),
-                Payload::Settings(SettingsPayload::StateAliases { room, device }),
+                current_payload,
+                back_payload,
             ))
         }
         SettingsPayload::ResetStateAlias {
@@ -1044,10 +1110,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             state,
         } => {
             if !ctx.is_admin {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let dev = db::devices::get_device_by_id(device, &ctx.config.db)
@@ -1064,10 +1128,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
         }
         SettingsPayload::ToggleStateInversion { room, device } => {
             if !ctx.is_admin {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let enabled = db::devices::toggle_state_inversion(device, &ctx.config.db).await?;
@@ -1083,10 +1145,8 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
         }
         SettingsPayload::ToggleCritical { room, device } => {
             if !ctx.is_admin {
-                return Ok(access_denied_view(
-                    ctx,
-                    Payload::Settings(SettingsPayload::RoomDetail { room }),
-                ));
+                let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
+                return Ok(access_denied_view(ctx, back));
             }
 
             let enabled = db::devices::toggle_device_critical(device, &ctx.config.db).await?;
@@ -1099,11 +1159,10 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             });
             Ok(view)
         }
-        _ => Ok(super::screens::common::in_dev_menu(
-            ctx,
-            Payload::Settings(SettingsPayload::ListRooms {}),
-        )
-        .await?),
+        _ => {
+            let back = ctx.settings_payload(SettingsPayload::ListRooms {});
+            Ok(super::screens::common::in_dev_menu(ctx, back).await?)
+        }
     }
 }
 
@@ -1594,6 +1653,43 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             super::screens::admin::list_actions::render_recording_rule_groups_for_room(ctx, room)
                 .await?,
         ),
+        AdminPayload::RecordingRuleGroupDetail { group } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_group_detail(ctx, group)
+                .await?,
+        ),
+        AdminPayload::RecordingRuleGroupDetailForRoom { room, group } => Ok(
+            super::screens::admin::list_actions::render_recording_rule_group_detail_for_room(
+                ctx, room, group,
+            )
+            .await?,
+        ),
+        AdminPayload::PromptCreateRecordingRuleGroup => Ok(
+            super::screens::admin::list_actions::render_create_recording_rule_group_input(
+                ctx, None,
+            )
+            .await?,
+        ),
+        AdminPayload::PromptCreateRecordingRuleGroupForRoom { room } => Ok(
+            super::screens::admin::list_actions::render_create_recording_rule_group_input(
+                ctx,
+                Some(room),
+            )
+            .await?,
+        ),
+        AdminPayload::PromptRenameRecordingRuleGroup { group } => Ok(
+            super::screens::admin::list_actions::render_rename_recording_rule_group_input(
+                ctx, None, group,
+            )
+            .await?,
+        ),
+        AdminPayload::PromptRenameRecordingRuleGroupForRoom { room, group } => Ok(
+            super::screens::admin::list_actions::render_rename_recording_rule_group_input(
+                ctx,
+                Some(room),
+                group,
+            )
+            .await?,
+        ),
         AdminPayload::ToggleRecordingRuleGroup { group } => {
             db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db).await?;
             Ok(super::screens::admin::list_actions::render_recording_rule_groups(ctx).await?)
@@ -1606,6 +1702,99 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
                 )
                 .await?,
             )
+        }
+        AdminPayload::ToggleRecordingRuleGroupDetail { group } => {
+            let lang = ctx.lang;
+            let enabled =
+                db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+                    .await?;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_group_detail(
+                    ctx, group,
+                )
+                .await?;
+            view.notice = Some(
+                t(
+                    lang,
+                    if enabled {
+                        "admin.rule_groups.enabled_notice"
+                    } else {
+                        "admin.rule_groups.paused_notice"
+                    },
+                )
+                .to_string(),
+            );
+            Ok(view)
+        }
+        AdminPayload::ToggleRecordingRuleGroupDetailForRoom { room, group } => {
+            let lang = ctx.lang;
+            let enabled =
+                db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+                    .await?;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_group_detail_for_room(
+                    ctx, room, group,
+                )
+                .await?;
+            view.notice = Some(
+                t(
+                    lang,
+                    if enabled {
+                        "admin.rule_groups.enabled_notice"
+                    } else {
+                        "admin.rule_groups.paused_notice"
+                    },
+                )
+                .to_string(),
+            );
+            Ok(view)
+        }
+        AdminPayload::ConfirmDeleteRecordingRuleGroup { group } => {
+            let lang = ctx.lang;
+            Ok(super::screens::admin::list_actions::render_confirm_action(
+                ctx,
+                t(lang, "admin.rule_groups.delete_title"),
+                t(lang, "admin.rule_groups.delete_confirm"),
+                Payload::Admin(AdminPayload::DeleteRecordingRuleGroup { group }),
+                Payload::Admin(AdminPayload::RecordingRuleGroupDetail { group }),
+            ))
+        }
+        AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom { room, group } => {
+            let lang = ctx.lang;
+            Ok(super::screens::admin::list_actions::render_confirm_action(
+                ctx,
+                t(lang, "admin.rule_groups.delete_title"),
+                t(lang, "admin.rule_groups.delete_confirm"),
+                Payload::Admin(AdminPayload::DeleteRecordingRuleGroupForRoom { room, group }),
+                Payload::Admin(AdminPayload::RecordingRuleGroupDetailForRoom { room, group }),
+            ))
+        }
+        AdminPayload::DeleteRecordingRuleGroup { group } => {
+            let delete_result =
+                db::camera_recording_rule_groups::delete_group(group, &ctx.config.db).await;
+            let lang = ctx.lang;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_groups(ctx).await?;
+            match delete_result {
+                Ok(()) => view.notice = Some(t(lang, "admin.rule_groups.deleted").to_string()),
+                Err(error) => view.alert = Some(recording_rule_group_delete_error(lang, &error)),
+            }
+            Ok(view)
+        }
+        AdminPayload::DeleteRecordingRuleGroupForRoom { room, group } => {
+            let delete_result =
+                db::camera_recording_rule_groups::delete_group(group, &ctx.config.db).await;
+            let lang = ctx.lang;
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_groups_for_room(
+                    ctx, room,
+                )
+                .await?;
+            match delete_result {
+                Ok(()) => view.notice = Some(t(lang, "admin.rule_groups.deleted").to_string()),
+                Err(error) => view.alert = Some(recording_rule_group_delete_error(lang, &error)),
+            }
+            Ok(view)
         }
         AdminPayload::ToggleRuleGroupItem { room, rule, group } => {
             if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
@@ -1922,6 +2111,14 @@ async fn recording_rule_room_mismatch_view(
         super::screens::admin::list_actions::render_recording_rules(ctx, room_id).await?;
     view.alert = Some("Правило не найдено или не принадлежит выбранной комнате".to_string());
     Ok(view)
+}
+
+fn recording_rule_group_delete_error(lang: Language, error: &anyhow::Error) -> String {
+    if error.to_string().contains("not found") {
+        t(lang, "admin.rule_groups.not_found").to_string()
+    } else {
+        format!("{}: {}", t(lang, "admin.rule_groups.delete_failed"), error)
+    }
 }
 
 async fn create_wizard_recording_rule(
@@ -2441,8 +2638,35 @@ mod tests {
             }),
             Payload::Admin(AdminPayload::RecordingRuleGroups),
             Payload::Admin(AdminPayload::RecordingRuleGroupsForRoom { room: 1_000_000 }),
+            Payload::Admin(AdminPayload::RecordingRuleGroupDetail { group: 3_000_000 }),
+            Payload::Admin(AdminPayload::RecordingRuleGroupDetailForRoom {
+                room: 1_000_000,
+                group: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroup),
+            Payload::Admin(AdminPayload::PromptCreateRecordingRuleGroupForRoom { room: 1_000_000 }),
+            Payload::Admin(AdminPayload::PromptRenameRecordingRuleGroup { group: 3_000_000 }),
+            Payload::Admin(AdminPayload::PromptRenameRecordingRuleGroupForRoom {
+                room: 1_000_000,
+                group: 3_000_000,
+            }),
             Payload::Admin(AdminPayload::ToggleRecordingRuleGroup { group: 3_000_000 }),
             Payload::Admin(AdminPayload::ToggleRecordingRuleGroupForRoom {
+                room: 1_000_000,
+                group: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::ToggleRecordingRuleGroupDetail { group: 3_000_000 }),
+            Payload::Admin(AdminPayload::ToggleRecordingRuleGroupDetailForRoom {
+                room: 1_000_000,
+                group: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::ConfirmDeleteRecordingRuleGroup { group: 3_000_000 }),
+            Payload::Admin(AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom {
+                room: 1_000_000,
+                group: 3_000_000,
+            }),
+            Payload::Admin(AdminPayload::DeleteRecordingRuleGroup { group: 3_000_000 }),
+            Payload::Admin(AdminPayload::DeleteRecordingRuleGroupForRoom {
                 room: 1_000_000,
                 group: 3_000_000,
             }),
@@ -2516,6 +2740,688 @@ mod tests {
             Payload::from_string("BAA").expect("legacy admin list actions payload should decode");
 
         assert_eq!(restored, Payload::Admin(AdminPayload::ListActions));
+    }
+
+    #[test]
+    fn all_router_payload_paths_roundtrip_and_fit_callback_limit() {
+        let payloads = all_router_payload_samples();
+        assert!(
+            payloads.len() >= 100,
+            "router payload sample list is unexpectedly small"
+        );
+
+        for original in payloads {
+            let route = payload_route_name(&original);
+            let encoded = original.to_string();
+
+            assert!(!encoded.is_empty(), "{} encoded payload is empty", route);
+            assert!(
+                encoded.len() <= 64,
+                "{} payload overflow: {} bytes used. Max is 64. Payload: {:?}",
+                route,
+                encoded.len(),
+                original
+            );
+
+            let restored = Payload::from_string(&encoded)
+                .unwrap_or_else(|error| panic!("{} failed to decode: {}", route, error));
+
+            assert_eq!(
+                restored, original,
+                "{} payload roundtrip changed the route",
+                route
+            );
+        }
+    }
+
+    fn all_router_payload_samples() -> Vec<Payload> {
+        let mut payloads = vec![
+            Payload::Home,
+            Payload::InDev,
+            Payload::Command(CommandPayload::Confirm { id: 1 }),
+            Payload::Command(CommandPayload::Cancel { id: 1 }),
+        ];
+
+        payloads.extend(control_payload_samples().into_iter().map(Payload::Control));
+        payloads.extend(
+            settings_payload_samples()
+                .into_iter()
+                .map(Payload::Settings),
+        );
+        payloads.extend(
+            settings_payload_samples()
+                .into_iter()
+                .map(Payload::AdminSettings),
+        );
+        payloads.extend(camera_payload_samples().into_iter().map(Payload::Camera));
+        payloads.extend(admin_payload_samples().into_iter().map(Payload::Admin));
+        payloads
+    }
+
+    fn control_payload_samples() -> Vec<ControlPayload> {
+        vec![
+            ControlPayload::ListRooms,
+            ControlPayload::RoomDetail { room: 1 },
+            ControlPayload::DeviceControl { room: 1, device: 2 },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::Toggle,
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::TurnOn,
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::TurnOff,
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::SetLevel(42),
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::SetTemp(21.5),
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::ShowChart { h: 168, o: -24 },
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
+                cmd: DeviceCmd::EnterManualInput,
+            },
+        ]
+    }
+
+    fn settings_payload_samples() -> Vec<SettingsPayload> {
+        vec![
+            SettingsPayload::ListRooms,
+            SettingsPayload::RoomDetail { room: 1 },
+            SettingsPayload::DeviceDetail { room: 1, device: 2 },
+            SettingsPayload::ToggleNotify { room: 1, device: 2 },
+            SettingsPayload::ToggleHide { room: 1, device: 2 },
+            SettingsPayload::EditName { room: 1, device: 2 },
+            SettingsPayload::StateAliases { room: 1, device: 2 },
+            SettingsPayload::EditStateAlias {
+                room: 1,
+                device: 2,
+                state: "on".to_string(),
+            },
+            SettingsPayload::ResetStateAlias {
+                room: 1,
+                device: 2,
+                state: "off".to_string(),
+            },
+            SettingsPayload::ToggleStateInversion { room: 1, device: 2 },
+            SettingsPayload::ToggleCritical { room: 1, device: 2 },
+        ]
+    }
+
+    fn camera_payload_samples() -> Vec<CameraPayload> {
+        vec![
+            CameraPayload::ListCameras,
+            CameraPayload::CameraDetail { id: 1 },
+            CameraPayload::Snapshot { id: 1 },
+            CameraPayload::Clip { id: 1, seconds: 10 },
+            CameraPayload::RecordingArchive { camera: 1 },
+            CameraPayload::RecordingSession {
+                camera: 1,
+                session: 2,
+            },
+            CameraPayload::SendRecordingSegment {
+                camera: 1,
+                session: 2,
+                segment: 3,
+            },
+            CameraPayload::SendRecordingAll {
+                camera: 1,
+                session: 2,
+            },
+            CameraPayload::ConfirmDeleteRecording {
+                camera: 1,
+                session: 2,
+            },
+            CameraPayload::DeleteRecording {
+                camera: 1,
+                session: 2,
+            },
+            CameraPayload::StopRecording {
+                camera: 1,
+                session: 2,
+            },
+        ]
+    }
+
+    fn admin_payload_samples() -> Vec<AdminPayload> {
+        let mut payloads = vec![
+            AdminPayload::ListActions,
+            AdminPayload::ListUsers,
+            AdminPayload::Status,
+            AdminPayload::ConfirmBackup,
+            AdminPayload::CreateBackup,
+            AdminPayload::PromptAddUser,
+            AdminPayload::PromptDeleteUser,
+            AdminPayload::AddUser { id: 9 },
+            AdminPayload::CameraRooms,
+            AdminPayload::RoomCameras { room: 1 },
+            AdminPayload::RoomCameraDetail { room: 1, camera: 2 },
+            AdminPayload::RoomCameraSnapshot { room: 1, camera: 2 },
+            AdminPayload::RoomCameraClip {
+                room: 1,
+                camera: 2,
+                seconds: 10,
+            },
+            AdminPayload::PromptAddCamera { room: 1 },
+            AdminPayload::ConfirmDeleteCamera { room: 1, camera: 2 },
+            AdminPayload::DeleteCamera { room: 1, camera: 2 },
+            AdminPayload::RecordingRules { room: 1 },
+            AdminPayload::PromptAddRecordingRule { room: 1 },
+            AdminPayload::ToggleRecordingRule { room: 1, rule: 2 },
+            AdminPayload::ConfirmDeleteRecordingRule { room: 1, rule: 2 },
+            AdminPayload::DeleteRecordingRule { room: 1, rule: 2 },
+            AdminPayload::CycleRecordingDefaultRetention { room: 1 },
+            AdminPayload::CycleRecordingStorageQuota { room: 1 },
+            AdminPayload::UiBackground,
+            AdminPayload::SetUiBackgroundCamera { camera: None },
+            AdminPayload::SetUiBackgroundCamera { camera: Some(2) },
+            AdminPayload::CycleUiBackgroundInterval,
+            AdminPayload::UserProfile { id: 9 },
+            AdminPayload::CycleUserRole { id: 9 },
+            AdminPayload::CycleUserLanguage { id: 9 },
+            AdminPayload::ResetUserAccess { id: 9 },
+            AdminPayload::UserRooms { id: 9 },
+            AdminPayload::ToggleUserRoomAccess { id: 9, room: 1 },
+            AdminPayload::UserRoomDevices { id: 9, room: 1 },
+            AdminPayload::ToggleUserDeviceAccess {
+                id: 9,
+                room: 1,
+                device: 2,
+            },
+            AdminPayload::ToggleUserDeviceNotify {
+                id: 9,
+                room: 1,
+                device: 2,
+            },
+            AdminPayload::ConfirmDeleteUser { id: 9 },
+            AdminPayload::DeleteUser { id: 9 },
+            AdminPayload::RecordingRuleDetail { room: 1, rule: 2 },
+            AdminPayload::ToggleRecordingRuleDetail { room: 1, rule: 2 },
+            AdminPayload::PromptEditRecordingRule { room: 1, rule: 2 },
+            AdminPayload::ToggleRecordingRuleNotify { room: 1, rule: 2 },
+            AdminPayload::DuplicateRecordingRule { room: 1, rule: 2 },
+            AdminPayload::TestRecordingRule { room: 1, rule: 2 },
+            AdminPayload::ToggleRecordingRuleNoise { room: 1, rule: 2 },
+            AdminPayload::CameraHealth { room: 1, camera: 2 },
+            AdminPayload::CheckCameraHealth { room: 1, camera: 2 },
+            AdminPayload::RecordingRuleGroups,
+            AdminPayload::RecordingRuleGroupsForRoom { room: 1 },
+            AdminPayload::RecordingRuleGroupDetail { group: 3 },
+            AdminPayload::RecordingRuleGroupDetailForRoom { room: 1, group: 3 },
+            AdminPayload::PromptCreateRecordingRuleGroup,
+            AdminPayload::PromptCreateRecordingRuleGroupForRoom { room: 1 },
+            AdminPayload::PromptRenameRecordingRuleGroup { group: 3 },
+            AdminPayload::PromptRenameRecordingRuleGroupForRoom { room: 1, group: 3 },
+            AdminPayload::ToggleRecordingRuleGroup { group: 3 },
+            AdminPayload::ToggleRecordingRuleGroupForRoom { room: 1, group: 3 },
+            AdminPayload::ToggleRecordingRuleGroupDetail { group: 3 },
+            AdminPayload::ToggleRecordingRuleGroupDetailForRoom { room: 1, group: 3 },
+            AdminPayload::ConfirmDeleteRecordingRuleGroup { group: 3 },
+            AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom { room: 1, group: 3 },
+            AdminPayload::DeleteRecordingRuleGroup { group: 3 },
+            AdminPayload::DeleteRecordingRuleGroupForRoom { room: 1, group: 3 },
+            AdminPayload::ToggleRuleGroupItem {
+                room: 1,
+                rule: 2,
+                group: 3,
+            },
+            AdminPayload::EnsureDefaultRuleGroups,
+            AdminPayload::EnsureDefaultRuleGroupsForRoom { room: 1 },
+            AdminPayload::EnsureDefaultRuleGroupsForWizard,
+            AdminPayload::EnsureDefaultRuleGroupsForEdit { room: 1, rule: 2 },
+            AdminPayload::ToggleUserVoice { id: 9 },
+            AdminPayload::CycleUserVoiceEngine { id: 9 },
+            AdminPayload::StartRecordingRuleWizard { room: 1 },
+            AdminPayload::WizardPickCamera { room: 1, camera: 2 },
+            AdminPayload::WizardSourcePage { page: 1 },
+            AdminPayload::WizardPickEntity {
+                room: 1,
+                camera: 2,
+                device: 3,
+            },
+            AdminPayload::WizardPickTail {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+            },
+            AdminPayload::WizardPickRetention {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+                retention: 14,
+            },
+            AdminPayload::WizardPickGroup {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+                retention: 14,
+                group: None,
+            },
+            AdminPayload::WizardPickGroup {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+                retention: 14,
+                group: Some(4),
+            },
+            AdminPayload::WizardCreateRule {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+                retention: 14,
+                group: Some(4),
+            },
+            AdminPayload::WizardAdvancedText {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode: WizardTriggerMode::OpenAndClose,
+                tail: 30,
+                retention: 14,
+                group: Some(4),
+            },
+            AdminPayload::WizardConditions,
+            AdminPayload::WizardAddCondition,
+            AdminPayload::WizardConditionEntityPage { page: 1 },
+            AdminPayload::WizardPickConditionEntity { device: 3 },
+            AdminPayload::WizardRemoveCondition { index: 1 },
+            AdminPayload::WizardToggleLogic,
+            AdminPayload::WizardNextTail,
+            AdminPayload::WizardPickWizardTail { tail: 30 },
+            AdminPayload::WizardPickWizardRetention { retention: 14 },
+            AdminPayload::WizardToggleGroup { group: 4 },
+            AdminPayload::WizardConfirmGroups,
+            AdminPayload::WizardCreateCurrentRule,
+            AdminPayload::WizardAdvancedCurrentText,
+            AdminPayload::RecordingRuleEditMenu { room: 1, rule: 2 },
+            AdminPayload::RecordingRuleEditSensors { room: 1, rule: 2 },
+            AdminPayload::PromptEditRecordingRuleNumber {
+                room: 1,
+                rule: 2,
+                field: RecordingRuleEditField::TailSeconds,
+            },
+            AdminPayload::CycleRecordingRuleLogic { room: 1, rule: 2 },
+            AdminPayload::RecordingRuleEditSensorPage {
+                room: 1,
+                rule: 2,
+                page: 1,
+            },
+            AdminPayload::RecordingRuleEditPickSensor {
+                room: 1,
+                rule: 2,
+                device: 3,
+            },
+            AdminPayload::DeleteRecordingRuleCondition {
+                room: 1,
+                rule: 2,
+                condition: 4,
+            },
+            AdminPayload::WizardGroups,
+            AdminPayload::WizardCancel,
+            AdminPayload::RecordingRuleEditGroups { room: 1, rule: 2 },
+            AdminPayload::ToggleRecordingRuleEditGroupItem {
+                room: 1,
+                rule: 2,
+                group: 3,
+            },
+        ];
+
+        payloads.extend(
+            activity_log_filter_samples()
+                .into_iter()
+                .map(|filter| AdminPayload::ActivityLog { filter }),
+        );
+        payloads.extend(wizard_mode_samples().into_iter().map(|mode| {
+            AdminPayload::WizardPickMode {
+                room: 1,
+                camera: 2,
+                device: 3,
+                mode,
+            }
+        }));
+        payloads.extend(
+            recording_rule_edit_field_samples()
+                .into_iter()
+                .map(|field| AdminPayload::PromptEditRecordingRuleNumber {
+                    room: 1,
+                    rule: 2,
+                    field,
+                }),
+        );
+        payloads.extend(
+            condition_operator_samples()
+                .into_iter()
+                .map(|operator| AdminPayload::WizardPickConditionOperator { operator }),
+        );
+        payloads.extend(condition_operator_samples().into_iter().map(|operator| {
+            AdminPayload::RecordingRuleEditPickSensorOperator {
+                room: 1,
+                rule: 2,
+                device: 3,
+                operator,
+            }
+        }));
+
+        payloads
+    }
+
+    fn wizard_mode_samples() -> Vec<WizardTriggerMode> {
+        vec![
+            WizardTriggerMode::OpenAndClose,
+            WizardTriggerMode::OpenOnly,
+            WizardTriggerMode::CloseOnly,
+            WizardTriggerMode::Detected,
+            WizardTriggerMode::Cleared,
+            WizardTriggerMode::DetectedAndCleared,
+            WizardTriggerMode::TurnedOn,
+            WizardTriggerMode::TurnedOff,
+            WizardTriggerMode::TurnedOnAndOff,
+            WizardTriggerMode::AnyChange,
+            WizardTriggerMode::NumericAbove,
+            WizardTriggerMode::NumericBelow,
+        ]
+    }
+
+    fn condition_operator_samples() -> Vec<db::camera_recording_rules::ConditionOperator> {
+        vec![
+            db::camera_recording_rules::ConditionOperator::ChangedTo,
+            db::camera_recording_rules::ConditionOperator::ChangedFromTo,
+            db::camera_recording_rules::ConditionOperator::Is,
+            db::camera_recording_rules::ConditionOperator::IsNot,
+            db::camera_recording_rules::ConditionOperator::Contains,
+            db::camera_recording_rules::ConditionOperator::Above,
+            db::camera_recording_rules::ConditionOperator::Below,
+        ]
+    }
+
+    fn recording_rule_edit_field_samples() -> Vec<RecordingRuleEditField> {
+        vec![
+            RecordingRuleEditField::TailSeconds,
+            RecordingRuleEditField::MaxSegmentSeconds,
+            RecordingRuleEditField::CooldownSeconds,
+            RecordingRuleEditField::RetentionDays,
+        ]
+    }
+
+    fn activity_log_filter_samples() -> Vec<ActivityLogFilter> {
+        vec![
+            ActivityLogFilter::All,
+            ActivityLogFilter::Errors,
+            ActivityLogFilter::Cameras,
+            ActivityLogFilter::Devices,
+            ActivityLogFilter::Recording,
+        ]
+    }
+
+    fn payload_route_name(payload: &Payload) -> &'static str {
+        match payload {
+            Payload::Home => "Payload::Home",
+            Payload::Control(payload) => control_route_name(payload),
+            Payload::Settings(payload) => settings_route_name(payload),
+            Payload::Camera(payload) => camera_route_name(payload),
+            Payload::Admin(payload) => admin_route_name(payload),
+            Payload::InDev => "Payload::InDev",
+            Payload::Command(payload) => command_route_name(payload),
+            Payload::AdminSettings(payload) => settings_route_name(payload),
+        }
+    }
+
+    fn command_route_name(payload: &CommandPayload) -> &'static str {
+        match payload {
+            CommandPayload::Confirm { .. } => "CommandPayload::Confirm",
+            CommandPayload::Cancel { .. } => "CommandPayload::Cancel",
+        }
+    }
+
+    fn control_route_name(payload: &ControlPayload) -> &'static str {
+        match payload {
+            ControlPayload::ListRooms => "ControlPayload::ListRooms",
+            ControlPayload::RoomDetail { .. } => "ControlPayload::RoomDetail",
+            ControlPayload::DeviceControl { .. } => "ControlPayload::DeviceControl",
+            ControlPayload::QuickAction { .. } => "ControlPayload::QuickAction",
+        }
+    }
+
+    fn settings_route_name(payload: &SettingsPayload) -> &'static str {
+        match payload {
+            SettingsPayload::ListRooms => "SettingsPayload::ListRooms",
+            SettingsPayload::RoomDetail { .. } => "SettingsPayload::RoomDetail",
+            SettingsPayload::DeviceDetail { .. } => "SettingsPayload::DeviceDetail",
+            SettingsPayload::ToggleNotify { .. } => "SettingsPayload::ToggleNotify",
+            SettingsPayload::ToggleHide { .. } => "SettingsPayload::ToggleHide",
+            SettingsPayload::EditName { .. } => "SettingsPayload::EditName",
+            SettingsPayload::StateAliases { .. } => "SettingsPayload::StateAliases",
+            SettingsPayload::EditStateAlias { .. } => "SettingsPayload::EditStateAlias",
+            SettingsPayload::ResetStateAlias { .. } => "SettingsPayload::ResetStateAlias",
+            SettingsPayload::ToggleStateInversion { .. } => "SettingsPayload::ToggleStateInversion",
+            SettingsPayload::ToggleCritical { .. } => "SettingsPayload::ToggleCritical",
+        }
+    }
+
+    fn camera_route_name(payload: &CameraPayload) -> &'static str {
+        match payload {
+            CameraPayload::ListCameras => "CameraPayload::ListCameras",
+            CameraPayload::CameraDetail { .. } => "CameraPayload::CameraDetail",
+            CameraPayload::Snapshot { .. } => "CameraPayload::Snapshot",
+            CameraPayload::Clip { .. } => "CameraPayload::Clip",
+            CameraPayload::RecordingArchive { .. } => "CameraPayload::RecordingArchive",
+            CameraPayload::RecordingSession { .. } => "CameraPayload::RecordingSession",
+            CameraPayload::SendRecordingSegment { .. } => "CameraPayload::SendRecordingSegment",
+            CameraPayload::SendRecordingAll { .. } => "CameraPayload::SendRecordingAll",
+            CameraPayload::ConfirmDeleteRecording { .. } => "CameraPayload::ConfirmDeleteRecording",
+            CameraPayload::DeleteRecording { .. } => "CameraPayload::DeleteRecording",
+            CameraPayload::StopRecording { .. } => "CameraPayload::StopRecording",
+        }
+    }
+
+    fn admin_route_name(payload: &AdminPayload) -> &'static str {
+        match payload {
+            AdminPayload::ListActions => "AdminPayload::ListActions",
+            AdminPayload::ListUsers => "AdminPayload::ListUsers",
+            AdminPayload::Status => "AdminPayload::Status",
+            AdminPayload::ConfirmBackup => "AdminPayload::ConfirmBackup",
+            AdminPayload::CreateBackup => "AdminPayload::CreateBackup",
+            AdminPayload::PromptAddUser => "AdminPayload::PromptAddUser",
+            AdminPayload::PromptDeleteUser => "AdminPayload::PromptDeleteUser",
+            AdminPayload::AddUser { .. } => "AdminPayload::AddUser",
+            AdminPayload::CameraRooms => "AdminPayload::CameraRooms",
+            AdminPayload::RoomCameras { .. } => "AdminPayload::RoomCameras",
+            AdminPayload::RoomCameraDetail { .. } => "AdminPayload::RoomCameraDetail",
+            AdminPayload::RoomCameraSnapshot { .. } => "AdminPayload::RoomCameraSnapshot",
+            AdminPayload::RoomCameraClip { .. } => "AdminPayload::RoomCameraClip",
+            AdminPayload::PromptAddCamera { .. } => "AdminPayload::PromptAddCamera",
+            AdminPayload::ConfirmDeleteCamera { .. } => "AdminPayload::ConfirmDeleteCamera",
+            AdminPayload::DeleteCamera { .. } => "AdminPayload::DeleteCamera",
+            AdminPayload::RecordingRules { .. } => "AdminPayload::RecordingRules",
+            AdminPayload::PromptAddRecordingRule { .. } => "AdminPayload::PromptAddRecordingRule",
+            AdminPayload::ToggleRecordingRule { .. } => "AdminPayload::ToggleRecordingRule",
+            AdminPayload::ConfirmDeleteRecordingRule { .. } => {
+                "AdminPayload::ConfirmDeleteRecordingRule"
+            }
+            AdminPayload::DeleteRecordingRule { .. } => "AdminPayload::DeleteRecordingRule",
+            AdminPayload::CycleRecordingDefaultRetention { .. } => {
+                "AdminPayload::CycleRecordingDefaultRetention"
+            }
+            AdminPayload::CycleRecordingStorageQuota { .. } => {
+                "AdminPayload::CycleRecordingStorageQuota"
+            }
+            AdminPayload::UiBackground => "AdminPayload::UiBackground",
+            AdminPayload::SetUiBackgroundCamera { .. } => "AdminPayload::SetUiBackgroundCamera",
+            AdminPayload::CycleUiBackgroundInterval => "AdminPayload::CycleUiBackgroundInterval",
+            AdminPayload::UserProfile { .. } => "AdminPayload::UserProfile",
+            AdminPayload::CycleUserRole { .. } => "AdminPayload::CycleUserRole",
+            AdminPayload::CycleUserLanguage { .. } => "AdminPayload::CycleUserLanguage",
+            AdminPayload::ResetUserAccess { .. } => "AdminPayload::ResetUserAccess",
+            AdminPayload::UserRooms { .. } => "AdminPayload::UserRooms",
+            AdminPayload::ToggleUserRoomAccess { .. } => "AdminPayload::ToggleUserRoomAccess",
+            AdminPayload::UserRoomDevices { .. } => "AdminPayload::UserRoomDevices",
+            AdminPayload::ToggleUserDeviceAccess { .. } => "AdminPayload::ToggleUserDeviceAccess",
+            AdminPayload::ToggleUserDeviceNotify { .. } => "AdminPayload::ToggleUserDeviceNotify",
+            AdminPayload::ConfirmDeleteUser { .. } => "AdminPayload::ConfirmDeleteUser",
+            AdminPayload::DeleteUser { .. } => "AdminPayload::DeleteUser",
+            AdminPayload::RecordingRuleDetail { .. } => "AdminPayload::RecordingRuleDetail",
+            AdminPayload::ToggleRecordingRuleDetail { .. } => {
+                "AdminPayload::ToggleRecordingRuleDetail"
+            }
+            AdminPayload::PromptEditRecordingRule { .. } => "AdminPayload::PromptEditRecordingRule",
+            AdminPayload::ToggleRecordingRuleNotify { .. } => {
+                "AdminPayload::ToggleRecordingRuleNotify"
+            }
+            AdminPayload::DuplicateRecordingRule { .. } => "AdminPayload::DuplicateRecordingRule",
+            AdminPayload::TestRecordingRule { .. } => "AdminPayload::TestRecordingRule",
+            AdminPayload::ToggleRecordingRuleNoise { .. } => {
+                "AdminPayload::ToggleRecordingRuleNoise"
+            }
+            AdminPayload::CameraHealth { .. } => "AdminPayload::CameraHealth",
+            AdminPayload::CheckCameraHealth { .. } => "AdminPayload::CheckCameraHealth",
+            AdminPayload::ActivityLog { .. } => "AdminPayload::ActivityLog",
+            AdminPayload::RecordingRuleGroups => "AdminPayload::RecordingRuleGroups",
+            AdminPayload::RecordingRuleGroupsForRoom { .. } => {
+                "AdminPayload::RecordingRuleGroupsForRoom"
+            }
+            AdminPayload::RecordingRuleGroupDetail { .. } => {
+                "AdminPayload::RecordingRuleGroupDetail"
+            }
+            AdminPayload::RecordingRuleGroupDetailForRoom { .. } => {
+                "AdminPayload::RecordingRuleGroupDetailForRoom"
+            }
+            AdminPayload::PromptCreateRecordingRuleGroup => {
+                "AdminPayload::PromptCreateRecordingRuleGroup"
+            }
+            AdminPayload::PromptCreateRecordingRuleGroupForRoom { .. } => {
+                "AdminPayload::PromptCreateRecordingRuleGroupForRoom"
+            }
+            AdminPayload::PromptRenameRecordingRuleGroup { .. } => {
+                "AdminPayload::PromptRenameRecordingRuleGroup"
+            }
+            AdminPayload::PromptRenameRecordingRuleGroupForRoom { .. } => {
+                "AdminPayload::PromptRenameRecordingRuleGroupForRoom"
+            }
+            AdminPayload::ToggleRecordingRuleGroup { .. } => {
+                "AdminPayload::ToggleRecordingRuleGroup"
+            }
+            AdminPayload::ToggleRecordingRuleGroupForRoom { .. } => {
+                "AdminPayload::ToggleRecordingRuleGroupForRoom"
+            }
+            AdminPayload::ToggleRecordingRuleGroupDetail { .. } => {
+                "AdminPayload::ToggleRecordingRuleGroupDetail"
+            }
+            AdminPayload::ToggleRecordingRuleGroupDetailForRoom { .. } => {
+                "AdminPayload::ToggleRecordingRuleGroupDetailForRoom"
+            }
+            AdminPayload::ConfirmDeleteRecordingRuleGroup { .. } => {
+                "AdminPayload::ConfirmDeleteRecordingRuleGroup"
+            }
+            AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom { .. } => {
+                "AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom"
+            }
+            AdminPayload::DeleteRecordingRuleGroup { .. } => {
+                "AdminPayload::DeleteRecordingRuleGroup"
+            }
+            AdminPayload::DeleteRecordingRuleGroupForRoom { .. } => {
+                "AdminPayload::DeleteRecordingRuleGroupForRoom"
+            }
+            AdminPayload::ToggleRuleGroupItem { .. } => "AdminPayload::ToggleRuleGroupItem",
+            AdminPayload::EnsureDefaultRuleGroups => "AdminPayload::EnsureDefaultRuleGroups",
+            AdminPayload::EnsureDefaultRuleGroupsForRoom { .. } => {
+                "AdminPayload::EnsureDefaultRuleGroupsForRoom"
+            }
+            AdminPayload::EnsureDefaultRuleGroupsForWizard => {
+                "AdminPayload::EnsureDefaultRuleGroupsForWizard"
+            }
+            AdminPayload::EnsureDefaultRuleGroupsForEdit { .. } => {
+                "AdminPayload::EnsureDefaultRuleGroupsForEdit"
+            }
+            AdminPayload::ToggleUserVoice { .. } => "AdminPayload::ToggleUserVoice",
+            AdminPayload::CycleUserVoiceEngine { .. } => "AdminPayload::CycleUserVoiceEngine",
+            AdminPayload::StartRecordingRuleWizard { .. } => {
+                "AdminPayload::StartRecordingRuleWizard"
+            }
+            AdminPayload::WizardPickCamera { .. } => "AdminPayload::WizardPickCamera",
+            AdminPayload::WizardSourcePage { .. } => "AdminPayload::WizardSourcePage",
+            AdminPayload::WizardPickEntity { .. } => "AdminPayload::WizardPickEntity",
+            AdminPayload::WizardPickMode { .. } => "AdminPayload::WizardPickMode",
+            AdminPayload::WizardPickTail { .. } => "AdminPayload::WizardPickTail",
+            AdminPayload::WizardPickRetention { .. } => "AdminPayload::WizardPickRetention",
+            AdminPayload::WizardPickGroup { .. } => "AdminPayload::WizardPickGroup",
+            AdminPayload::WizardCreateRule { .. } => "AdminPayload::WizardCreateRule",
+            AdminPayload::WizardAdvancedText { .. } => "AdminPayload::WizardAdvancedText",
+            AdminPayload::WizardConditions => "AdminPayload::WizardConditions",
+            AdminPayload::WizardAddCondition => "AdminPayload::WizardAddCondition",
+            AdminPayload::WizardConditionEntityPage { .. } => {
+                "AdminPayload::WizardConditionEntityPage"
+            }
+            AdminPayload::WizardPickConditionEntity { .. } => {
+                "AdminPayload::WizardPickConditionEntity"
+            }
+            AdminPayload::WizardPickConditionOperator { .. } => {
+                "AdminPayload::WizardPickConditionOperator"
+            }
+            AdminPayload::WizardRemoveCondition { .. } => "AdminPayload::WizardRemoveCondition",
+            AdminPayload::WizardToggleLogic => "AdminPayload::WizardToggleLogic",
+            AdminPayload::WizardNextTail => "AdminPayload::WizardNextTail",
+            AdminPayload::WizardPickWizardTail { .. } => "AdminPayload::WizardPickWizardTail",
+            AdminPayload::WizardPickWizardRetention { .. } => {
+                "AdminPayload::WizardPickWizardRetention"
+            }
+            AdminPayload::WizardToggleGroup { .. } => "AdminPayload::WizardToggleGroup",
+            AdminPayload::WizardConfirmGroups => "AdminPayload::WizardConfirmGroups",
+            AdminPayload::WizardCreateCurrentRule => "AdminPayload::WizardCreateCurrentRule",
+            AdminPayload::WizardAdvancedCurrentText => "AdminPayload::WizardAdvancedCurrentText",
+            AdminPayload::RecordingRuleEditMenu { .. } => "AdminPayload::RecordingRuleEditMenu",
+            AdminPayload::RecordingRuleEditSensors { .. } => {
+                "AdminPayload::RecordingRuleEditSensors"
+            }
+            AdminPayload::PromptEditRecordingRuleNumber { .. } => {
+                "AdminPayload::PromptEditRecordingRuleNumber"
+            }
+            AdminPayload::CycleRecordingRuleLogic { .. } => "AdminPayload::CycleRecordingRuleLogic",
+            AdminPayload::RecordingRuleEditSensorPage { .. } => {
+                "AdminPayload::RecordingRuleEditSensorPage"
+            }
+            AdminPayload::RecordingRuleEditPickSensor { .. } => {
+                "AdminPayload::RecordingRuleEditPickSensor"
+            }
+            AdminPayload::RecordingRuleEditPickSensorOperator { .. } => {
+                "AdminPayload::RecordingRuleEditPickSensorOperator"
+            }
+            AdminPayload::DeleteRecordingRuleCondition { .. } => {
+                "AdminPayload::DeleteRecordingRuleCondition"
+            }
+            AdminPayload::WizardGroups => "AdminPayload::WizardGroups",
+            AdminPayload::WizardCancel => "AdminPayload::WizardCancel",
+            AdminPayload::RecordingRuleEditGroups { .. } => "AdminPayload::RecordingRuleEditGroups",
+            AdminPayload::ToggleRecordingRuleEditGroupItem { .. } => {
+                "AdminPayload::ToggleRecordingRuleEditGroupItem"
+            }
+        }
     }
 
     #[tokio::test]
