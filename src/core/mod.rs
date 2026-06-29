@@ -2,6 +2,7 @@ pub(crate) mod action_groups;
 pub(crate) mod action_schedules;
 pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
+pub(crate) mod camera_snapshots;
 pub(crate) mod cameras;
 pub(crate) mod commands;
 pub mod devices;
@@ -14,7 +15,7 @@ pub(crate) mod voice;
 
 use crate::db;
 use crate::models::{AppConfig, UserSession};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 pub use maintenance::spawn_background_maintenance;
 pub use notification::spawn_notification_processor;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ pub struct HeaderItem {
     pub value: String,
     pub last_update: DateTime<Utc>,
 }
+
+const USER_SESSION_REFRESH_PERSIST_INTERVAL_S: i64 = 300;
 
 impl AppConfig {
     pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
@@ -255,12 +258,21 @@ pub async fn update_user_state_with_mode(
 ) {
     let context_owned = context.to_string();
     let now = Utc::now();
-    let previous_context = config
-        .sessions
-        .get(&user_id)
-        .map(|session| session.current_context.clone());
+    let previous_session = config.sessions.get(&user_id).map(|session| {
+        (
+            session.last_menu_id,
+            session.current_context.clone(),
+            session.ui_message_mode,
+            session.header_entities.clone(),
+            session.recording_rule_wizard.clone(),
+            session.last_persisted_at,
+        )
+    });
+    let previous_context = previous_session
+        .as_ref()
+        .map(|(_, current_context, _, _, _, _)| current_context.as_str());
 
-    if previous_context.as_deref() == Some(context) {
+    if previous_context == Some(context) {
         debug!(
             "REFRESH USER STATE: user: {}, context: {}",
             user_id, context
@@ -275,23 +287,56 @@ pub async fn update_user_state_with_mode(
             last_menu_id: msg_id,
             current_context: context_owned.clone(),
             ui_message_mode,
-            header_entities: config
-                .sessions
-                .get(&user_id)
-                .map(|s| s.header_entities.clone())
+            header_entities: previous_session
+                .as_ref()
+                .map(|(_, _, _, header_entities, _, _)| header_entities.clone())
                 .unwrap_or_default(),
-            recording_rule_wizard: config
-                .sessions
-                .get(&user_id)
-                .and_then(|s| s.recording_rule_wizard.clone()),
+            recording_rule_wizard: previous_session
+                .as_ref()
+                .and_then(|(_, _, _, _, wizard, _)| wizard.clone()),
             last_ui_refresh_at: Some(now),
             ui_refresh_blocked_until: None,
             last_seen_at: now,
+            last_persisted_at: previous_session
+                .as_ref()
+                .and_then(|(_, _, _, _, _, last_persisted_at)| *last_persisted_at),
         },
     );
+
+    let should_persist = previous_session
+        .as_ref()
+        .map(
+            |(
+                previous_msg_id,
+                previous_context,
+                previous_ui_message_mode,
+                _,
+                _,
+                last_persisted_at,
+            )| {
+                *previous_msg_id != msg_id
+                    || previous_context != context
+                    || *previous_ui_message_mode != ui_message_mode
+                    || last_persisted_at
+                        .map(|last_persisted_at| {
+                            now.signed_duration_since(last_persisted_at)
+                                >= Duration::seconds(USER_SESSION_REFRESH_PERSIST_INTERVAL_S)
+                        })
+                        .unwrap_or(true)
+            },
+        )
+        .unwrap_or(true);
+
+    if !should_persist {
+        return;
+    }
 
     let pool = config.db.clone();
     let ctx = context_owned;
 
-    crate::db::save_user_session(user_id, msg_id, &ctx, now, &pool).await;
+    if crate::db::save_user_session(user_id, msg_id, &ctx, now, &pool).await {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            session.last_persisted_at = Some(now);
+        }
+    }
 }

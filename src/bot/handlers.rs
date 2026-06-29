@@ -1130,11 +1130,13 @@ async fn send_recording_segment(
             return Ok(());
         }
     };
+    let thumbnail = recording_video_thumbnail(config, &path).await;
     send_recording_video_file(
         bot,
         chat_id,
         &full_path,
         &format!("🎞 Часть {}", segment.segment_index),
+        thumbnail,
     )
     .await?;
 
@@ -1175,7 +1177,7 @@ async fn send_recording_all(
     for segment in segments {
         if let Some(path) = segment.file_path {
             match crate::core::camera_recording::recording_file_info(config, &path).await {
-                Ok((full_path, _)) => files.push((segment.segment_index, full_path)),
+                Ok((full_path, _)) => files.push((segment.segment_index, full_path, path)),
                 Err(error) => {
                     missing_files += 1;
                     log::warn!(
@@ -1212,12 +1214,14 @@ async fn send_recording_all(
         .await?;
     }
 
-    for (segment_index, full_path) in files {
+    for (segment_index, full_path, relative_path) in files {
+        let thumbnail = recording_video_thumbnail(config, &relative_path).await;
         send_recording_video_file(
             bot,
             chat_id,
             &full_path,
             &format!("🎞 Часть {}", segment_index),
+            thumbnail,
         )
         .await?;
     }
@@ -1230,6 +1234,7 @@ async fn send_recording_video_file(
     chat_id: ChatId,
     path: &Path,
     caption: &str,
+    thumbnail: Option<Vec<u8>>,
 ) -> Result<()> {
     let metadata = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
@@ -1325,10 +1330,16 @@ async fn send_recording_video_file(
         caption.to_string()
     };
     let sent_path = send_path.clone();
-    let sent = bot
+    let request = bot
         .send_video(chat_id, InputFile::file(send_path))
         .caption(caption)
-        .await?;
+        .supports_streaming(true);
+    let request = if let Some(thumbnail) = thumbnail {
+        request.thumbnail(InputFile::memory(thumbnail))
+    } else {
+        request
+    };
+    let sent = request.await?;
     if compressed {
         let _ = tokio::fs::remove_file(sent_path).await;
     }
@@ -1340,6 +1351,30 @@ async fn send_recording_video_file(
     );
 
     Ok(())
+}
+
+async fn recording_video_thumbnail(config: &Arc<AppConfig>, file_path: &str) -> Option<Vec<u8>> {
+    match crate::core::camera_recording::recording_thumbnail(config, file_path).await {
+        Ok(bytes) if crate::core::camera_recording::is_usable_telegram_thumbnail(&bytes) => {
+            Some(bytes)
+        }
+        Ok(bytes) => {
+            log::debug!(
+                "Recording thumbnail skipped: path={}, size={} bytes",
+                file_path,
+                bytes.len()
+            );
+            None
+        }
+        Err(error) => {
+            log::debug!(
+                "Recording thumbnail unavailable: path={}, error={:#}",
+                file_path,
+                error
+            );
+            None
+        }
+    }
 }
 
 async fn prepare_telegram_compressed_video(

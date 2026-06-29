@@ -118,6 +118,7 @@ async fn main() -> Result<()> {
 
         state_aliases: DashMap::new(),
         ui_background_cache: tokio::sync::Mutex::new(None),
+        camera_snapshot_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
     });
 
@@ -136,6 +137,7 @@ async fn main() -> Result<()> {
                 last_ui_refresh_at: None,
                 ui_refresh_blocked_until: None,
                 last_seen_at,
+                last_persisted_at: Some(last_seen_at),
             },
         );
     }

@@ -13,15 +13,79 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 static FFMPEG_INIT: Once = Once::new();
-static CAMERA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-static TIMED_OUT_CAMERA_JOBS: AtomicUsize = AtomicUsize::new(0);
-const MAX_CAMERA_JOBS: usize = 2;
-const MAX_TIMED_OUT_CAMERA_JOBS: usize = 2;
+static LIVE_CAMERA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static LOCAL_MEDIA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static TIMED_OUT_LIVE_CAMERA_JOBS: AtomicUsize = AtomicUsize::new(0);
+static TIMED_OUT_LOCAL_MEDIA_JOBS: AtomicUsize = AtomicUsize::new(0);
+const MAX_LIVE_CAMERA_JOBS: usize = 2;
+const MAX_LOCAL_MEDIA_JOBS: usize = 2;
+const MAX_TIMED_OUT_LIVE_CAMERA_JOBS: usize = 2;
+const MAX_TIMED_OUT_LOCAL_MEDIA_JOBS: usize = 2;
+const REMUX_KEYFRAME_WAIT_S: u64 = 10;
+const SNAPSHOT_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct CameraJobState {
     done: bool,
     timed_out: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CameraJobPool {
+    LiveCamera,
+    LocalMedia,
+}
+
+impl CameraJobPool {
+    fn semaphore(self) -> Arc<Semaphore> {
+        match self {
+            Self::LiveCamera => LIVE_CAMERA_JOBS
+                .get_or_init(|| Arc::new(Semaphore::new(MAX_LIVE_CAMERA_JOBS)))
+                .clone(),
+            Self::LocalMedia => LOCAL_MEDIA_JOBS
+                .get_or_init(|| Arc::new(Semaphore::new(MAX_LOCAL_MEDIA_JOBS)))
+                .clone(),
+        }
+    }
+
+    fn timed_out_jobs(self) -> &'static AtomicUsize {
+        match self {
+            Self::LiveCamera => &TIMED_OUT_LIVE_CAMERA_JOBS,
+            Self::LocalMedia => &TIMED_OUT_LOCAL_MEDIA_JOBS,
+        }
+    }
+
+    fn max_timed_out_jobs(self) -> usize {
+        match self {
+            Self::LiveCamera => MAX_TIMED_OUT_LIVE_CAMERA_JOBS,
+            Self::LocalMedia => MAX_TIMED_OUT_LOCAL_MEDIA_JOBS,
+        }
+    }
+
+    fn queue_name(self) -> &'static str {
+        match self {
+            Self::LiveCamera => "камеры",
+            Self::LocalMedia => "локального видео",
+        }
+    }
+
+    fn unavailable_message(self) -> &'static str {
+        match self {
+            Self::LiveCamera => {
+                "Камеры временно недоступны: есть зависшие LibAV-задачи после таймаута. Перезапустите сервис, если поток камеры не восстановится."
+            }
+            Self::LocalMedia => {
+                "Видеоархив временно недоступен: есть зависшие LibAV-задачи обработки локального видео. Перезапустите сервис, если обработка не восстановится."
+            }
+        }
+    }
+
+    fn thread_name(self) -> &'static str {
+        match self {
+            Self::LiveCamera => "telegram-ha-camera",
+            Self::LocalMedia => "telegram-ha-media",
+        }
+    }
 }
 
 pub async fn capture_snapshot(camera: &Camera) -> Result<Vec<u8>> {
@@ -30,14 +94,32 @@ pub async fn capture_snapshot(camera: &Camera) -> Result<Vec<u8>> {
     }
 
     let camera = camera.clone();
-    run_camera_job(Duration::from_secs(20), move || {
-        capture_snapshot_blocking(&camera)
-    })
+    run_isolated_job(
+        CameraJobPool::LiveCamera,
+        Duration::from_secs(20),
+        move || capture_snapshot_blocking(&camera),
+    )
     .await
 }
 
 async fn fetch_snapshot(snapshot_url: &str) -> Result<Vec<u8>> {
     let safe_url = safe_stream_label(snapshot_url);
+    match tokio::time::timeout(
+        SNAPSHOT_HTTP_TIMEOUT,
+        fetch_snapshot_inner(snapshot_url, &safe_url),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "Snapshot URL {} не ответил за {}с",
+            safe_url,
+            SNAPSHOT_HTTP_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+async fn fetch_snapshot_inner(snapshot_url: &str, safe_url: &str) -> Result<Vec<u8>> {
     let response = reqwest::get(snapshot_url).await.map_err(|error| {
         anyhow!(
             "Не удалось запросить snapshot URL {}: {}",
@@ -70,7 +152,7 @@ async fn fetch_snapshot(snapshot_url: &str) -> Result<Vec<u8>> {
 
 pub async fn capture_clip(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
     let camera = camera.clone();
-    let timeout = Duration::from_secs(seconds as u64 + 25);
+    let timeout = Duration::from_secs(seconds as u64 + 45);
 
     log::info!(
         "Camera clip capture requested: camera={} {}, duration={}s, timeout={}s, stream={}",
@@ -80,7 +162,33 @@ pub async fn capture_clip(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
         timeout.as_secs(),
         safe_stream_label(&camera.stream_url)
     );
-    run_camera_job(timeout, move || capture_clip_blocking(&camera, seconds)).await
+    run_isolated_job(CameraJobPool::LiveCamera, timeout, move || {
+        capture_clip_blocking(&camera, seconds)
+    })
+    .await
+}
+
+pub async fn capture_clip_to_file(
+    camera: &Camera,
+    seconds: u32,
+    output_path: PathBuf,
+) -> Result<u64> {
+    let camera = camera.clone();
+    let timeout = Duration::from_secs(seconds as u64 + 45);
+
+    log::info!(
+        "Camera clip file capture requested: camera={} {}, duration={}s, timeout={}s, stream={}, output={}",
+        camera.id,
+        camera.name,
+        seconds,
+        timeout.as_secs(),
+        safe_stream_label(&camera.stream_url),
+        output_path.display()
+    );
+    run_isolated_job(CameraJobPool::LiveCamera, timeout, move || {
+        write_clip_file_blocking(&camera, seconds, &output_path)
+    })
+    .await
 }
 
 pub async fn compress_clip_for_telegram(
@@ -88,43 +196,51 @@ pub async fn compress_clip_for_telegram(
     output_path: PathBuf,
     max_bytes: u64,
 ) -> Result<()> {
-    run_camera_job(Duration::from_secs(180), move || {
-        compress_clip_blocking(&input_path, &output_path, max_bytes)
-    })
+    run_isolated_job(
+        CameraJobPool::LocalMedia,
+        Duration::from_secs(180),
+        move || compress_clip_blocking(&input_path, &output_path, max_bytes),
+    )
     .await
 }
 
-async fn run_camera_job<T, F>(timeout: Duration, job: F) -> Result<T>
+pub async fn extract_video_preview(input_path: PathBuf) -> Result<Vec<u8>> {
+    run_isolated_job(
+        CameraJobPool::LocalMedia,
+        Duration::from_secs(30),
+        move || extract_video_preview_blocking(&input_path),
+    )
+    .await
+}
+
+async fn run_isolated_job<T, F>(pool: CameraJobPool, timeout: Duration, job: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
-    if TIMED_OUT_CAMERA_JOBS.load(Ordering::Relaxed) >= MAX_TIMED_OUT_CAMERA_JOBS {
-        return Err(anyhow!(
-            "Камеры временно недоступны: есть зависшие LibAV-задачи после таймаута. Перезапустите сервис, если поток камеры не восстановится."
-        ));
+    let timed_out_jobs = pool.timed_out_jobs();
+    if timed_out_jobs.load(Ordering::Relaxed) >= pool.max_timed_out_jobs() {
+        return Err(anyhow!(pool.unavailable_message()));
     }
 
-    let semaphore = CAMERA_JOBS
-        .get_or_init(|| Arc::new(Semaphore::new(MAX_CAMERA_JOBS)))
-        .clone();
+    let semaphore = pool.semaphore();
     let permit = tokio::time::timeout(Duration::from_secs(2), semaphore.acquire_owned())
         .await
-        .context("Очередь задач камеры занята")?
-        .context("Очередь задач камеры закрыта")?;
+        .with_context(|| format!("Очередь задач {} занята", pool.queue_name()))?
+        .with_context(|| format!("Очередь задач {} закрыта", pool.queue_name()))?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let state = Arc::new(Mutex::new(CameraJobState::default()));
     let thread_state = state.clone();
 
     thread::Builder::new()
-        .name("telegram-ha-camera".to_string())
+        .name(pool.thread_name().to_string())
         .spawn(move || {
             let result = job();
             let _ = tx.send(result);
             if let Ok(mut state) = thread_state.lock() {
                 state.done = true;
                 if state.timed_out {
-                    TIMED_OUT_CAMERA_JOBS.fetch_sub(1, Ordering::Relaxed);
+                    timed_out_jobs.fetch_sub(1, Ordering::Relaxed);
                 }
             }
         })
@@ -137,7 +253,7 @@ where
             if let Ok(mut state) = state.lock() {
                 if !state.done && !state.timed_out {
                     state.timed_out = true;
-                    TIMED_OUT_CAMERA_JOBS.fetch_add(1, Ordering::Relaxed);
+                    timed_out_jobs.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(anyhow!(
@@ -209,6 +325,60 @@ fn capture_snapshot_blocking(camera: &Camera) -> Result<Vec<u8>> {
     Err(anyhow!("Не удалось получить кадр из видеопотока"))
 }
 
+fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
+    init_ffmpeg();
+
+    let input_path_str = input_path.to_string_lossy().to_string();
+    let mut input_ctx = format::input(&input_path_str)
+        .with_context(|| format!("Не удалось открыть видео {}", input_path.display()))?;
+    let input_stream = input_ctx
+        .streams()
+        .best(media::Type::Video)
+        .ok_or_else(|| anyhow!("В файле нет видеопотока"))?;
+    let video_stream_index = input_stream.index();
+
+    let context_decoder = codec::context::Context::from_parameters(input_stream.parameters())
+        .context("Не удалось создать preview decoder context")?;
+    let mut decoder = context_decoder
+        .decoder()
+        .video()
+        .context("Не удалось открыть preview video decoder")?;
+
+    let (target_width, target_height) =
+        scaled_dimensions(decoder.width(), decoder.height(), 1280, 720);
+    let mut scaler = software::scaling::context::Context::get(
+        decoder.format(),
+        decoder.width(),
+        decoder.height(),
+        format::Pixel::RGB24,
+        target_width,
+        target_height,
+        software::scaling::flag::Flags::BILINEAR,
+    )
+    .context("Не удалось создать preview scaler")?;
+
+    for (stream, packet) in input_ctx.packets() {
+        if stream.index() != video_stream_index {
+            continue;
+        }
+
+        decoder
+            .send_packet(&packet)
+            .context("Не удалось отправить packet в preview decoder")?;
+
+        if let Some(jpeg) = receive_first_jpeg_frame(&mut decoder, &mut scaler)? {
+            return Ok(jpeg);
+        }
+    }
+
+    decoder.send_eof().ok();
+    if let Some(jpeg) = receive_first_jpeg_frame(&mut decoder, &mut scaler)? {
+        return Ok(jpeg);
+    }
+
+    Err(anyhow!("Не удалось получить preview кадр из видео"))
+}
+
 fn receive_first_jpeg_frame(
     decoder: &mut ffmpeg::decoder::Video,
     scaler: &mut software::scaling::context::Context,
@@ -255,11 +425,85 @@ fn encode_rgb_frame_as_jpeg(frame: &util::frame::video::Video) -> Result<Vec<u8>
 }
 
 fn capture_clip_blocking(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
+    let output_path = temp_media_path(camera.id, "mp4");
+    let result = write_clip_file_blocking(camera, seconds, &output_path).map(|_| ());
+    read_temp_file(output_path, result)
+}
+
+fn write_clip_file_blocking(camera: &Camera, seconds: u32, output_path: &Path) -> Result<u64> {
     init_ffmpeg();
 
-    let output_path = temp_media_path(camera.id, "mp4");
-    let result = remux_camera_clip(camera, seconds, &output_path);
-    read_temp_file(output_path, result)
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Не удалось создать папку {}", parent.display()))?;
+    }
+
+    let tmp_output = tmp_output_path(output_path);
+    let _ = std::fs::remove_file(&tmp_output);
+    let result = remux_camera_clip(camera, seconds, &tmp_output);
+    match publish_media_file(&tmp_output, output_path, result) {
+        Ok(size_bytes) => Ok(size_bytes),
+        Err(remux_error) => {
+            log::warn!(
+                "Camera remux failed, trying transcode fallback: camera={} {}, error={}",
+                camera.id,
+                camera.name,
+                sanitize_camera_error_text(&remux_error.to_string())
+            );
+
+            let _ = std::fs::remove_file(&tmp_output);
+            let fallback_result = transcode_camera_clip(
+                camera,
+                seconds,
+                &tmp_output,
+                CompressionProfile {
+                    max_width: 1920,
+                    max_height: 1080,
+                    bit_rate: 4_000_000,
+                    max_bit_rate: 5_000_000,
+                    preset: "veryfast",
+                },
+            );
+            publish_media_file(&tmp_output, output_path, fallback_result).with_context(|| {
+                format!(
+                    "remux failed before transcode fallback: {}",
+                    sanitize_camera_error_text(&remux_error.to_string())
+                )
+            })
+        }
+    }
+}
+
+fn publish_media_file(
+    tmp_path: &Path,
+    output_path: &Path,
+    command_result: Result<()>,
+) -> Result<u64> {
+    if let Err(error) = command_result {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(error);
+    }
+
+    let metadata = std::fs::metadata(tmp_path)
+        .with_context(|| format!("Не удалось прочитать размер {}", tmp_path.display()))?;
+    if !metadata.is_file() {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(anyhow!(
+            "LibAV создал путь, который не является файлом: {}",
+            tmp_path.display()
+        ));
+    }
+
+    let size_bytes = metadata.len();
+    if size_bytes == 0 {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(anyhow!("LibAV создал пустой файл"));
+    }
+
+    std::fs::rename(tmp_path, output_path)
+        .with_context(|| format!("Не удалось опубликовать видео {}", output_path.display()))?;
+
+    Ok(size_bytes)
 }
 
 fn compress_clip_blocking(input_path: &Path, output_path: &Path, max_bytes: u64) -> Result<()> {
@@ -473,6 +717,179 @@ fn transcode_h264(
     Ok(())
 }
 
+fn transcode_camera_clip(
+    camera: &Camera,
+    seconds: u32,
+    output_path: &Path,
+    profile: CompressionProfile,
+) -> Result<()> {
+    log::info!(
+        "Camera transcode fallback started: camera={} {}, duration={}s, output={}",
+        camera.id,
+        camera.name,
+        seconds,
+        output_path.display()
+    );
+    let mut input_ctx = open_camera_input(&camera.stream_url)?;
+    let input_stream = input_ctx
+        .streams()
+        .best(media::Type::Video)
+        .ok_or_else(|| anyhow!("В потоке камеры нет видео"))?;
+    let input_stream_index = input_stream.index();
+    let input_time_base = input_stream.time_base();
+
+    let context_decoder = codec::context::Context::from_parameters(input_stream.parameters())
+        .context("Не удалось создать decoder context")?;
+    let mut decoder = context_decoder
+        .decoder()
+        .video()
+        .context("Не удалось открыть video decoder")?;
+
+    let (target_width, target_height) = scaled_dimensions(
+        decoder.width(),
+        decoder.height(),
+        profile.max_width,
+        profile.max_height,
+    );
+    let output_path_str = output_path.to_string_lossy().to_string();
+    let mut output_ctx =
+        format::output(&output_path_str).context("Не удалось открыть fallback MP4 output")?;
+    let global_header = output_ctx
+        .format()
+        .flags()
+        .contains(format::Flags::GLOBAL_HEADER);
+
+    let codec = encoder::find(codec::Id::H264).ok_or_else(|| anyhow!("H264 encoder not found"))?;
+    let output_stream_index = {
+        let mut output_stream = output_ctx
+            .add_stream(codec)
+            .context("Не удалось создать fallback output stream")?;
+        let index = output_stream.index();
+        let mut encoder = codec::context::Context::new_with_codec(codec)
+            .encoder()
+            .video()
+            .context("Не удалось создать fallback H264 encoder")?;
+        encoder.set_width(target_width);
+        encoder.set_height(target_height);
+        encoder.set_format(format::Pixel::YUV420P);
+        encoder.set_time_base(input_time_base);
+        encoder.set_frame_rate(decoder.frame_rate());
+        encoder.set_aspect_ratio(Rational::new(1, 1));
+        encoder.set_bit_rate(profile.bit_rate);
+        encoder.set_max_bit_rate(profile.max_bit_rate);
+        if global_header {
+            encoder.set_flags(codec::Flags::GLOBAL_HEADER);
+        }
+
+        let mut options = Dictionary::new();
+        let bit_rate = profile.bit_rate.to_string();
+        let max_rate = profile.max_bit_rate.to_string();
+        let buffer_size = (profile.max_bit_rate * 2).to_string();
+        options.set("b", &bit_rate);
+        options.set("maxrate", &max_rate);
+        options.set("bufsize", &buffer_size);
+        options.set("preset", profile.preset);
+        let encoder = encoder
+            .open_with(options)
+            .context("Не удалось открыть fallback H264 encoder")?;
+        output_stream.set_parameters(&encoder);
+        (index, encoder)
+    };
+    let (output_stream_index, mut encoder) = output_stream_index;
+
+    let mut header_options = Dictionary::new();
+    header_options.set("movflags", "+faststart");
+    output_ctx
+        .write_header_with(header_options)
+        .context("Не удалось записать fallback MP4 header")?;
+    let output_time_base = output_ctx
+        .stream(output_stream_index)
+        .ok_or_else(|| anyhow!("Fallback output stream missing"))?
+        .time_base();
+
+    let mut scaler = software::scaling::context::Context::get(
+        decoder.format(),
+        decoder.width(),
+        decoder.height(),
+        format::Pixel::YUV420P,
+        target_width,
+        target_height,
+        software::scaling::flag::Flags::BILINEAR,
+    )
+    .context("Не удалось создать scaler для fallback записи")?;
+
+    let mut capture_started_at = None;
+    let mut encoded_frames = 0usize;
+    for (stream, packet) in input_ctx.packets() {
+        if stream.index() != input_stream_index {
+            continue;
+        }
+
+        if capture_started_at.is_some_and(|started_at: Instant| {
+            started_at.elapsed() >= Duration::from_secs(seconds as u64)
+        }) {
+            break;
+        }
+
+        decoder
+            .send_packet(&packet)
+            .context("Не удалось отправить packet в fallback decoder")?;
+        let frames = encode_available_frames(
+            &mut decoder,
+            &mut scaler,
+            &mut encoder,
+            &mut output_ctx,
+            output_stream_index,
+            input_time_base,
+            output_time_base,
+        )?;
+        if frames > 0 {
+            encoded_frames += frames;
+            capture_started_at.get_or_insert_with(Instant::now);
+        }
+    }
+
+    if encoded_frames == 0 {
+        return Err(anyhow!(
+            "Не удалось декодировать video frames из камеры для fallback записи"
+        ));
+    }
+
+    decoder.send_eof().ok();
+    encode_available_frames(
+        &mut decoder,
+        &mut scaler,
+        &mut encoder,
+        &mut output_ctx,
+        output_stream_index,
+        input_time_base,
+        output_time_base,
+    )?;
+    encoder
+        .send_eof()
+        .context("Не удалось flush fallback H264 encoder")?;
+    write_available_packets(
+        &mut encoder,
+        &mut output_ctx,
+        output_stream_index,
+        input_time_base,
+        output_time_base,
+    )?;
+
+    output_ctx
+        .write_trailer()
+        .context("Не удалось записать fallback MP4 trailer")?;
+    log::info!(
+        "Camera transcode fallback finished: camera={} {}, frames={}, output={}",
+        camera.id,
+        camera.name,
+        encoded_frames,
+        output_path.display()
+    );
+
+    Ok(())
+}
+
 fn encode_available_frames(
     decoder: &mut ffmpeg::decoder::Video,
     scaler: &mut software::scaling::context::Context,
@@ -481,8 +898,9 @@ fn encode_available_frames(
     output_stream_index: usize,
     input_time_base: Rational,
     output_time_base: Rational,
-) -> Result<()> {
+) -> Result<usize> {
     let mut decoded = frame::Video::empty();
+    let mut encoded_frames = 0usize;
     while decoder.receive_frame(&mut decoded).is_ok() {
         let mut scaled = frame::Video::empty();
         scaler
@@ -500,9 +918,10 @@ fn encode_available_frames(
             input_time_base,
             output_time_base,
         )?;
+        encoded_frames += 1;
     }
 
-    Ok(())
+    Ok(encoded_frames)
 }
 
 fn write_available_packets(
@@ -598,6 +1017,7 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
     let mut wrote_packets = 0usize;
     let mut next_synthetic_pts = 0i64;
     let mut started_on_keyframe = false;
+    let keyframe_wait_started_at = Instant::now();
     let mut record_started_at = None;
 
     for (stream, mut packet) in input_ctx.packets() {
@@ -606,6 +1026,10 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
         }
 
         if !started_on_keyframe {
+            if keyframe_wait_started_at.elapsed() >= Duration::from_secs(REMUX_KEYFRAME_WAIT_S) {
+                break;
+            }
+
             if !packet.is_key() {
                 continue;
             }
@@ -637,7 +1061,10 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
     }
 
     if wrote_packets == 0 {
-        return Err(anyhow!("Не удалось получить video packets из камеры"));
+        return Err(anyhow!(
+            "Не удалось получить video packets из камеры: keyframe не пришел за {}с",
+            REMUX_KEYFRAME_WAIT_S
+        ));
     }
 
     output_ctx

@@ -234,6 +234,7 @@ mod tests {
             last_ui_refresh_at: None,
             ui_refresh_blocked_until: None,
             last_seen_at: Utc::now(),
+            last_persisted_at: None,
         }
     }
 
@@ -256,6 +257,7 @@ mod tests {
             last_ui_refresh_at: None,
             ui_refresh_blocked_until: None,
             last_seen_at: Utc::now(),
+            last_persisted_at: None,
         };
 
         assert!(!is_user_watching_room(&session, 42));

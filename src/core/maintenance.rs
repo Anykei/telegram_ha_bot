@@ -226,6 +226,8 @@ async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
 }
 
 async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
+    crate::core::camera_recording::cleanup_recording_tmp_files(config).await;
+
     match db::camera_recording_sessions::find_expired_sessions(&config.db).await {
         Ok(sessions) => {
             for session in sessions {

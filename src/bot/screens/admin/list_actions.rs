@@ -364,6 +364,8 @@ pub async fn render_room_camera_detail(
         camera.id,
         camera.clip_seconds
     );
+    let image =
+        crate::bot::screens::cameras::camera_snapshot_image(ctx.config.clone(), &camera).await;
 
     Ok(View {
         header: Some("📹 Камера".to_string()),
@@ -374,6 +376,7 @@ pub async fn render_room_camera_detail(
             room: room_id,
             camera: camera_id,
         }),
+        image,
         ..Default::default()
     })
 }
@@ -2651,6 +2654,7 @@ fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> 
                 last_ui_refresh_at: None,
                 ui_refresh_blocked_until: None,
                 last_seen_at: now,
+                last_persisted_at: None,
             },
         );
     }

@@ -21,7 +21,7 @@ pub async fn process_event(config: Arc<AppConfig>, event: &NotifyEvent) -> Resul
     if candidates.is_empty() {
         return Ok(());
     }
-    log::info!(
+    log::debug!(
         "Camera recording matcher: event {} {} -> {}, candidate_rules={}",
         event.entity_id,
         event.old_state,

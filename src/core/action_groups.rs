@@ -693,6 +693,7 @@ mod tests {
             name_aliases: DashMap::new(),
             state_aliases: DashMap::new(),
             ui_background_cache: tokio::sync::Mutex::new(None),
+            camera_snapshot_cache: tokio::sync::Mutex::new(HashMap::new()),
             runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
         })
     }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ha::HomeAssistantClient;
@@ -18,6 +18,7 @@ pub struct UserSession {
     pub last_ui_refresh_at: Option<DateTime<Utc>>,
     pub ui_refresh_blocked_until: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
+    pub last_persisted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +79,7 @@ pub struct AppConfig {
     pub name_aliases: DashMap<String, String>,
     pub state_aliases: DashMap<String, std::collections::HashMap<String, String>>,
     pub ui_background_cache: Mutex<Option<UiBackgroundCache>>,
+    pub camera_snapshot_cache: Mutex<HashMap<i64, CameraSnapshotCache>>,
     pub runtime_status: RwLock<RuntimeStatus>,
 }
 
@@ -156,6 +158,17 @@ pub struct UiBackgroundCache {
     pub camera_id: i64,
     pub captured_at: Option<DateTime<Utc>>,
     pub failed_at: Option<DateTime<Utc>>,
+    pub last_warned_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+    pub refreshing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraSnapshotCache {
+    pub captured_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
+    pub last_warned_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub bytes: Option<Vec<u8>>,
     pub refreshing: bool,

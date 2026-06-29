@@ -69,6 +69,22 @@ pub async fn sync_device(
             device_class = ?4,
             device_domain = ?5,
             archived = 0
+        WHERE
+            room_id IS NOT (SELECT id FROM rooms WHERE area = ?1)
+            OR (
+                CASE
+                    WHEN alias IS NULL
+                      OR TRIM(alias) = ''
+                      OR alias = entity_id
+                      OR alias = COALESCE(ha_name, alias)
+                    THEN ?3
+                    ELSE alias
+                END
+            ) IS NOT alias
+            OR ha_name IS NOT ?3
+            OR device_class IS NOT ?4
+            OR device_domain IS NOT ?5
+            OR archived != 0
         "#,
     )
     .bind(ha_area_id)

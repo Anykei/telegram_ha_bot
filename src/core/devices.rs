@@ -380,6 +380,7 @@ mod tests {
             name_aliases: DashMap::new(),
             state_aliases: DashMap::<String, HashMap<String, String>>::new(),
             ui_background_cache: tokio::sync::Mutex::new(None),
+            camera_snapshot_cache: tokio::sync::Mutex::new(HashMap::new()),
             runtime_status: tokio::sync::RwLock::new(crate::models::RuntimeStatus::default()),
         });
 

@@ -159,7 +159,7 @@ pub async fn save_user_session(
     context: &str,
     last_seen_at: DateTime<Utc>,
     pool: &SqlitePool,
-) {
+) -> bool {
     let ctx = context.to_string();
     let uid = user_id as i64;
     let last_seen_at = last_seen_at.to_rfc3339();
@@ -169,7 +169,7 @@ pub async fn save_user_session(
             "Skip saving session for user {}: database pool is closed",
             uid
         );
-        return;
+        return false;
     }
 
     let query = sqlx::query(
@@ -195,6 +195,7 @@ pub async fn save_user_session(
             } else {
                 log::debug!("Session for user {} saved to disk", uid);
             }
+            true
         }
         Err(e) => {
             if pool.is_closed() {
@@ -206,6 +207,7 @@ pub async fn save_user_session(
             } else {
                 log::error!("Critical error saving session to disk: {}", e);
             }
+            false
         }
     }
 }

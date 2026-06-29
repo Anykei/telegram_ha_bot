@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub const DEFAULT_UI_BACKGROUND_REFRESH_S: u32 = 15;
 pub const UI_BACKGROUND_INTERVALS_S: &[u32] = &[5, 15, 30];
 const UI_BACKGROUND_FAILURE_BACKOFF_S: i64 = 30;
+const UI_BACKGROUND_WARNING_COOLDOWN_S: i64 = 300;
 
 pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
     let camera_id = db::settings::get_i64(db::settings::UI_BACKGROUND_CAMERA_ID, &config.db)
@@ -53,6 +54,7 @@ pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
         camera_id,
         captured_at: None,
         failed_at: None,
+        last_warned_at: None,
         last_error: None,
         bytes: None,
         refreshing: true,
@@ -102,11 +104,15 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
 }
 
 fn mark_refresh_failed(cache: &mut UiBackgroundCache, camera_id: i64, error: &str, context: &str) {
+    let now = Utc::now();
     let repeated = cache.last_error.as_deref() == Some(error);
-    cache.failed_at = Some(Utc::now());
+    let warning_cooled_down = cache.last_warned_at.is_none_or(|warned_at| {
+        now - warned_at >= Duration::seconds(UI_BACKGROUND_WARNING_COOLDOWN_S)
+    });
+    cache.failed_at = Some(now);
     cache.last_error = Some(error.to_string());
 
-    if repeated {
+    if repeated && !warning_cooled_down {
         log::debug!(
             "UI camera background {} repeated error: {}; {}",
             camera_id,
@@ -114,6 +120,7 @@ fn mark_refresh_failed(cache: &mut UiBackgroundCache, camera_id: i64, error: &st
             context
         );
     } else {
+        cache.last_warned_at = Some(now);
         log::warn!(
             "UI camera background {} error: {}; {}",
             camera_id,

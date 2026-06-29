@@ -242,6 +242,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         t(ctx.lang, "camera.detail.help"),
         camera.clip_seconds
     );
+    let image = camera_snapshot_image(ctx.config.clone(), &camera).await;
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.detail.header").to_string()),
@@ -249,6 +250,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::CameraDetail { id: camera.id }),
+        image,
         ..Default::default()
     })
 }
@@ -299,6 +301,7 @@ pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Res
             sessions.len()
         )
     };
+    let image = recording_archive_preview(ctx.config.clone(), &sessions).await;
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.archive.header").to_string()),
@@ -306,6 +309,7 @@ pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Res
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::RecordingArchive { camera: camera_id }),
+        image,
         ..Default::default()
     })
 }
@@ -417,6 +421,11 @@ pub async fn render_recording_session(
     } else {
         String::new()
     };
+    let image = crate::core::camera_recording::first_cached_recording_preview(
+        ctx.config.clone(),
+        &segments,
+    )
+    .await;
 
     let text = format!(
         "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}{}",
@@ -450,8 +459,62 @@ pub async fn render_recording_session(
             camera: camera_id,
             session: session_id,
         }),
+        image,
         ..Default::default()
     })
+}
+
+pub(crate) async fn camera_snapshot_image(
+    config: std::sync::Arc<crate::models::AppConfig>,
+    camera: &crate::db::cameras::Camera,
+) -> Option<Vec<u8>> {
+    crate::core::camera_snapshots::resolve(config, camera.clone()).await
+}
+
+async fn recording_archive_preview(
+    config: std::sync::Arc<crate::models::AppConfig>,
+    sessions: &[crate::db::camera_recording_sessions::RecordingSession],
+) -> Option<Vec<u8>> {
+    let mut first_missing_preview = None;
+
+    for session in sessions {
+        let segments =
+            match crate::db::camera_recording_segments::list_ready_segments(session.id, &config.db)
+                .await
+            {
+                Ok(segments) => segments,
+                Err(error) => {
+                    log::debug!(
+                        "Failed to load recording preview segments: session={}, error={}",
+                        session.id,
+                        error
+                    );
+                    continue;
+                }
+            };
+
+        match crate::core::camera_recording::first_cached_recording_preview_lookup(
+            &config, &segments,
+        )
+        .await
+        {
+            crate::core::camera_recording::CachedRecordingPreview::Ready(image) => {
+                return Some(image);
+            }
+            crate::core::camera_recording::CachedRecordingPreview::Missing(file_path) => {
+                if first_missing_preview.is_none() {
+                    first_missing_preview = Some(file_path);
+                }
+            }
+            crate::core::camera_recording::CachedRecordingPreview::None => {}
+        }
+    }
+
+    if let Some(file_path) = first_missing_preview {
+        crate::core::camera_recording::spawn_recording_derivatives(config, file_path);
+    }
+
+    None
 }
 
 async fn collect_sendable_recording_segments<'a>(
