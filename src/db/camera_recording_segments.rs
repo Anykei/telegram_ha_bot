@@ -166,6 +166,21 @@ pub async fn sum_ready_size_bytes(pool: &SqlitePool) -> Result<i64> {
     .await?)
 }
 
+pub async fn sum_pinned_ready_size_bytes(pool: &SqlitePool) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COALESCE(SUM(s.size_bytes), 0)
+        FROM camera_recording_segments s
+        JOIN camera_recording_sessions rs ON rs.id = s.session_id
+        WHERE s.status = 'ready'
+          AND s.deleted_at IS NULL
+          AND rs.pinned_at IS NOT NULL
+        "#,
+    )
+    .fetch_one(pool)
+    .await?)
+}
+
 pub async fn list_deletable_sessions_for_quota(
     pool: &SqlitePool,
 ) -> Result<Vec<crate::db::camera_recording_sessions::RecordingSession>> {
@@ -174,10 +189,13 @@ pub async fn list_deletable_sessions_for_quota(
             r#"
         SELECT id, event_group_id, rule_id, camera_id, extended_by_rule_ids, trigger_summary,
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
-               completed_at, expires_at, notification_sent_at, deleted_at, created_at
+               completed_at, expires_at, notification_sent_at, deleted_at, created_at,
+               pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
+               pre_roll_partial, pre_roll_warning
         FROM camera_recording_sessions
         WHERE deleted_at IS NULL
           AND status IN ('ready', 'failed')
+          AND pinned_at IS NULL
         ORDER BY created_at ASC
         "#,
         )

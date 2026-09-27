@@ -153,12 +153,13 @@ pub async fn get_devices_by_room_for_user(
         SELECT d.id, d.entity_id, d.alias
         FROM devices d
         JOIN rooms r ON r.id = d.room_id
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
-        WHERE d.room_id = ?
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE d.room_id = ?3
           AND d.archived = 0
           AND r.hide = 0
-          AND COALESCE(uda.can_view, ura.can_view, 1) != 0
+          AND COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
         ORDER BY d.id
         "#,
     )

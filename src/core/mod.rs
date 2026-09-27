@@ -1,5 +1,7 @@
 pub(crate) mod action_groups;
 pub(crate) mod action_schedules;
+pub(crate) mod camera_health;
+pub(crate) mod camera_pre_roll;
 pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
 pub(crate) mod camera_snapshots;
@@ -340,3 +342,4 @@ pub async fn update_user_state_with_mode(
         }
     }
 }
+pub(crate) mod readonly;

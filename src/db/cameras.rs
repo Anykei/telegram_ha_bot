@@ -19,6 +19,22 @@ pub struct NewCamera<'a> {
     pub clip_seconds: u32,
 }
 
+pub struct CameraPreRollTarget {
+    pub camera: Camera,
+    pub pre_roll_seconds: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct CameraPreRollTargetRow {
+    id: i64,
+    name: String,
+    room_id: Option<i64>,
+    stream_url: String,
+    snapshot_url: Option<String>,
+    clip_seconds: i64,
+    pre_roll_seconds: i64,
+}
+
 pub async fn add_manual_camera(camera: NewCamera<'_>, pool: &SqlitePool) -> Result<i64> {
     let key = format!(
         "manual:{}:{}",
@@ -56,6 +72,66 @@ pub async fn list_room_cameras(room_id: i64, pool: &SqlitePool) -> Result<Vec<Ca
     .bind(room_id)
     .fetch_all(pool)
     .await?)
+}
+
+pub async fn list_enabled_cameras(pool: &SqlitePool) -> Result<Vec<Camera>> {
+    Ok(sqlx::query_as::<_, Camera>(
+        r#"
+        SELECT id, name, room_id, stream_url, snapshot_url, clip_seconds
+        FROM cameras
+        WHERE enabled != 0
+        ORDER BY name
+        "#,
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn list_pre_roll_cameras(pool: &SqlitePool) -> Result<Vec<CameraPreRollTarget>> {
+    let rows = sqlx::query_as::<_, CameraPreRollTargetRow>(
+        r#"
+        SELECT c.id,
+               c.name,
+               c.room_id,
+               c.stream_url,
+               c.snapshot_url,
+               c.clip_seconds,
+               COALESCE(MAX(r.pre_roll_seconds), 15) AS pre_roll_seconds
+        FROM cameras c
+        JOIN camera_recording_rules r ON r.camera_id = c.id
+        WHERE c.enabled != 0
+          AND r.enabled != 0
+          AND r.deleted_at IS NULL
+          AND r.pre_roll_enabled != 0
+          AND r.pre_roll_seconds > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM camera_recording_rule_group_items i
+              JOIN camera_recording_rule_groups g ON g.id = i.group_id
+              WHERE i.rule_id = r.id
+                AND g.enabled = 0
+          )
+        GROUP BY c.id, c.name, c.room_id, c.stream_url, c.snapshot_url, c.clip_seconds
+        ORDER BY c.name
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CameraPreRollTarget {
+            camera: Camera {
+                id: row.id,
+                name: row.name,
+                room_id: row.room_id,
+                stream_url: row.stream_url,
+                snapshot_url: row.snapshot_url,
+                clip_seconds: row.clip_seconds,
+            },
+            pre_roll_seconds: row.pre_roll_seconds,
+        })
+        .collect())
 }
 
 pub async fn count_room_cameras(room_id: i64, pool: &SqlitePool) -> Result<i64> {

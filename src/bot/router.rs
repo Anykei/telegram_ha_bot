@@ -263,6 +263,10 @@ pub enum CameraPayload {
     RecordingArchive {
         camera: i64,
     },
+    RecordingArchiveFiltered {
+        camera: i64,
+        filter: String,
+    },
     RecordingSession {
         camera: i64,
         session: i64,
@@ -281,6 +285,10 @@ pub enum CameraPayload {
         session: i64,
     },
     DeleteRecording {
+        camera: i64,
+        session: i64,
+    },
+    ToggleRecordingPin {
         camera: i64,
         session: i64,
     },
@@ -858,6 +866,13 @@ pub enum AdminPayload {
         target: db::action_groups::ActionTargetRef,
         schedule: i64,
     },
+    ToggleRecordingRulePreRoll {
+        room: i64,
+        rule: i64,
+    },
+    ToggleUserQuietHours {
+        id: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -1018,7 +1033,7 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
             Ok(view)
         }
         ControlPayload::RoomDetail { room } => {
-            if !db::access::can_view_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
+            if !db::rooms::can_open_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
                 return Ok(access_denied_view(
                     ctx,
                     Payload::Control(ControlPayload::ListRooms),
@@ -1143,6 +1158,19 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
             }
 
             Ok(super::screens::cameras::render_recording_archive(ctx, camera).await?)
+        }
+        CameraPayload::RecordingArchiveFiltered { camera, filter } => {
+            if !can_access_camera(&ctx, camera).await? {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Camera(CameraPayload::ListCameras),
+                ));
+            }
+
+            Ok(
+                super::screens::cameras::render_recording_archive_filtered(ctx, camera, &filter)
+                    .await?,
+            )
         }
         CameraPayload::RecordingGroupModes => {
             Ok(super::screens::cameras::render_recording_group_modes(ctx).await?)
@@ -1288,6 +1316,32 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
             view.notice = Some(t(lang, "camera.recording.deleted_notice").to_string());
             Ok(view)
         }
+        CameraPayload::ToggleRecordingPin { camera, session } => {
+            if !ctx.is_admin
+                || !can_access_camera(&ctx, camera).await?
+                || !recording_session_belongs_to_camera(session, camera, &ctx.config.db).await?
+            {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Camera(CameraPayload::RecordingSession { camera, session }),
+                ));
+            }
+
+            let pinned = db::camera_recording_sessions::toggle_pin(
+                session,
+                ctx.user_id as i64,
+                &ctx.config.db,
+            )
+            .await?;
+            let mut view =
+                super::screens::cameras::render_recording_session(ctx, camera, session).await?;
+            view.notice = Some(if pinned {
+                "Запись закреплена".to_string()
+            } else {
+                "Запись откреплена".to_string()
+            });
+            Ok(view)
+        }
     }
 }
 
@@ -1309,7 +1363,7 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             Ok(super::screens::rooms::render(ctx, RoomViewMode::Settings).await?)
         }
         SettingsPayload::RoomDetail { room } => {
-            if !db::access::can_view_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
+            if !db::rooms::can_open_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
                 let back = ctx.settings_payload(SettingsPayload::ListRooms);
                 return Ok(access_denied_view(ctx, back));
             }
@@ -2084,6 +2138,16 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
                 return recording_rule_room_mismatch_view(ctx, room).await;
             }
             db::camera_recording_rules::toggle_rule_noise(rule, &ctx.config.db).await?;
+            Ok(
+                super::screens::admin::list_actions::render_recording_rule_detail(ctx, room, rule)
+                    .await?,
+            )
+        }
+        AdminPayload::ToggleRecordingRulePreRoll { room, rule } => {
+            if !recording_rule_belongs_to_room(&ctx, room, rule).await? {
+                return recording_rule_room_mismatch_view(ctx, room).await;
+            }
+            db::camera_recording_rules::toggle_rule_pre_roll(rule, &ctx.config.db).await?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_detail(ctx, room, rule)
                     .await?,
@@ -3113,6 +3177,18 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
                 Ok(view)
             }
         }
+        AdminPayload::ToggleUserQuietHours { id } => {
+            let enabled =
+                db::user_notification_schedule::toggle_quiet_hours(id, &ctx.config.db).await?;
+            let mut view =
+                super::screens::admin::list_actions::render_user_profile(ctx, id).await?;
+            view.notice = Some(if enabled {
+                "Тихие часы включены: 23:00-07:00, только critical".to_string()
+            } else {
+                "Тихие часы выключены".to_string()
+            });
+            Ok(view)
+        }
         AdminPayload::CycleUserVoiceEngine { id } => {
             let engine = db::access::cycle_user_voice_command_engine(
                 id,
@@ -3488,6 +3564,12 @@ async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Res
         )
         .collect::<Vec<_>>();
 
+    let pre_roll_enabled =
+        db::settings::get_i64(db::settings::CAMERA_PRE_ROLL_ENABLED, &ctx.config.db)
+            .await?
+            .unwrap_or(0)
+            != 0;
+
     let rule_id = db::camera_recording_rules::create_rule_with_conditions_and_groups(
         db::camera_recording_rules::NewRecordingRule {
             name: &name,
@@ -3499,6 +3581,8 @@ async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Res
                 source_mode,
             )),
             retention_days: i64::from(retention_days),
+            pre_roll_enabled,
+            pre_roll_seconds: db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
         },
         &condition_drafts,
         &wizard.group_ids,
@@ -3817,6 +3901,10 @@ mod tests {
                 room: 1_000_000,
                 rule: 2_000_000,
             }),
+            Payload::Admin(AdminPayload::ToggleRecordingRulePreRoll {
+                room: 1_000_000,
+                rule: 2_000_000,
+            }),
             Payload::Camera(CameraPayload::StopRecording {
                 camera: 1_000_000,
                 session: 2_000_000,
@@ -3901,6 +3989,7 @@ mod tests {
                 group: 3_000_000,
             }),
             Payload::Admin(AdminPayload::ToggleUserVoice { id: 9_999_999_999 }),
+            Payload::Admin(AdminPayload::ToggleUserQuietHours { id: 9_999_999_999 }),
             Payload::Admin(AdminPayload::CycleUserVoiceEngine { id: 9_999_999_999 }),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroups),
             Payload::Admin(AdminPayload::EnsureDefaultRuleGroupsForRoom { room: 1_000_000 }),
@@ -4109,6 +4198,10 @@ mod tests {
             CameraPayload::Snapshot { id: 1 },
             CameraPayload::Clip { id: 1, seconds: 10 },
             CameraPayload::RecordingArchive { camera: 1 },
+            CameraPayload::RecordingArchiveFiltered {
+                camera: 1,
+                filter: "today".to_string(),
+            },
             CameraPayload::RecordingSession {
                 camera: 1,
                 session: 2,
@@ -4127,6 +4220,10 @@ mod tests {
                 session: 2,
             },
             CameraPayload::DeleteRecording {
+                camera: 1,
+                session: 2,
+            },
+            CameraPayload::ToggleRecordingPin {
                 camera: 1,
                 session: 2,
             },
@@ -4199,6 +4296,7 @@ mod tests {
             AdminPayload::DuplicateRecordingRule { room: 1, rule: 2 },
             AdminPayload::TestRecordingRule { room: 1, rule: 2 },
             AdminPayload::ToggleRecordingRuleNoise { room: 1, rule: 2 },
+            AdminPayload::ToggleRecordingRulePreRoll { room: 1, rule: 2 },
             AdminPayload::CameraHealth { room: 1, camera: 2 },
             AdminPayload::CheckCameraHealth { room: 1, camera: 2 },
             AdminPayload::RecordingRuleGroups,
@@ -4255,6 +4353,7 @@ mod tests {
             AdminPayload::EnsureDefaultRuleGroupsForWizard,
             AdminPayload::EnsureDefaultRuleGroupsForEdit { room: 1, rule: 2 },
             AdminPayload::ToggleUserVoice { id: 9 },
+            AdminPayload::ToggleUserQuietHours { id: 9 },
             AdminPayload::CycleUserVoiceEngine { id: 9 },
             AdminPayload::StartRecordingRuleWizard { room: 1 },
             AdminPayload::WizardPickCamera { room: 1, camera: 2 },
@@ -4598,11 +4697,15 @@ mod tests {
             CameraPayload::Snapshot { .. } => "CameraPayload::Snapshot",
             CameraPayload::Clip { .. } => "CameraPayload::Clip",
             CameraPayload::RecordingArchive { .. } => "CameraPayload::RecordingArchive",
+            CameraPayload::RecordingArchiveFiltered { .. } => {
+                "CameraPayload::RecordingArchiveFiltered"
+            }
             CameraPayload::RecordingSession { .. } => "CameraPayload::RecordingSession",
             CameraPayload::SendRecordingSegment { .. } => "CameraPayload::SendRecordingSegment",
             CameraPayload::SendRecordingAll { .. } => "CameraPayload::SendRecordingAll",
             CameraPayload::ConfirmDeleteRecording { .. } => "CameraPayload::ConfirmDeleteRecording",
             CameraPayload::DeleteRecording { .. } => "CameraPayload::DeleteRecording",
+            CameraPayload::ToggleRecordingPin { .. } => "CameraPayload::ToggleRecordingPin",
             CameraPayload::StopRecording { .. } => "CameraPayload::StopRecording",
             CameraPayload::RecordingGroupModes => "CameraPayload::RecordingGroupModes",
             CameraPayload::RecordingGroupModeDetail { .. } => {
@@ -4671,6 +4774,9 @@ mod tests {
             AdminPayload::TestRecordingRule { .. } => "AdminPayload::TestRecordingRule",
             AdminPayload::ToggleRecordingRuleNoise { .. } => {
                 "AdminPayload::ToggleRecordingRuleNoise"
+            }
+            AdminPayload::ToggleRecordingRulePreRoll { .. } => {
+                "AdminPayload::ToggleRecordingRulePreRoll"
             }
             AdminPayload::CameraHealth { .. } => "AdminPayload::CameraHealth",
             AdminPayload::CheckCameraHealth { .. } => "AdminPayload::CheckCameraHealth",
@@ -4755,6 +4861,7 @@ mod tests {
                 "AdminPayload::EnsureDefaultRuleGroupsForEdit"
             }
             AdminPayload::ToggleUserVoice { .. } => "AdminPayload::ToggleUserVoice",
+            AdminPayload::ToggleUserQuietHours { .. } => "AdminPayload::ToggleUserQuietHours",
             AdminPayload::CycleUserVoiceEngine { .. } => "AdminPayload::CycleUserVoiceEngine",
             AdminPayload::StartRecordingRuleWizard { .. } => {
                 "AdminPayload::StartRecordingRuleWizard"
@@ -4959,6 +5066,9 @@ mod tests {
             state_aliases: DashMap::new(),
             ui_background_cache: tokio::sync::Mutex::new(None),
             camera_snapshot_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            camera_pre_roll_registry: Arc::new(
+                crate::core::camera_pre_roll::CameraPreRollRegistry::new(),
+            ),
             runtime_status: tokio::sync::RwLock::new(crate::models::RuntimeStatus::default()),
         });
 

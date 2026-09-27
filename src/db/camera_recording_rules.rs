@@ -67,6 +67,8 @@ impl ConditionOperator {
 }
 
 pub const ACTIVE_TIME_ALL_DAYS_MASK: i64 = 0b111_1111;
+pub const DEFAULT_PRE_ROLL_SECONDS: i64 = 15;
+pub const MAX_PRE_ROLL_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingRuleActiveTime {
@@ -115,6 +117,8 @@ pub struct RecordingRule {
     pub active_from_minute: Option<i64>,
     pub active_to_minute: Option<i64>,
     pub active_days_mask: i64,
+    pub pre_roll_enabled: i64,
+    pub pre_roll_seconds: i64,
     pub noise_summary_sent_at: Option<DateTime<Utc>>,
     pub last_completed_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -135,6 +139,14 @@ impl RecordingRule {
 
     pub fn noise_enabled(&self) -> bool {
         self.noise_enabled != 0
+    }
+
+    pub fn pre_roll_enabled(&self) -> bool {
+        self.pre_roll_enabled != 0 && self.normalized_pre_roll_seconds() > 0
+    }
+
+    pub fn normalized_pre_roll_seconds(&self) -> i64 {
+        self.pre_roll_seconds.clamp(0, MAX_PRE_ROLL_SECONDS)
     }
 
     pub fn active_time(&self) -> RecordingRuleActiveTime {
@@ -177,6 +189,8 @@ pub struct NewRecordingRule<'a> {
     pub max_segment_seconds: i64,
     pub cooldown_s: i64,
     pub retention_days: i64,
+    pub pre_roll_enabled: bool,
+    pub pre_roll_seconds: i64,
 }
 
 pub struct NewRecordingCondition<'a> {
@@ -201,9 +215,9 @@ pub async fn create_rule(rule: NewRecordingRule<'_>, pool: &SqlitePool) -> Resul
         r#"
         INSERT INTO camera_recording_rules (
             name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
-            cooldown_s, retention_days, enabled, updated_at
+            cooldown_s, retention_days, pre_roll_enabled, pre_roll_seconds, enabled, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
         "#,
     )
     .bind(rule.name.trim())
@@ -213,6 +227,8 @@ pub async fn create_rule(rule: NewRecordingRule<'_>, pool: &SqlitePool) -> Resul
     .bind(rule.max_segment_seconds)
     .bind(rule.cooldown_s)
     .bind(rule.retention_days)
+    .bind(if rule.pre_roll_enabled { 1 } else { 0 })
+    .bind(rule.pre_roll_seconds.clamp(0, MAX_PRE_ROLL_SECONDS))
     .execute(pool)
     .await?;
 
@@ -245,9 +261,9 @@ pub async fn create_rule_with_conditions_and_groups(
         r#"
         INSERT INTO camera_recording_rules (
             name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
-            cooldown_s, retention_days, enabled, updated_at
+            cooldown_s, retention_days, pre_roll_enabled, pre_roll_seconds, enabled, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
         "#,
     )
     .bind(rule.name.trim())
@@ -257,6 +273,8 @@ pub async fn create_rule_with_conditions_and_groups(
     .bind(rule.max_segment_seconds)
     .bind(rule.cooldown_s)
     .bind(rule.retention_days)
+    .bind(if rule.pre_roll_enabled { 1 } else { 0 })
+    .bind(rule.pre_roll_seconds.clamp(0, MAX_PRE_ROLL_SECONDS))
     .execute(&mut *tx)
     .await?;
     let rule_id = result.last_insert_rowid();
@@ -332,6 +350,7 @@ pub async fn list_rules(pool: &SqlitePool) -> Result<Vec<RecordingRule>> {
         SELECT id, name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
                cooldown_s, retention_days, enabled, notify_enabled, noise_enabled,
                active_time_enabled, active_from_minute, active_to_minute, active_days_mask,
+               pre_roll_enabled, pre_roll_seconds,
                noise_summary_sent_at, last_completed_at, deleted_at
         FROM camera_recording_rules
         WHERE deleted_at IS NULL
@@ -348,6 +367,7 @@ pub async fn get_rule(rule_id: i64, pool: &SqlitePool) -> Result<Option<Recordin
         SELECT id, name, camera_id, condition_logic, tail_seconds, max_segment_seconds,
                cooldown_s, retention_days, enabled, notify_enabled, noise_enabled,
                active_time_enabled, active_from_minute, active_to_minute, active_days_mask,
+               pre_roll_enabled, pre_roll_seconds,
                noise_summary_sent_at, last_completed_at, deleted_at
         FROM camera_recording_rules
         WHERE id = ? AND deleted_at IS NULL
@@ -368,6 +388,7 @@ pub async fn get_rule_for_room(
         SELECT r.id, r.name, r.camera_id, r.condition_logic, r.tail_seconds, r.max_segment_seconds,
                r.cooldown_s, r.retention_days, r.enabled, r.notify_enabled, r.noise_enabled,
                r.active_time_enabled, r.active_from_minute, r.active_to_minute, r.active_days_mask,
+               r.pre_roll_enabled, r.pre_roll_seconds,
                r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
         FROM camera_recording_rules r
         JOIN cameras c ON c.id = r.camera_id
@@ -435,7 +456,8 @@ pub async fn find_candidate_rules_by_entity(
         SELECT DISTINCT r.id, r.name, r.camera_id, r.condition_logic, r.tail_seconds,
                r.max_segment_seconds, r.cooldown_s, r.retention_days, r.enabled, r.notify_enabled,
                r.noise_enabled, r.active_time_enabled, r.active_from_minute, r.active_to_minute,
-               r.active_days_mask, r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
+               r.active_days_mask, r.pre_roll_enabled, r.pre_roll_seconds,
+               r.noise_summary_sent_at, r.last_completed_at, r.deleted_at
         FROM camera_recording_rules r
         JOIN camera_recording_rule_conditions c ON c.rule_id = r.id
         WHERE r.enabled != 0
@@ -530,6 +552,50 @@ pub async fn toggle_rule_noise(rule_id: i64, pool: &SqlitePool) -> Result<bool> 
     enabled
         .map(|value| value != 0)
         .ok_or_else(|| anyhow!("Recording rule not found"))
+}
+
+pub async fn toggle_rule_pre_roll(rule_id: i64, pool: &SqlitePool) -> Result<bool> {
+    let was_enabled: Option<i64> = sqlx::query_scalar(
+        "SELECT pre_roll_enabled FROM camera_recording_rules WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(rule_id)
+    .fetch_optional(pool)
+    .await?;
+    let was_enabled = was_enabled.ok_or_else(|| anyhow!("Recording rule not found"))? != 0;
+
+    sqlx::query(
+        r#"
+        UPDATE camera_recording_rules
+        SET pre_roll_enabled = CASE WHEN pre_roll_enabled = 0 THEN 1 ELSE 0 END,
+            pre_roll_seconds = CASE
+                WHEN pre_roll_enabled = 0 AND pre_roll_seconds <= 0 THEN ?
+                ELSE pre_roll_seconds
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL
+        "#,
+    )
+    .bind(DEFAULT_PRE_ROLL_SECONDS)
+    .bind(rule_id)
+    .execute(pool)
+    .await?;
+
+    let enabled: Option<i64> = sqlx::query_scalar(
+        "SELECT pre_roll_enabled FROM camera_recording_rules WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(rule_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let enabled = enabled
+        .map(|value| value != 0)
+        .ok_or_else(|| anyhow!("Recording rule not found"))?;
+
+    if enabled && !was_enabled {
+        crate::db::settings::set_i64(crate::db::settings::CAMERA_PRE_ROLL_ENABLED, 1, pool).await?;
+    }
+
+    Ok(enabled)
 }
 
 pub async fn update_rule_logic(
@@ -717,6 +783,8 @@ pub async fn update_rule_replace_conditions(
             max_segment_seconds = ?,
             cooldown_s = ?,
             retention_days = ?,
+            pre_roll_enabled = ?,
+            pre_roll_seconds = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND deleted_at IS NULL
         "#,
@@ -728,6 +796,8 @@ pub async fn update_rule_replace_conditions(
     .bind(rule.max_segment_seconds)
     .bind(rule.cooldown_s)
     .bind(rule.retention_days)
+    .bind(if rule.pre_roll_enabled { 1 } else { 0 })
+    .bind(rule.pre_roll_seconds.clamp(0, MAX_PRE_ROLL_SECONDS))
     .bind(rule_id)
     .execute(&mut *tx)
     .await?;
@@ -780,6 +850,8 @@ pub async fn duplicate_rule(rule_id: i64, pool: &SqlitePool) -> Result<i64> {
             max_segment_seconds: rule.max_segment_seconds,
             cooldown_s: rule.cooldown_s,
             retention_days: rule.retention_days,
+            pre_roll_enabled: rule.pre_roll_enabled(),
+            pre_roll_seconds: rule.normalized_pre_roll_seconds(),
         },
         pool,
     )
@@ -819,26 +891,6 @@ pub async fn soft_delete_rule(rule_id: i64, pool: &SqlitePool) -> Result<()> {
         "#,
     )
     .bind(Utc::now())
-    .bind(rule_id)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-pub async fn mark_rule_completed(
-    rule_id: i64,
-    completed_at: DateTime<Utc>,
-    pool: &SqlitePool,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE camera_recording_rules
-        SET last_completed_at = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        "#,
-    )
-    .bind(completed_at)
     .bind(rule_id)
     .execute(pool)
     .await?;
@@ -996,6 +1048,8 @@ mod tests {
             active_from_minute,
             active_to_minute,
             active_days_mask,
+            pre_roll_enabled: 1,
+            pre_roll_seconds: DEFAULT_PRE_ROLL_SECONDS,
             noise_summary_sent_at: None,
             last_completed_at: None,
             deleted_at: None,

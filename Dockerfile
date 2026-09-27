@@ -78,6 +78,7 @@ ENV MIGRATIONS_PATH="/app/migrations"
 
 ENV OPTIONS_PATH="/data/options.json"
 ENV DATABASE_PATH="/data/bot_data.db"
+ENV CAMERA_RECORDING_STORAGE_ROOT="/data/recordings"
 
 # HA_TOKEN генерирует HA при запуске контейнера
 # ENV HA_TOKEN=""

@@ -2,7 +2,7 @@ use crate::bot::utils::md;
 use crate::db;
 use crate::models::{AppConfig, NotificationData};
 use anyhow::{ensure, Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use image::codecs::jpeg::JpegEncoder;
 use image::ColorType;
 use log::{debug, error, info, warn};
@@ -41,6 +41,25 @@ pub fn spawn_recording_worker(
     cancel_token: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if let Err(error) =
+            prepare_recording_storage(Path::new(&config.camera_recording_storage_root)).await
+        {
+            error!(
+                "Camera recording storage unavailable: {}. Recording worker disabled",
+                error
+            );
+            if let Err(recovery_error) =
+                db::camera_recording_sessions::recover_stale_sessions(&config.db).await
+            {
+                error!("Camera recording recovery failed: {}", recovery_error);
+            }
+            let _ = db::activity_log::log(db::activity_log::NewActivity {
+                user_id: None, kind: "recording", entity_type: "storage", entity_id: None,
+                action: "storage_check", status: "error", message: Some("Recording archive unavailable; recording worker disabled. Check storage path and permissions, then restart."),
+            }, &config.db).await;
+            // Dropping only this receiver leaves the rest of the bot running.
+            return;
+        }
         if let Err(error) = recover_stale_recordings(&config).await {
             error!("Camera recording recovery failed: {}", error);
         }
@@ -107,6 +126,43 @@ pub fn spawn_recording_worker(
         wait_for_recording_jobs(&mut active_jobs).await;
         info!("Core: Camera recording worker stopped");
     })
+}
+
+async fn prepare_recording_storage(root: &Path) -> Result<PathBuf> {
+    use tokio::io::AsyncWriteExt;
+    let absolute = if root.is_absolute() {
+        root.to_owned()
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    info!(
+        "Camera recording storage resolved to {}",
+        absolute.display()
+    );
+    tokio::fs::create_dir_all(&absolute)
+        .await
+        .with_context(|| format!("Cannot create recording archive {}", absolute.display()))?;
+    let probe = absolute.join(format!(
+        ".storage-probe-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .await
+        .with_context(|| format!("Recording archive is not writable: {}", absolute.display()))?;
+    let result = async {
+        file.write_all(b"storage probe").await?;
+        file.sync_all().await
+    }
+    .await;
+    drop(file);
+    let cleanup = tokio::fs::remove_file(&probe).await;
+    result.context("Recording archive write check failed")?;
+    cleanup.context("Recording archive delete check failed")?;
+    Ok(absolute)
 }
 
 async fn wait_for_recording_jobs(active_jobs: &mut JoinSet<()>) {
@@ -189,29 +245,52 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
     );
     db::camera_recording_sessions::mark_recording(session.id, &config.db).await?;
 
-    let mut segment_index = next_segment_index(session.id, &config).await?;
+    let pre_roll_enabled = rule.pre_roll_enabled();
+    let mut pre_roll_started = false;
+    let mut pre_roll_task: Option<JoinHandle<()>> = None;
+    let mut segment_index = if pre_roll_enabled {
+        1
+    } else {
+        next_segment_index(session.id, &config).await?
+    };
 
     loop {
         let Some(current) =
             db::camera_recording_sessions::get_session(session.id, &config.db).await?
         else {
+            finish_pre_roll_task(pre_roll_task.take()).await;
             return Ok(());
         };
 
-        if current.status == "failed" || current.status == "deleted" {
+        if current.status != "recording" {
+            finish_pre_roll_task(pre_roll_task.take()).await;
             return Ok(());
         }
 
         let now = Utc::now();
-        let remaining = current
-            .stop_after_at
-            .signed_duration_since(now)
-            .num_seconds();
-        if remaining <= 0 {
-            break;
+        if current.stop_after_at <= now {
+            // Keep checking extensions while pre-roll finishes. Awaiting it
+            // here without reloading could consume a newly requested tail.
+            if pre_roll_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+            {
+                tokio::time::sleep(StdDuration::from_millis(100)).await;
+                continue;
+            }
+            finish_pre_roll_task(pre_roll_task.take()).await;
+            if db::camera_recording_sessions::mark_ready_if_due(session.id, Utc::now(), &config.db)
+                .await?
+            {
+                break;
+            }
+            continue;
         }
 
-        let segment_duration = remaining
+        let segment_duration = current
+            .stop_after_at
+            .signed_duration_since(now)
+            .num_seconds()
             .min(rule.max_segment_seconds)
             .max(1)
             .try_into()
@@ -230,6 +309,15 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
             "Camera recording segment {} started: session={}, camera={} {}, index={}, duration={}s",
             segment_id, session.id, camera.id, camera.name, segment_index, segment_duration
         );
+        if pre_roll_enabled && !pre_roll_started {
+            pre_roll_started = true;
+            pre_roll_task = spawn_pre_roll_attachment(
+                config.clone(),
+                camera.clone(),
+                session.clone(),
+                rule.clone(),
+            );
+        }
         match capture_and_store_segment(
             &config,
             &camera,
@@ -268,12 +356,18 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
                     segment_duration,
                     message
                 );
-                let _ =
-                    db::camera_health::mark_error(session.camera_id, &message, &config.db).await;
+                let _ = db::camera_health::mark_error_kind(
+                    session.camera_id,
+                    db::camera_health::CameraHealthOperation::Recording,
+                    &message,
+                    &config.db,
+                )
+                .await;
                 db::camera_recording_segments::mark_failed(segment_id, &message, &config.db)
                     .await?;
                 db::camera_recording_sessions::mark_failed(session.id, &message, &config.db)
                     .await?;
+                finish_pre_roll_task(pre_roll_task.take()).await;
                 return Ok(());
             }
         }
@@ -281,12 +375,56 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
         segment_index += 1;
     }
 
-    let completed_at = Utc::now();
-    db::camera_recording_sessions::mark_ready(session.id, completed_at, &config.db).await?;
-    db::camera_recording_rules::mark_rule_completed(rule.id, completed_at, &config.db).await?;
     send_ready_notification(bot, config, session.id).await?;
 
     Ok(())
+}
+
+fn spawn_pre_roll_attachment(
+    config: Arc<AppConfig>,
+    camera: db::cameras::Camera,
+    session: db::camera_recording_sessions::RecordingSession,
+    rule: db::camera_recording_rules::RecordingRule,
+) -> Option<JoinHandle<()>> {
+    if !rule.pre_roll_enabled() {
+        return None;
+    }
+
+    let recording_start_at = Utc::now();
+    Some(tokio::spawn(async move {
+        if let Err(error) =
+            attach_pre_roll_segment(&config, &camera, &session, &rule, recording_start_at).await
+        {
+            let message = crate::core::cameras::sanitize_camera_error(&error);
+            warn!(
+                "Camera pre-roll attach failed but recording will continue: session={}, camera={} {}, error={}",
+                session.id, camera.id, camera.name, message
+            );
+            let _ = db::camera_recording_sessions::mark_pre_roll_result(
+                session.id,
+                None,
+                requested_pre_roll_seconds(&session, &rule),
+                true,
+                Some(&message),
+                &config.db,
+            )
+            .await;
+        }
+    }))
+}
+
+async fn finish_pre_roll_task(task: Option<JoinHandle<()>>) {
+    let Some(task) = task else {
+        return;
+    };
+
+    if let Err(error) = task.await {
+        if error.is_cancelled() {
+            warn!("Camera pre-roll attach task was cancelled");
+        } else {
+            error!("Camera pre-roll attach task join failed: {}", error);
+        }
+    }
 }
 
 async fn capture_and_store_segment(
@@ -306,7 +444,7 @@ async fn capture_and_store_segment(
         })?;
     }
 
-    let size_bytes = match crate::core::cameras::capture_clip_to_file(
+    let captured_size_bytes = match crate::core::cameras::capture_clip_to_file(
         camera,
         segment_duration,
         tmp_path.clone(),
@@ -319,6 +457,202 @@ async fn capture_and_store_segment(
             return Err(error);
         }
     };
+    publish_segment_file(
+        camera,
+        session_id,
+        relative_path,
+        tmp_path,
+        final_path,
+        Some(captured_size_bytes),
+    )
+    .await
+}
+
+async fn attach_pre_roll_segment(
+    config: &Arc<AppConfig>,
+    camera: &db::cameras::Camera,
+    session: &db::camera_recording_sessions::RecordingSession,
+    rule: &db::camera_recording_rules::RecordingRule,
+    recording_start_at: DateTime<Utc>,
+) -> Result<()> {
+    if !rule.pre_roll_enabled() {
+        return Ok(());
+    }
+
+    let requested_seconds = requested_pre_roll_seconds(session, rule);
+    let segment_index = 0;
+    let relative_path = segment_relative_path(camera.id, session.id, segment_index);
+    let final_path = Path::new(&config.camera_recording_storage_root).join(&relative_path);
+    let tmp_path = tmp_segment_path(&final_path);
+
+    if let Some(parent) = final_path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("failed to create recording directory {}", parent.display())
+        })?;
+    }
+
+    match config
+        .camera_pre_roll_registry
+        .write_to_file(
+            camera.id,
+            requested_seconds as u32,
+            session.first_event_at,
+            recording_start_at,
+            tmp_path.clone(),
+        )
+        .await
+    {
+        Ok(result) => {
+            if !pre_roll_publish_allowed(session.id, &config.db).await? {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                debug!(
+                    "Camera pre-roll dropped because session is no longer active: session={}, camera={} {}",
+                    session.id, camera.id, camera.name
+                );
+                return Ok(());
+            }
+
+            let segment_id = db::camera_recording_segments::create_segment(
+                session.id,
+                session.camera_id,
+                segment_index,
+                result.duration_s,
+                session.expires_at,
+                &config.db,
+            )
+            .await?;
+            let (relative_path, size_bytes) = match publish_segment_file(
+                camera,
+                session.id,
+                relative_path,
+                tmp_path.clone(),
+                final_path.clone(),
+                None,
+            )
+            .await
+            {
+                Ok(published) => published,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    let _ = tokio::fs::remove_file(&final_path).await;
+                    let message = crate::core::cameras::sanitize_camera_error(&error);
+                    warn!(
+                        "Camera pre-roll publish failed: session={}, camera={} {}, error={}",
+                        session.id, camera.id, camera.name, message
+                    );
+                    let _ = db::camera_recording_segments::mark_failed(
+                        segment_id, &message, &config.db,
+                    )
+                    .await;
+                    db::camera_recording_sessions::mark_pre_roll_result(
+                        session.id,
+                        None,
+                        requested_seconds,
+                        true,
+                        Some(&message),
+                        &config.db,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+
+            if let Err(error) = db::camera_recording_segments::mark_ready(
+                segment_id,
+                &relative_path,
+                size_bytes,
+                Utc::now(),
+                &config.db,
+            )
+            .await
+            {
+                let message = crate::core::cameras::sanitize_camera_error(&error);
+                warn!(
+                    "Camera pre-roll DB update failed: session={}, camera={} {}, error={}",
+                    session.id, camera.id, camera.name, message
+                );
+                let _ =
+                    db::camera_recording_segments::mark_failed(segment_id, &message, &config.db)
+                        .await;
+                db::camera_recording_sessions::mark_pre_roll_result(
+                    session.id,
+                    None,
+                    requested_seconds,
+                    true,
+                    Some(&message),
+                    &config.db,
+                )
+                .await?;
+                return Ok(());
+            }
+            spawn_recording_derivatives(config.clone(), relative_path);
+
+            db::camera_recording_sessions::mark_pre_roll_result(
+                session.id,
+                Some(result.from),
+                result.duration_s,
+                result.partial,
+                result.warning.as_deref(),
+                &config.db,
+            )
+            .await?;
+            info!(
+                "Camera pre-roll segment ready: session={}, camera={} {}, duration={}s, size={} bytes",
+                session.id, camera.id, camera.name, result.duration_s, size_bytes
+            );
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            let message = crate::core::cameras::sanitize_camera_error(&error);
+            warn!(
+                "Camera pre-roll unavailable: session={}, camera={} {}, requested={}s, error={}",
+                session.id, camera.id, camera.name, requested_seconds, message
+            );
+            db::camera_recording_sessions::mark_pre_roll_result(
+                session.id,
+                None,
+                requested_seconds,
+                true,
+                Some(&message),
+                &config.db,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn pre_roll_publish_allowed(session_id: i64, pool: &sqlx::SqlitePool) -> Result<bool> {
+    let Some(session) = db::camera_recording_sessions::get_session(session_id, pool).await? else {
+        return Ok(false);
+    };
+
+    Ok(session.status == "queued" || session.status == "recording")
+}
+
+fn requested_pre_roll_seconds(
+    session: &db::camera_recording_sessions::RecordingSession,
+    rule: &db::camera_recording_rules::RecordingRule,
+) -> i64 {
+    if !rule.pre_roll_enabled() {
+        return 0;
+    }
+
+    session
+        .pre_roll_seconds
+        .max(rule.normalized_pre_roll_seconds())
+        .clamp(1, db::camera_recording_rules::MAX_PRE_ROLL_SECONDS)
+}
+
+async fn publish_segment_file(
+    camera: &db::cameras::Camera,
+    session_id: i64,
+    relative_path: String,
+    tmp_path: PathBuf,
+    final_path: PathBuf,
+    captured_size_bytes: Option<u64>,
+) -> Result<(String, i64)> {
     tokio::fs::rename(&tmp_path, &final_path)
         .await
         .with_context(|| format!("failed to publish recording {}", final_path.display()))?;
@@ -342,14 +676,14 @@ async fn capture_and_store_segment(
             final_path.display()
         );
     }
-    if size_bytes != stored_size_bytes {
+    if captured_size_bytes.is_some_and(|size_bytes| size_bytes != stored_size_bytes) {
         warn!(
             "Published recording size differs from captured file: session={}, camera={} {}, path={}, captured={} bytes, stored={} bytes",
             session_id,
             camera.id,
             camera.name,
             final_path.display(),
-            size_bytes,
+            captured_size_bytes.unwrap_or_default(),
             stored_size_bytes
         );
     }
@@ -769,8 +1103,9 @@ async fn send_ready_notification(bot: Bot, config: Arc<AppConfig>, session_id: i
     let mut recipients = std::collections::HashSet::new();
     recipients.insert(config.root_user as i64);
 
-    for entity_id in trigger_entities(&session.trigger_summary) {
-        for user_id in db::subscriptions::get_subscribers(&entity_id, &config.db)
+    let trigger_entities = trigger_entities(&session.trigger_summary);
+    for entity_id in &trigger_entities {
+        for user_id in db::subscriptions::get_subscribers(entity_id, &config.db)
             .await
             .unwrap_or_default()
         {
@@ -782,8 +1117,10 @@ async fn send_ready_notification(bot: Bot, config: Arc<AppConfig>, session_id: i
         return Ok(());
     }
 
-    if should_suppress_recording_notification(&rule, config.clone(), &recipients, bot.clone())
-        .await?
+    let critical = recording_notification_critical(&trigger_entities, &config.db).await;
+    if !critical
+        && should_suppress_recording_notification(&rule, config.clone(), &recipients, bot.clone())
+            .await?
     {
         db::camera_recording_sessions::mark_notification_sent(session_id, &config.db).await?;
         return Ok(());
@@ -803,6 +1140,7 @@ async fn send_ready_notification(bot: Bot, config: Arc<AppConfig>, session_id: i
         NotificationData {
             human_state: text,
             recipients: recipients.into_iter().collect(),
+            critical,
         },
     )
     .await?;
@@ -861,6 +1199,7 @@ async fn should_suppress_recording_notification(
             NotificationData {
                 human_state: text,
                 recipients: recipients.iter().copied().collect(),
+                critical: false,
             },
         )
         .await?;
@@ -877,6 +1216,18 @@ fn trigger_entities(trigger_summary: &str) -> Vec<String> {
         .filter(|value| value.contains('.'))
         .map(str::to_string)
         .collect()
+}
+
+async fn recording_notification_critical(entity_ids: &[String], pool: &sqlx::SqlitePool) -> bool {
+    for entity_id in entity_ids {
+        if db::devices::is_device_critical(entity_id, pool)
+            .await
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn format_recording_duration(seconds: i64) -> String {
@@ -1043,6 +1394,29 @@ fn is_tmp_recording_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn archive_storage_probe_creates_directory_and_detects_unusable_path() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "ha-archive-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let resolved = prepare_recording_storage(&root).await?;
+        assert!(resolved.is_absolute());
+        assert!(tokio::fs::read_dir(&root)
+            .await?
+            .next_entry()
+            .await?
+            .is_none());
+        let file = root.join("file");
+        tokio::fs::write(&file, b"not a directory").await?;
+        assert!(prepare_recording_storage(&file.join("archive"))
+            .await
+            .is_err());
+        tokio::fs::remove_dir_all(root).await?;
+        Ok(())
+    }
 
     #[test]
     fn tmp_recording_files_include_tmp_mp4_outputs() {

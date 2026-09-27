@@ -80,6 +80,7 @@ pub struct AppConfig {
     pub state_aliases: DashMap<String, std::collections::HashMap<String, String>>,
     pub ui_background_cache: Mutex<Option<UiBackgroundCache>>,
     pub camera_snapshot_cache: Mutex<HashMap<i64, CameraSnapshotCache>>,
+    pub camera_pre_roll_registry: Arc<crate::core::camera_pre_roll::CameraPreRollRegistry>,
     pub runtime_status: RwLock<RuntimeStatus>,
 }
 
@@ -151,6 +152,8 @@ impl AppConfig {
 pub struct NotificationData {
     pub human_state: String,
     pub recipients: Vec<i64>,
+    #[serde(default)]
+    pub critical: bool,
 }
 
 #[derive(Debug, Clone)]

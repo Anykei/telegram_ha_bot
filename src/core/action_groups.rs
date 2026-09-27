@@ -694,6 +694,9 @@ mod tests {
             state_aliases: DashMap::new(),
             ui_background_cache: tokio::sync::Mutex::new(None),
             camera_snapshot_cache: tokio::sync::Mutex::new(HashMap::new()),
+            camera_pre_roll_registry: Arc::new(
+                crate::core::camera_pre_roll::CameraPreRollRegistry::new(),
+            ),
             runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
         })
     }

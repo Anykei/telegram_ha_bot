@@ -31,11 +31,13 @@ pub async fn get_subscribers(entity_id: &str, pool: &SqlitePool) -> anyhow::Resu
         r#"
         SELECT s.user_id
         FROM subscriptions s
-        LEFT JOIN devices d ON d.entity_id = s.entity_id
+        JOIN devices d ON d.entity_id = s.entity_id AND d.archived = 0
+        JOIN rooms r ON r.id = d.room_id AND r.hide = 0
         LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = s.user_id
         LEFT JOIN user_device_access uda ON uda.entity_id = s.entity_id AND uda.user_id = s.user_id
-        WHERE s.entity_id = ?
-          AND COALESCE(uda.can_view, ura.can_view, 1) != 0
+        LEFT JOIN user_profiles up ON up.user_id = s.user_id
+        WHERE s.entity_id = ?1
+          AND COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
           AND COALESCE(uda.can_notify, 1) != 0
         "#,
     )

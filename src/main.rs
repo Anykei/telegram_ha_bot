@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
         state_aliases: DashMap::new(),
         ui_background_cache: tokio::sync::Mutex::new(None),
         camera_snapshot_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        camera_pre_roll_registry: Arc::new(core::camera_pre_roll::CameraPreRollRegistry::new()),
         runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
     });
 
@@ -192,7 +193,16 @@ async fn main() -> Result<()> {
         app_config.clone(),
         cancel_token.clone(),
     );
+    let camera_pre_roll_handle = core::camera_pre_roll::spawn_camera_pre_roll_worker(
+        app_config.clone(),
+        cancel_token.clone(),
+    );
     let action_schedule_handle = core::action_schedules::spawn_action_schedule_worker(
+        app_config.clone(),
+        cancel_token.clone(),
+    );
+    let camera_health_handle = core::camera_health::spawn_camera_health_worker(
+        _bot.clone(),
         app_config.clone(),
         cancel_token.clone(),
     );
@@ -222,7 +232,9 @@ async fn main() -> Result<()> {
         ("ha_event_listener", event_listener_handle),
         ("notification_processor", notification_handle),
         ("camera_recording_worker", recording_handle),
+        ("camera_pre_roll_worker", camera_pre_roll_handle),
         ("action_schedule_worker", action_schedule_handle),
+        ("camera_health_worker", camera_health_handle),
         ("background_maintenance", maintenance_handle),
     ])
     .await;

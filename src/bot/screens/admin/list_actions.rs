@@ -94,6 +94,9 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         &ctx.config.db,
     )
     .await?;
+    let quiet_schedule =
+        crate::db::user_notification_schedule::get(user_id as i64, &ctx.config.db).await?;
+    let quiet_text = format_user_quiet_hours(quiet_schedule.as_ref());
     let summary = crate::db::access::get_access_summary(
         user_id,
         user_id == ctx.config.root_user,
@@ -113,7 +116,7 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
     };
 
     let text = format!(
-        "{}\n\nID: {}\n{}: {}\n{}: {}\n🎙 Голос: {}\n🎙 Engine: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
+        "{}\n\nID: {}\n{}: {}\n{}: {}\n🎙 Голос: {}\n🎙 Engine: {}\n🌙 Тихие часы: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
         t(ctx.lang, "admin.user_profile.title"),
         user_id,
         t(ctx.lang, "admin.role"),
@@ -122,6 +125,7 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         user_lang.label(),
         if voice_allowed { "ВКЛ" } else { "ВЫКЛ" },
         voice_engine.label(),
+        quiet_text,
         root_note,
         t(ctx.lang, "admin.rooms.label"),
         summary.rooms_full,
@@ -164,6 +168,18 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
     )]);
 
     rows.push(vec![InlineKeyboardButton::callback(
+        if quiet_schedule
+            .as_ref()
+            .is_some_and(|schedule| schedule.quiet_enabled != 0)
+        {
+            "🌙 Тихие часы: ВЫКЛ"
+        } else {
+            "🌙 Тихие часы: 23-07"
+        },
+        Payload::Admin(AdminPayload::ToggleUserQuietHours { id: user_id }).to_string(),
+    )]);
+
+    rows.push(vec![InlineKeyboardButton::callback(
         format!("{}: {}", t(ctx.lang, "admin.language"), user_lang.label()),
         Payload::Admin(AdminPayload::CycleUserLanguage { id: user_id }).to_string(),
     )]);
@@ -192,6 +208,34 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         payload: Payload::Admin(AdminPayload::UserProfile { id: user_id }),
         ..Default::default()
     })
+}
+
+fn format_user_quiet_hours(
+    schedule: Option<&crate::db::user_notification_schedule::UserNotificationSchedule>,
+) -> String {
+    let Some(schedule) = schedule else {
+        return "выкл".to_string();
+    };
+    if schedule.quiet_enabled == 0 {
+        return "выкл".to_string();
+    }
+
+    let from = schedule
+        .quiet_from
+        .as_deref()
+        .unwrap_or(crate::db::user_notification_schedule::DEFAULT_QUIET_FROM);
+    let to = schedule
+        .quiet_to
+        .as_deref()
+        .unwrap_or(crate::db::user_notification_schedule::DEFAULT_QUIET_TO);
+    let timezone = schedule.timezone.as_deref().unwrap_or("server");
+    let critical = if schedule.critical_only != 0 {
+        ", только critical"
+    } else {
+        ""
+    };
+
+    format!("{}-{} {}{}", from, to, timezone, critical)
 }
 
 pub async fn render_camera_rooms(ctx: RenderContext) -> Result<View> {
@@ -561,6 +605,11 @@ pub async fn render_recording_rule_detail(
     } else {
         "выключен"
     };
+    let pre_roll_text = if rule.pre_roll_enabled() {
+        format!("включен ({}с)", rule.normalized_pre_roll_seconds())
+    } else {
+        "выключен".to_string()
+    };
     let groups_text = selected_group_names_text(&groups, &rule_group_ids);
     let active_time_text = format_rule_active_time(&rule);
     let short_segment_warning = if rule.max_segment_seconds < 60 {
@@ -618,18 +667,32 @@ pub async fn render_recording_rule_detail(
                 .to_string(),
             ),
         ],
-        vec![InlineKeyboardButton::callback(
-            if rule.noise_enabled() {
-                "🔇 Шумодав"
-            } else {
-                "🔈 Шумодав"
-            },
-            Payload::Admin(AdminPayload::ToggleRecordingRuleNoise {
-                room: room_id,
-                rule: rule.id,
-            })
-            .to_string(),
-        )],
+        vec![
+            InlineKeyboardButton::callback(
+                if rule.noise_enabled() {
+                    "🔇 Шумодав"
+                } else {
+                    "🔈 Шумодав"
+                },
+                Payload::Admin(AdminPayload::ToggleRecordingRuleNoise {
+                    room: room_id,
+                    rule: rule.id,
+                })
+                .to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                if rule.pre_roll_enabled() {
+                    format!("⏪ Pre-roll {}с", rule.normalized_pre_roll_seconds())
+                } else {
+                    "⏪ Pre-roll выкл".to_string()
+                },
+                Payload::Admin(AdminPayload::ToggleRecordingRulePreRoll {
+                    room: room_id,
+                    rule: rule.id,
+                })
+                .to_string(),
+            ),
+        ],
     ];
 
     rows.extend(vec![
@@ -648,13 +711,14 @@ pub async fn render_recording_rule_detail(
     ]);
 
     let text = format!(
-        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}{}\nУведомления: {}\nШумодав: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
+        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}{}\nУведомления: {}\nШумодав: {}\nPre-roll: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
         rule.id,
         rule.name,
         status,
         pause_reason_text,
         notify_text,
         noise_text,
+        pre_roll_text,
         room.display_name(),
         camera.name,
         camera.id,
@@ -4534,8 +4598,12 @@ fn format_camera_health_text(
     };
 
     format!(
-        "{} · Health\n\nSnapshot OK: {}\nClip OK: {}\nRecording OK: {}\n{}: {}\n{}: {}\n{}: {}",
+        "{} · Health\n\nState: {} · failures {} · successes {}\nState changed: {}\nSnapshot OK: {}\nClip OK: {}\nRecording OK: {}\n{}: {}\n{}: {}\n{}: {}",
         camera_name,
+        health.health_state,
+        health.consecutive_failures,
+        health.consecutive_successes,
+        crate::bot::format::optional_datetime(health.last_state_changed_at),
         crate::bot::format::optional_datetime(health.last_snapshot_ok_at),
         crate::bot::format::optional_datetime(health.last_clip_ok_at),
         crate::bot::format::optional_datetime(health.last_recording_ok_at),
@@ -4603,9 +4671,29 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         runtime_status.shutdown_requested_at,
         runtime_status.shutdown_reason.as_deref(),
     );
+    let camera_jobs = crate::core::cameras::camera_job_stats();
+    let pre_roll_stats = ctx.config.camera_pre_roll_registry.stats();
+    let active_recordings =
+        crate::db::camera_recording_sessions::count_active_sessions(&ctx.config.db).await?;
+    let failed_recordings_last_hour =
+        crate::db::camera_recording_sessions::count_failed_sessions_since(
+            Utc::now() - Duration::hours(1),
+            &ctx.config.db,
+        )
+        .await?;
+    let archive_size =
+        crate::db::camera_recording_segments::sum_ready_size_bytes(&ctx.config.db).await?;
+    let pinned_size =
+        crate::db::camera_recording_segments::sum_pinned_ready_size_bytes(&ctx.config.db).await?;
+    let quota_mb = crate::db::settings::get_i64(
+        crate::db::settings::CAMERA_RECORDING_MAX_STORAGE_MB,
+        &ctx.config.db,
+    )
+    .await?
+    .unwrap_or(0);
 
     let text = format!(
-        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}",
+        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных UI-сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}\n\nCamera jobs: live {} / local {} / timeouts {}+{}\nPre-roll: buffers {} / ready {} / packets {} / RAM {}\nRecording: active {} / failed 1h {}\nStorage: {} / quota {} / pinned {}",
         ha_status,
         last_heartbeat,
         ha_sync,
@@ -4619,6 +4707,19 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         ctx.config.sessions.len(),
         blocked_sessions,
         nearest_unblock,
+        camera_jobs.active_live_jobs,
+        camera_jobs.active_local_media_jobs,
+        camera_jobs.timed_out_live_jobs,
+        camera_jobs.timed_out_local_media_jobs,
+        pre_roll_stats.buffers,
+        pre_roll_stats.ready_buffers,
+        pre_roll_stats.total_packets,
+        crate::bot::format::bytes(pre_roll_stats.total_bytes as u64),
+        active_recordings,
+        failed_recordings_last_hour,
+        crate::bot::format::bytes(archive_size as u64),
+        crate::bot::format::quota(quota_mb),
+        crate::bot::format::bytes(pinned_size as u64),
     );
 
     let kb = InlineKeyboardMarkup::new(vec![
@@ -4862,6 +4963,8 @@ mod tests {
             active_from_minute: None,
             active_to_minute: None,
             active_days_mask: crate::db::camera_recording_rules::ACTIVE_TIME_ALL_DAYS_MASK,
+            pre_roll_enabled: 1,
+            pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
             noise_summary_sent_at: None,
             last_completed_at: None,
             deleted_at: None,

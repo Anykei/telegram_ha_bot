@@ -73,9 +73,7 @@ async fn wait_for_initial_capture(config: Arc<AppConfig>, camera_id: i64) -> Opt
         tokio::time::sleep(sleep_for).await;
 
         let cache_by_camera = config.camera_snapshot_cache.lock().await;
-        let Some(cache) = cache_by_camera.get(&camera_id) else {
-            return None;
-        };
+        let cache = cache_by_camera.get(&camera_id)?;
         if let Some(bytes) = &cache.bytes {
             return Some(bytes.clone());
         }
@@ -89,7 +87,10 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
     tokio::spawn(async move {
         let camera_id = camera.id;
         let camera_name = camera.name.clone();
-        let result = crate::core::cameras::capture_snapshot(&camera).await;
+        let result = match pre_roll_snapshot(config.clone(), camera_id).await {
+            Some(bytes) => Ok(bytes),
+            None => crate::core::cameras::capture_snapshot(&camera).await,
+        };
         let mut cache_by_camera = config.camera_snapshot_cache.lock().await;
 
         let Some(cache) = cache_by_camera.get_mut(&camera_id) else {
@@ -122,6 +123,49 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
             }
         }
     });
+}
+
+async fn pre_roll_snapshot(config: Arc<AppConfig>, camera_id: i64) -> Option<Vec<u8>> {
+    if !config.camera_pre_roll_registry.has_ready_buffer(camera_id) {
+        return None;
+    }
+
+    let now = Utc::now();
+    let tmp_path = std::env::temp_dir().join(format!(
+        "telegram_ha_bot_preroll_snapshot_{}_{}.mp4",
+        camera_id,
+        now.timestamp_millis()
+    ));
+    let write_result = config
+        .camera_pre_roll_registry
+        .write_to_file(camera_id, 3, now, now, tmp_path.clone())
+        .await;
+
+    let bytes = match write_result {
+        Ok(_) => match crate::core::cameras::extract_video_preview(tmp_path.clone()).await {
+            Ok(bytes) if !bytes.is_empty() => Some(bytes),
+            Ok(_) => None,
+            Err(error) => {
+                log::debug!(
+                    "Camera pre-roll snapshot preview failed: camera={}, error={:#}",
+                    camera_id,
+                    error
+                );
+                None
+            }
+        },
+        Err(error) => {
+            log::debug!(
+                "Camera pre-roll snapshot unavailable: camera={}, error={:#}",
+                camera_id,
+                error
+            );
+            None
+        }
+    };
+
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    bytes
 }
 
 fn mark_refresh_failed(

@@ -38,6 +38,31 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<u64>> {
     Ok(rows.into_iter().map(|(id,)| id as u64).collect())
 }
 
+pub async fn list_admin_users(root_user: u64, pool: &SqlitePool) -> Result<Vec<u64>> {
+    let mut ids = vec![root_user];
+    let rows = sqlx::query_as::<_, (i64,)>(
+        r#"
+        SELECT DISTINCT u.id
+        FROM users u
+        LEFT JOIN user_profiles p ON p.user_id = u.id
+        WHERE COALESCE(u.is_admin, 0) != 0
+           OR p.role = 'admin'
+        ORDER BY u.id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (id,) in rows {
+        let user_id = id as u64;
+        if !ids.contains(&user_id) {
+            ids.push(user_id);
+        }
+    }
+
+    Ok(ids)
+}
+
 pub async fn add_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
     sqlx::query("INSERT OR IGNORE INTO users (id) VALUES (?)")
         .bind(user_id as i64)

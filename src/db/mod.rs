@@ -16,6 +16,7 @@ pub(crate) mod rooms;
 pub(crate) mod settings;
 pub(crate) mod subscriptions;
 mod user;
+pub(crate) mod user_notification_schedule;
 
 use anyhow::{anyhow, Context, Result};
 use log::info;
@@ -65,7 +66,11 @@ pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
 pub(crate) fn sanitize_error(error: &str) -> String {
     let mut value = error.replace('\n', " ");
     if value.len() > 500 {
-        value.truncate(500);
+        let mut end = 500;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
     }
     value
 }
@@ -177,6 +182,55 @@ pub async fn get_state_aliases(pool: &SqlitePool) -> StateMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_messages_keep_valid_utf8_within_byte_limit() {
+        for input in [
+            "a".repeat(499),
+            "a".repeat(500),
+            "a".repeat(501),
+            format!("x{}", "я".repeat(300)),
+            format!("{}🙂", "a".repeat(499)),
+            "я🙂\n".repeat(100),
+        ] {
+            let clean = input.replace('\n', " ");
+            let actual = sanitize_error(&input);
+            assert!(actual.len() <= 500);
+            assert!(clean.starts_with(&actual));
+            assert!(!actual.contains('\n'));
+            assert!(
+                actual.len() == clean.len()
+                    || actual.len() + clean[actual.len()..].chars().next().unwrap().len_utf8()
+                        > 500
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_log_accepts_long_multibyte_error() -> Result<()> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        let message = format!("x{}\n🙂", "я".repeat(300));
+        activity_log::log(
+            activity_log::NewActivity {
+                user_id: None,
+                kind: "test",
+                entity_type: "test",
+                entity_id: None,
+                action: "test",
+                status: "error",
+                message: Some(&message),
+            },
+            &pool,
+        )
+        .await?;
+        let rows = activity_log::list_recent(None, true, 1, &pool).await?;
+        assert_eq!(
+            rows[0].message.as_deref(),
+            Some(sanitize_error(&message).as_str())
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn system_stats_counts_core_tables() -> Result<()> {

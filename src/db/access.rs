@@ -34,7 +34,26 @@ pub async fn get_user_role(user_id: u64, pool: &SqlitePool) -> Result<String> {
         .fetch_optional(pool)
         .await?;
 
-    Ok(role.unwrap_or_else(|| "user".to_string()))
+    let role = role.unwrap_or_else(|| "user".to_string());
+    if !matches!(role.as_str(), "user" | "admin" | "child" | "guest") {
+        log::warn!(
+            "Unknown access role for user {}; default access denied",
+            user_id
+        );
+    }
+    Ok(role)
+}
+
+// Keep the SQL fallback in rooms/devices/subscriptions consistent with this policy.
+async fn default_access(user_id: u64, pool: &SqlitePool) -> Result<AccessRule> {
+    let allowed = matches!(
+        get_user_role(user_id, pool).await?.as_str(),
+        "user" | "admin"
+    );
+    Ok(AccessRule {
+        can_view: allowed,
+        can_control: allowed,
+    })
 }
 
 pub async fn can_use_voice(user_id: u64, is_admin: bool, pool: &SqlitePool) -> Result<bool> {
@@ -217,13 +236,14 @@ pub async fn get_access_summary(
     let (rooms_full, rooms_view, rooms_hidden) = sqlx::query_as::<_, (i64, i64, i64)>(
         r#"
         SELECT
-            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, 1) != 0
-                AND COALESCE(ura.can_control, 1) != 0 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, 1) != 0
-                AND COALESCE(ura.can_control, 1) = 0 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, 1) = 0 THEN 1 ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
+                AND COALESCE(ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
+                AND COALESCE(ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) = 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) = 0 THEN 1 ELSE 0 END), 0)
         FROM rooms r
-        LEFT JOIN user_room_access ura ON ura.room_id = r.id AND ura.user_id = ?
+        LEFT JOIN user_room_access ura ON ura.room_id = r.id AND ura.user_id = ?1
+        LEFT JOIN user_profiles up ON up.user_id = ?1
         WHERE r.hide = 0
         "#,
     )
@@ -234,15 +254,16 @@ pub async fn get_access_summary(
     let (devices_full, devices_view, devices_hidden) = sqlx::query_as::<_, (i64, i64, i64)>(
         r#"
         SELECT
-            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, 1) != 0
-                AND COALESCE(uda.can_control, ura.can_control, 1) != 0 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, 1) != 0
-                AND COALESCE(uda.can_control, ura.can_control, 1) = 0 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, 1) = 0 THEN 1 ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
+                AND COALESCE(uda.can_control, ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
+                AND COALESCE(uda.can_control, ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) = 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) = 0 THEN 1 ELSE 0 END), 0)
         FROM devices d
         JOIN rooms r ON r.id = d.room_id
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
         WHERE d.archived = 0 AND r.hide = 0
         "#,
     )
@@ -256,11 +277,12 @@ pub async fn get_access_summary(
         SELECT COUNT(*)
         FROM devices d
         JOIN rooms r ON r.id = d.room_id
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
         WHERE d.archived = 0
             AND r.hide = 0
-            AND COALESCE(uda.can_view, ura.can_view, 1) != 0
+            AND COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
             AND COALESCE(uda.can_notify, 1) = 0
         "#,
     )
@@ -308,6 +330,7 @@ pub async fn set_room_access(
 }
 
 pub async fn get_room_access(user_id: u64, room_id: i64, pool: &SqlitePool) -> Result<AccessRule> {
+    let fallback = default_access(user_id, pool).await?;
     let row = sqlx::query_as::<_, (i64, i64)>(
         r#"
         SELECT COALESCE(can_view, 1), COALESCE(can_control, 1)
@@ -322,10 +345,7 @@ pub async fn get_room_access(user_id: u64, room_id: i64, pool: &SqlitePool) -> R
 
     Ok(row
         .map(|(can_view, can_control)| AccessRule::from_row(can_view, can_control))
-        .unwrap_or(AccessRule {
-            can_view: true,
-            can_control: true,
-        }))
+        .unwrap_or(fallback))
 }
 
 pub async fn toggle_room_view_access(
@@ -389,24 +409,17 @@ pub async fn get_device_access(
     entity_id: &str,
     pool: &SqlitePool,
 ) -> Result<AccessRule> {
-    let row = sqlx::query_as::<_, (i64, i64)>(
-        r#"
-        SELECT COALESCE(can_view, 1), COALESCE(can_control, 1)
-        FROM user_device_access
-        WHERE user_id = ? AND entity_id = ?
-        "#,
-    )
-    .bind(user_id as i64)
-    .bind(entity_id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(row
-        .map(|(can_view, can_control)| AccessRule::from_row(can_view, can_control))
-        .unwrap_or(AccessRule {
-            can_view: true,
-            can_control: true,
-        }))
+    let id = sqlx::query_scalar::<_, i64>("SELECT id FROM devices WHERE entity_id = ?")
+        .bind(entity_id)
+        .fetch_optional(pool)
+        .await?;
+    match id {
+        Some(id) => get_effective_device_rule(user_id, false, id, pool).await,
+        None => Ok(AccessRule {
+            can_view: false,
+            can_control: false,
+        }),
+    }
 }
 
 pub async fn get_device_notify_access(
@@ -474,14 +487,15 @@ pub async fn toggle_device_notify_access(
         r#"
         INSERT INTO user_device_access (user_id, entity_id, can_view, can_control, can_notify)
         SELECT
-            ?,
+            ?1,
             d.entity_id,
-            COALESCE(ura.can_view, 1),
-            COALESCE(ura.can_control, 1),
-            ?
+            COALESCE(ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END),
+            COALESCE(ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END),
+            ?2
         FROM devices d
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        WHERE d.entity_id = ? AND d.archived = 0
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?3
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE d.entity_id = ?4 AND d.archived = 0
         ON CONFLICT(user_id, entity_id) DO UPDATE SET
             can_notify = excluded.can_notify
         "#,
@@ -505,13 +519,16 @@ pub async fn can_view_room(
     if is_admin {
         return Ok(true);
     }
+    // Diagnose unknown roles while retaining explicit ACL priority in the SQL.
+    get_user_role(user_id, pool).await?;
 
     let can_view = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT COALESCE(ura.can_view, 1)
+        SELECT COALESCE(ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END)
         FROM rooms r
-        LEFT JOIN user_room_access ura ON ura.room_id = r.id AND ura.user_id = ?
-        WHERE r.id = ? AND r.hide = 0
+        LEFT JOIN user_room_access ura ON ura.room_id = r.id AND ura.user_id = ?1
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE r.id = ?2 AND r.hide = 0
         "#,
     )
     .bind(user_id as i64)
@@ -552,17 +569,20 @@ pub async fn can_control_device(
 }
 
 pub async fn can_notify_entity(user_id: u64, entity_id: &str, pool: &SqlitePool) -> Result<bool> {
+    get_user_role(user_id, pool).await?;
     let can_notify = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT
             CASE
-                WHEN COALESCE(uda.can_view, ura.can_view, 1) = 0 THEN 0
+                WHEN COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) = 0 THEN 0
                 ELSE COALESCE(uda.can_notify, 1)
             END
         FROM devices d
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
-        WHERE d.entity_id = ? AND d.archived = 0
+        JOIN rooms r ON r.id = d.room_id AND r.hide = 0
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE d.entity_id = ?3 AND d.archived = 0
         "#,
     )
     .bind(user_id as i64)
@@ -571,7 +591,7 @@ pub async fn can_notify_entity(user_id: u64, entity_id: &str, pool: &SqlitePool)
     .fetch_optional(pool)
     .await?;
 
-    Ok(can_notify != Some(0))
+    Ok(can_notify.is_some_and(|value| value != 0))
 }
 
 pub async fn can_notify_entity_for_device_id(
@@ -610,17 +630,19 @@ async fn get_effective_device_rule(
             can_control: true,
         });
     }
+    get_user_role(user_id, pool).await?;
 
     let row = sqlx::query_as::<_, (i64, i64)>(
         r#"
         SELECT
-            COALESCE(uda.can_view, ura.can_view, 1) AS can_view,
-            COALESCE(uda.can_control, ura.can_control, 1) AS can_control
+            COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) AS can_view,
+            COALESCE(uda.can_control, ura.can_control, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) AS can_control
         FROM devices d
         JOIN rooms r ON r.id = d.room_id
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
-        WHERE d.id = ? AND d.archived = 0 AND r.hide = 0
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE d.id = ?3 AND d.archived = 0 AND r.hide = 0
         "#,
     )
     .bind(user_id as i64)
@@ -640,6 +662,78 @@ async fn get_effective_device_rule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn new_rooms_obey_roles_and_explicit_grants_on_migrated_database() -> Result<()> {
+        use crate::db::{devices, rooms, subscriptions};
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        for (id, role) in [
+            (10, "guest"),
+            (11, "child"),
+            (12, "user"),
+            (13, "admin"),
+            (14, "invalid"),
+        ] {
+            sqlx::query("INSERT INTO users (id) VALUES (?)")
+                .bind(id)
+                .execute(&pool)
+                .await?;
+            set_user_role(id as u64, role, &pool).await?;
+        }
+        sqlx::query("INSERT INTO users (id) VALUES (15)")
+            .execute(&pool)
+            .await?;
+        rooms::sync_rooms_from_ha("new_room", "New room", &pool).await?;
+        sqlx::query("INSERT INTO devices (id, room_id, entity_id) VALUES (1, 1, 'light.new')")
+            .execute(&pool)
+            .await?;
+        for id in 10..=15_u64 {
+            subscriptions::toggle_subscription(id as i64, "light.new", &pool).await?;
+            let allowed = matches!(id, 12 | 13 | 15);
+            assert_eq!(can_view_room(id, false, 1, &pool).await?, allowed);
+            assert_eq!(can_control_device(id, false, 1, &pool).await?, allowed);
+            assert_eq!(
+                !rooms::get_rooms_for_user(id, false, &pool)
+                    .await?
+                    .is_empty(),
+                allowed
+            );
+            assert_eq!(
+                !devices::get_devices_by_room_for_user(id, false, 1, &pool)
+                    .await?
+                    .is_empty(),
+                allowed
+            );
+            assert_eq!(can_notify_entity(id, "light.new", &pool).await?, allowed);
+            assert_eq!(
+                get_access_summary(id, false, &pool).await?.devices_full,
+                i64::from(allowed)
+            );
+        }
+        assert_eq!(
+            subscriptions::get_subscribers("light.new", &pool).await?,
+            vec![12, 13, 15]
+        );
+        assert!(can_control_device(10, true, 1, &pool).await?);
+        toggle_device_notify_access(10, "light.new", &pool).await?;
+        toggle_device_notify_access(10, "light.new", &pool).await?;
+        assert!(!can_view_device(10, false, 1, &pool).await?);
+        set_room_access(11, 1, true, false, &pool).await?;
+        assert!(can_view_device(11, false, 1, &pool).await?);
+        assert!(!can_control_device(11, false, 1, &pool).await?);
+        set_device_access(11, "light.new", true, true, true, &pool).await?;
+        assert!(can_control_device(11, false, 1, &pool).await?);
+        sqlx::query("UPDATE rooms SET hide = 1")
+            .execute(&pool)
+            .await?;
+        assert!(!can_view_device(11, false, 1, &pool).await?);
+        assert!(subscriptions::get_subscribers("light.new", &pool)
+            .await?
+            .is_empty());
+        assert!(!can_notify_entity(11, "missing", &pool).await?);
+        Ok(())
+    }
 
     async fn test_pool() -> Result<SqlitePool> {
         let pool = SqlitePool::connect("sqlite::memory:").await?;

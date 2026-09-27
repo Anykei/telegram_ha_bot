@@ -167,8 +167,17 @@ impl AppOptions {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read options file: {:?}", path))?;
 
-        let options: AppOptions =
+        let mut options: AppOptions =
             serde_json::from_str(&content).context("JSON schema mismatch in options file")?;
+        let document: serde_json::Value = serde_json::from_str(&content)?;
+        options.camera_recording_storage_root = resolve_recording_storage_root(
+            document
+                .get("camera_recording_storage_root")
+                .and_then(serde_json::Value::as_str),
+            std::env::var("CAMERA_RECORDING_STORAGE_ROOT")
+                .ok()
+                .as_deref(),
+        );
 
         // Бизнес-валидация
         ensure!(!options.bot_token.is_empty(), "bot_token cannot be empty");
@@ -288,6 +297,12 @@ fn default_camera_recording_storage_root() -> String {
     "data/recordings".to_string()
 }
 
+fn resolve_recording_storage_root(json: Option<&str>, environment: Option<&str>) -> String {
+    json.or(environment)
+        .map(str::to_owned)
+        .unwrap_or_else(default_camera_recording_storage_root)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -334,6 +349,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_path_precedence_preserves_explicit_json() {
+        for (json, env, expected) in [
+            (
+                Some("relative/archive"),
+                Some("/data/recordings"),
+                "relative/archive",
+            ),
+            (
+                Some("/custom/archive"),
+                Some("/data/recordings"),
+                "/custom/archive",
+            ),
+            (None, Some("/data/recordings"), "/data/recordings"),
+            (None, None, "data/recordings"),
+            (Some(""), Some("/data/recordings"), ""),
+        ] {
+            assert_eq!(resolve_recording_storage_root(json, env), expected);
+        }
+    }
 
     #[test]
     fn options_use_refresh_defaults_for_legacy_json() {

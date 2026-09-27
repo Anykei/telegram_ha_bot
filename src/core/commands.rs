@@ -147,12 +147,38 @@ pub async fn execute_voice_text(
                 .await;
             }
 
-            if !looks_like_readonly_question(text) {
-                anyhow::bail!(
-                    "HA Conversation readonly разрешает только вопросы. Для управления используйте локальный voice engine или выдайте HA full."
-                );
-            }
-            execute_ha_conversation(user_id, text, config).await
+            let language = db::get_user_language(user_id, &config.db)
+                .await?
+                .unwrap_or(config.default_language);
+            let client = crate::ha::intent_recognition::RecognitionClient::new(
+                &config.ha_url,
+                &config.ha_token,
+                config.voice_stt_timeout_s,
+            )?;
+            let answer = crate::core::readonly::answer(
+                &client,
+                user_id,
+                is_admin,
+                text,
+                language,
+                &config.db,
+                config.voice_stt_timeout_s,
+            )
+            .await?;
+            db::activity_log::log(
+                db::activity_log::NewActivity {
+                    user_id: Some(user_id),
+                    kind: "voice_command",
+                    entity_type: "ha_readonly",
+                    entity_id: None,
+                    action: "readonly_query",
+                    status: "ok",
+                    message: None,
+                },
+                &config.db,
+            )
+            .await?;
+            Ok(CommandExecution::Done { message: answer })
         }
         VoiceCommandEngine::HaConversationFull => {
             if let Some(parsed) = parse_bot_owned_text(user_id, text, config).await? {
@@ -965,79 +991,9 @@ async fn execute_ha_conversation(
     })
 }
 
-fn looks_like_readonly_question(text: &str) -> bool {
-    let normalized = crate::bot::text_commands::normalize_command_text(text);
-
-    if [
-        "включи",
-        "включить",
-        "выключи",
-        "выключить",
-        "вкл",
-        "выкл",
-        "открой",
-        "открыть",
-        "закрой",
-        "закрыть",
-        "поставь",
-        "установи",
-        "измени",
-        "переключи",
-        "turn on",
-        "turn off",
-        "open",
-        "close",
-        "set ",
-    ]
-    .iter()
-    .any(|word| normalized.contains(word))
-    {
-        return false;
-    }
-
-    [
-        "какой",
-        "какая",
-        "какое",
-        "какие",
-        "сколько",
-        "что",
-        "где",
-        "когда",
-        "почему",
-        "покажи",
-        "скажи",
-        "статус",
-        "состояние",
-        "температура",
-        "погода",
-        "what",
-        "where",
-        "when",
-        "why",
-        "how",
-        "show",
-        "tell",
-        "status",
-        "state",
-        "temperature",
-        "weather",
-    ]
-    .iter()
-    .any(|word| normalized.contains(word))
-}
-
 #[cfg(test)]
 mod voice_engine_tests {
     use super::*;
-
-    #[test]
-    fn readonly_questions_reject_control_phrases() {
-        assert!(looks_like_readonly_question("какая температура дома"));
-        assert!(looks_like_readonly_question("покажи статус света"));
-        assert!(!looks_like_readonly_question("включи свет в коридоре"));
-        assert!(!looks_like_readonly_question("turn on kitchen light"));
-    }
 
     #[test]
     fn parses_all_lights_commands_with_stt_punctuation() {

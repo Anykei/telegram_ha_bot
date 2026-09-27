@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Utc};
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -874,7 +875,13 @@ async fn send_camera_snapshot(
         }
         Err(error) => {
             let error = error.to_string();
-            let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+            let _ = db::camera_health::mark_error_kind(
+                camera.id,
+                db::camera_health::CameraHealthOperation::Snapshot,
+                &error,
+                &config.db,
+            )
+            .await;
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -962,7 +969,21 @@ async fn send_camera_clip(
         )
         .await?;
 
-    let bytes = match crate::core::cameras::capture_clip(&camera, seconds).await {
+    let capture_result = match capture_clip_from_pre_roll(config, camera.id, seconds).await {
+        Some(Ok(bytes)) => Ok(bytes),
+        Some(Err(error)) => {
+            log::debug!(
+                "Pre-roll clip fast path failed, falling back to live capture: camera={}, seconds={}, error={:#}",
+                camera.id,
+                seconds,
+                error
+            );
+            crate::core::cameras::capture_clip(&camera, seconds).await
+        }
+        None => crate::core::cameras::capture_clip(&camera, seconds).await,
+    };
+
+    let bytes = match capture_result {
         Ok(bytes) => {
             let _ =
                 db::camera_health::mark_clip_ok(camera.id, bytes.len() as i64, &config.db).await;
@@ -983,7 +1004,13 @@ async fn send_camera_clip(
         }
         Err(error) => {
             let error = error.to_string();
-            let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+            let _ = db::camera_health::mark_error_kind(
+                camera.id,
+                db::camera_health::CameraHealthOperation::Clip,
+                &error,
+                &config.db,
+            )
+            .await;
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -1047,6 +1074,43 @@ async fn send_camera_clip(
     }
 
     Ok(())
+}
+
+async fn capture_clip_from_pre_roll(
+    config: &Arc<AppConfig>,
+    camera_id: i64,
+    seconds: u32,
+) -> Option<Result<Vec<u8>>> {
+    let window_seconds = config
+        .camera_pre_roll_registry
+        .ready_window_seconds(camera_id)?;
+    if seconds == 0 || seconds > window_seconds {
+        return None;
+    }
+
+    tokio::time::sleep(StdDuration::from_secs(u64::from(seconds))).await;
+    let end_at = Utc::now();
+    let tmp_path = std::env::temp_dir().join(format!(
+        "telegram_ha_bot_preroll_clip_{}_{}_{}.mp4",
+        camera_id,
+        seconds,
+        end_at.timestamp_millis()
+    ));
+    let result = async {
+        config
+            .camera_pre_roll_registry
+            .write_to_file(camera_id, seconds, end_at, end_at, tmp_path.clone())
+            .await?;
+        let bytes = tokio::fs::read(&tmp_path)
+            .await
+            .with_context(|| format!("failed to read pre-roll clip {}", tmp_path.display()))?;
+        anyhow::ensure!(!bytes.is_empty(), "pre-roll clip is empty");
+        Ok(bytes)
+    }
+    .await;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    Some(result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2112,6 +2176,14 @@ pub async fn handle_add_recording_rule_input(
                 return finalize_dialogue(bot, dialogue, msg, config, None).await;
             }
 
+            let pre_roll_enabled = crate::db::settings::get_i64(
+                crate::db::settings::CAMERA_PRE_ROLL_ENABLED,
+                &config.db,
+            )
+            .await?
+            .unwrap_or(0)
+                != 0;
+
             let rule_id = crate::db::camera_recording_rules::create_rule(
                 crate::db::camera_recording_rules::NewRecordingRule {
                     name: &input.name,
@@ -2121,6 +2193,8 @@ pub async fn handle_add_recording_rule_input(
                     max_segment_seconds: i64::from(input.max_segment_seconds),
                     cooldown_s: i64::from(input.cooldown_s),
                     retention_days: i64::from(input.retention_days),
+                    pre_roll_enabled,
+                    pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
                 },
                 &config.db,
             )
@@ -3291,6 +3365,9 @@ pub async fn handle_edit_recording_rule_input(
                     },
                 )
                 .collect::<Vec<_>>();
+            let existing_rule = crate::db::camera_recording_rules::get_rule(rule_id, &config.db)
+                .await?
+                .context("Recording rule not found")?;
 
             crate::db::camera_recording_rules::update_rule_replace_conditions(
                 rule_id,
@@ -3302,6 +3379,8 @@ pub async fn handle_edit_recording_rule_input(
                     max_segment_seconds: i64::from(input.max_segment_seconds),
                     cooldown_s: i64::from(input.cooldown_s),
                     retention_days: i64::from(input.retention_days),
+                    pre_roll_enabled: existing_rule.pre_roll_enabled(),
+                    pre_roll_seconds: existing_rule.normalized_pre_roll_seconds(),
                 },
                 &conditions,
                 &config.db,

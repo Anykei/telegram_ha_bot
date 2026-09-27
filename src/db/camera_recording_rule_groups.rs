@@ -593,6 +593,8 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create user room access");
+        sqlx::query("CREATE TABLE user_profiles (user_id INTEGER PRIMARY KEY, role TEXT NOT NULL DEFAULT 'user')")
+            .execute(&pool).await.expect("create user profiles");
         pool
     }
 

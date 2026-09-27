@@ -171,10 +171,14 @@ async fn process_and_dispatch(
             md::plain(&display_name),
             md::bold(&human_state)
         );
+        let critical = db::devices::is_device_critical(&event.entity_id, &config.db)
+            .await
+            .unwrap_or(false);
 
         let data = NotificationData {
             human_state: message_text,
             recipients,
+            critical,
         };
 
         let b_clone = bot.clone();

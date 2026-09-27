@@ -256,6 +256,14 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
 }
 
 pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Result<View> {
+    render_recording_archive_filtered(ctx, camera_id, "all").await
+}
+
+pub async fn render_recording_archive_filtered(
+    ctx: RenderContext,
+    camera_id: i64,
+    filter: &str,
+) -> Result<View> {
     let camera = crate::db::cameras::get_accessible_camera(
         ctx.user_id,
         ctx.is_admin,
@@ -264,10 +272,23 @@ pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Res
     )
     .await?
     .context("Camera not found or access denied")?;
-    let sessions =
-        crate::db::camera_recording_sessions::list_camera_sessions(camera_id, 30, &ctx.config.db)
-            .await?;
+    let archive_filter = parse_archive_filter(filter);
+    let sessions = crate::db::camera_recording_sessions::list_camera_sessions_filtered(
+        camera_id,
+        archive_filter,
+        30,
+        0,
+        &ctx.config.db,
+    )
+    .await?;
+    let rules = crate::db::camera_recording_rules::list_rules(&ctx.config.db)
+        .await?
+        .into_iter()
+        .filter(|rule| rule.camera_id == camera_id)
+        .collect::<Vec<_>>();
     let mut rows = Vec::new();
+
+    rows.extend(archive_filter_rows(camera_id, filter, &rules));
 
     for session in &sessions {
         rows.push(vec![InlineKeyboardButton::callback(
@@ -312,6 +333,96 @@ pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Res
         image,
         ..Default::default()
     })
+}
+
+fn parse_archive_filter(
+    filter: &str,
+) -> crate::db::camera_recording_sessions::RecordingArchiveFilter {
+    match filter {
+        "today" => crate::db::camera_recording_sessions::RecordingArchiveFilter::Today,
+        "week" => crate::db::camera_recording_sessions::RecordingArchiveFilter::Week,
+        "ready" => crate::db::camera_recording_sessions::RecordingArchiveFilter::Ready,
+        "failed" => crate::db::camera_recording_sessions::RecordingArchiveFilter::Failed,
+        "pinned" => crate::db::camera_recording_sessions::RecordingArchiveFilter::Pinned,
+        value if value.starts_with("rule:") => value
+            .trim_start_matches("rule:")
+            .parse::<i64>()
+            .map(crate::db::camera_recording_sessions::RecordingArchiveFilter::Rule)
+            .unwrap_or(crate::db::camera_recording_sessions::RecordingArchiveFilter::All),
+        _ => crate::db::camera_recording_sessions::RecordingArchiveFilter::All,
+    }
+}
+
+fn archive_filter_rows(
+    camera_id: i64,
+    active: &str,
+    rules: &[crate::db::camera_recording_rules::RecordingRule],
+) -> Vec<Vec<InlineKeyboardButton>> {
+    let filters = [
+        ("all", "Все"),
+        ("today", "Сегодня"),
+        ("week", "7 дней"),
+        ("ready", "Готовые"),
+        ("failed", "Ошибки"),
+        ("pinned", "📌"),
+    ];
+    let mut rows = filters
+        .chunks(3)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|(filter, label)| {
+                    let label = if *filter == active {
+                        format!("• {}", label)
+                    } else {
+                        (*label).to_string()
+                    };
+                    InlineKeyboardButton::callback(
+                        label,
+                        Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                            camera: camera_id,
+                            filter: (*filter).to_string(),
+                        })
+                        .to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    for chunk in rules.chunks(2) {
+        rows.push(
+            chunk
+                .iter()
+                .map(|rule| {
+                    let filter = format!("rule:{}", rule.id);
+                    let prefix = if filter == active { "• " } else { "" };
+                    InlineKeyboardButton::callback(
+                        format!("{}Правило: {}", prefix, archive_rule_label(&rule.name)),
+                        Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                            camera: camera_id,
+                            filter,
+                        })
+                        .to_string(),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    rows
+}
+
+fn archive_rule_label(name: &str) -> String {
+    const LIMIT: usize = 18;
+    let normalized = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= LIMIT {
+        normalized
+    } else {
+        let mut label = normalized.chars().take(LIMIT).collect::<String>();
+        label.push_str("...");
+        label
+    }
 }
 
 pub async fn render_recording_session(
@@ -371,6 +482,19 @@ pub async fn render_recording_session(
     }
 
     if ctx.is_admin {
+        let pin_label = if session.pinned_at.is_some() {
+            "📌 Открепить"
+        } else {
+            "📌 Закрепить"
+        };
+        rows.push(vec![InlineKeyboardButton::callback(
+            pin_label,
+            Payload::Camera(CameraPayload::ToggleRecordingPin {
+                camera: camera_id,
+                session: session_id,
+            })
+            .to_string(),
+        )]);
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "camera.delete"),
             Payload::Camera(CameraPayload::ConfirmDeleteRecording {
@@ -427,8 +551,19 @@ pub async fn render_recording_session(
     )
     .await;
 
+    let pinned_text = session
+        .pinned_at
+        .map(|pinned_at| {
+            format!(
+                "\n📌 Закреплена: {}",
+                crate::bot::format::datetime(pinned_at)
+            )
+        })
+        .unwrap_or_default();
+    let pre_roll_text = recording_pre_roll_text(&session);
+
     let text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}{}",
+        "{}\n\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {} / {}\n{}: {}{}{}{}{}{}",
         t(ctx.lang, "camera.recording.header"),
         t(ctx.lang, "camera.recording.camera"),
         camera.name,
@@ -445,6 +580,8 @@ pub async fn render_recording_session(
         segments.len(),
         t(ctx.lang, "camera.recording.keep_until"),
         crate::bot::format::datetime(session.expires_at),
+        pinned_text,
+        pre_roll_text,
         warning,
         disk_warning,
         failure_details
@@ -462,6 +599,37 @@ pub async fn render_recording_session(
         image,
         ..Default::default()
     })
+}
+
+fn recording_pre_roll_text(
+    session: &crate::db::camera_recording_sessions::RecordingSession,
+) -> String {
+    if session.pre_roll_seconds <= 0 {
+        return String::new();
+    }
+
+    if let Some(warning) = session.pre_roll_warning.as_deref() {
+        return format!(
+            "\nPre-roll: частично/недоступен, {}",
+            shorten_recording_error(warning)
+        );
+    }
+
+    if let Some(from) = session.pre_roll_from {
+        let partial = if session.pre_roll_partial != 0 {
+            ", частично"
+        } else {
+            ""
+        };
+        return format!(
+            "\nPre-roll: {} с с {}{}",
+            session.pre_roll_seconds,
+            crate::bot::format::datetime(from),
+            partial
+        );
+    }
+
+    "\nPre-roll: ожидает буфер".to_string()
 }
 
 pub(crate) async fn camera_snapshot_image(
@@ -610,6 +778,11 @@ async fn recording_session_label(
         "failed" => "⚠️",
         _ => "🎞",
     };
+    let pin_icon = if session.pinned_at.is_some() {
+        "📌 "
+    } else {
+        ""
+    };
     let end = session.completed_at.unwrap_or(session.stop_after_at);
     let duration = end
         .signed_duration_since(session.first_event_at)
@@ -617,7 +790,8 @@ async fn recording_session_label(
         .max(0);
 
     format!(
-        "{} {} · {}",
+        "{}{} {} · {}",
+        pin_icon,
         status_icon,
         crate::bot::format::datetime(session.first_event_at),
         crate::core::camera_recording::format_recording_duration(duration)

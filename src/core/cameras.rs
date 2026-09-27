@@ -24,10 +24,34 @@ const MAX_TIMED_OUT_LOCAL_MEDIA_JOBS: usize = 2;
 const REMUX_KEYFRAME_WAIT_S: u64 = 10;
 const SNAPSHOT_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[derive(Debug, Clone, Copy)]
+pub struct CameraJobStats {
+    pub active_live_jobs: usize,
+    pub active_local_media_jobs: usize,
+    pub timed_out_live_jobs: usize,
+    pub timed_out_local_media_jobs: usize,
+}
+
 #[derive(Default)]
 struct CameraJobState {
     done: bool,
     timed_out: bool,
+}
+
+pub fn camera_job_stats() -> CameraJobStats {
+    let live = LIVE_CAMERA_JOBS
+        .get_or_init(|| Arc::new(Semaphore::new(MAX_LIVE_CAMERA_JOBS)))
+        .clone();
+    let local = LOCAL_MEDIA_JOBS
+        .get_or_init(|| Arc::new(Semaphore::new(MAX_LOCAL_MEDIA_JOBS)))
+        .clone();
+
+    CameraJobStats {
+        active_live_jobs: MAX_LIVE_CAMERA_JOBS.saturating_sub(live.available_permits()),
+        active_local_media_jobs: MAX_LOCAL_MEDIA_JOBS.saturating_sub(local.available_permits()),
+        timed_out_live_jobs: TIMED_OUT_LIVE_CAMERA_JOBS.load(Ordering::Relaxed),
+        timed_out_local_media_jobs: TIMED_OUT_LOCAL_MEDIA_JOBS.load(Ordering::Relaxed),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -267,7 +291,7 @@ where
     result
 }
 
-fn init_ffmpeg() {
+pub(crate) fn init_ffmpeg() {
     FFMPEG_INIT.call_once(|| {
         ffmpeg::init().expect("ffmpeg init failed");
         format::network::init();
@@ -1081,7 +1105,7 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
     Ok(())
 }
 
-fn safe_stream_label(stream_url: &str) -> String {
+pub(crate) fn safe_stream_label(stream_url: &str) -> String {
     if let Some((scheme, rest)) = stream_url.split_once("://") {
         let host = rest
             .rsplit_once('@')
@@ -1205,7 +1229,7 @@ fn frame_duration_ticks(frame_rate: Rational, time_base: Rational) -> Option<i64
     Some((numerator / denominator).max(1))
 }
 
-fn open_camera_input(stream_url: &str) -> Result<format::context::Input> {
+pub(crate) fn open_camera_input(stream_url: &str) -> Result<format::context::Input> {
     let mut options = Dictionary::new();
 
     if stream_url.starts_with("rtsp://") || stream_url.starts_with("rtsps://") {
@@ -1214,6 +1238,7 @@ fn open_camera_input(stream_url: &str) -> Result<format::context::Input> {
 
     options.set("timeout", "5000000");
     options.set("stimeout", "5000000");
+    options.set("rw_timeout", "5000000");
 
     format::input_with_dictionary(stream_url, options).map_err(|error| {
         anyhow!(
