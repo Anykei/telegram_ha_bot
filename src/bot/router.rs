@@ -1346,9 +1346,13 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                     Payload::Control(ControlPayload::RoomDetail { room }),
                 ));
             }
-            let saved =
-                super::screens::control::sensor_view::saved_chart_payload(&ctx, room, device)
-                    .await?;
+            let saved = super::screens::control::sensor_view::saved_chart_payload(
+                ctx.user_id,
+                room,
+                device,
+                &ctx.config,
+            )
+            .await?;
             let cmd = match saved {
                 Payload::Control(ControlPayload::QuickAction { cmd, .. }) => cmd,
                 _ => DeviceCmd::ShowChart { h: 24, o: 0 },
@@ -1415,7 +1419,10 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                         room, device, state,
                     );
                     let previous = super::screens::control::sensor_view::saved_chart_payload(
-                        &ctx, room, device,
+                        ctx.user_id,
+                        room,
+                        device,
+                        &ctx.config,
                     )
                     .await?;
                     view.kb.inline_keyboard[0][0] = teloxide::types::InlineKeyboardButton::callback(
@@ -1913,7 +1920,7 @@ async fn recording_session_belongs_to_camera(
 
 async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::Result<View> {
     if !ctx.is_admin {
-        return super::screens::common::in_dev_menu(ctx, Payload::Home).await;
+        return Ok(access_denied_view(ctx, Payload::Home));
     }
 
     match payload {

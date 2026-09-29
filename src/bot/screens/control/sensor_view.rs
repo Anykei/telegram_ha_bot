@@ -269,16 +269,15 @@ pub async fn render(
 }
 
 pub async fn saved_chart_payload(
-    ctx: &RenderContext,
+    user_id: u64,
     room: i64,
     device: i64,
+    config: &crate::models::AppConfig,
 ) -> anyhow::Result<Payload> {
-    let saved = crate::db::settings::get_string(
-        &format!("ui:chart:{}:{device}", ctx.user_id),
-        &ctx.config.db,
-    )
-    .await?
-    .and_then(|value| Payload::from_string(&value).ok());
+    let saved =
+        crate::db::settings::get_string(&format!("ui:chart:{user_id}:{device}"), &config.db)
+            .await?
+            .and_then(|value| Payload::from_string(&value).ok());
     if let Some(Payload::Control(ControlPayload::QuickAction {
         device: saved_device,
         cmd: DeviceCmd::ShowChart { h, o },

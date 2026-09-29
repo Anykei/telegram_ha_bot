@@ -88,6 +88,22 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// Background refreshes must not supersede accepted navigation or each other.
+    pub fn try_begin_view_update(
+        &self,
+        user_id: u64,
+    ) -> Option<Arc<tokio_util::sync::CancellationToken>> {
+        use dashmap::mapref::entry::Entry;
+        match self.view_updates.entry(user_id) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(entry) => {
+                let token = Arc::new(tokio_util::sync::CancellationToken::new());
+                entry.insert(token.clone());
+                Some(token)
+            }
+        }
+    }
+
     pub fn begin_view_update(&self, user_id: u64) -> Arc<tokio_util::sync::CancellationToken> {
         let token = Arc::new(tokio_util::sync::CancellationToken::new());
         if let Some(previous) = self.view_updates.insert(user_id, token.clone()) {

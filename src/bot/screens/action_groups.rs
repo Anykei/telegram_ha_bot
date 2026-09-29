@@ -248,12 +248,7 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
     if admin {
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "action_groups.devices_button"),
-            Payload::Admin(AdminPayload::ActionGroupItems {
-                group: group.id,
-                page: 0,
-                filter: db::action_groups::ActionGroupItemsFilter::All,
-            })
-            .to_string(),
+            saved_group_items_payload(&ctx, group.id).await?.to_string(),
         )]);
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "action_groups.schedules_button"),
@@ -500,6 +495,35 @@ pub async fn render_ha_native_detail(
     })
 }
 
+fn group_items_key(user: u64, group: i64) -> String {
+    format!("ui:group-items:{user}:{group}")
+}
+
+async fn saved_group_items_payload(ctx: &RenderContext, group: i64) -> Result<Payload> {
+    let saved = db::settings::get_string(&group_items_key(ctx.user_id, group), &ctx.config.db)
+        .await?
+        .and_then(|value| Payload::from_string(&value).ok());
+    if let Some(Payload::Admin(AdminPayload::ActionGroupItems {
+        group: saved_group,
+        page,
+        filter,
+    })) = saved
+    {
+        if saved_group == group {
+            return Ok(Payload::Admin(AdminPayload::ActionGroupItems {
+                group,
+                page,
+                filter,
+            }));
+        }
+    }
+    Ok(Payload::Admin(AdminPayload::ActionGroupItems {
+        group,
+        page: 0,
+        filter: db::action_groups::ActionGroupItemsFilter::All,
+    }))
+}
+
 pub async fn render_group_items(
     ctx: RenderContext,
     group_id: i64,
@@ -619,6 +643,17 @@ pub async fn render_group_items(
         Payload::Admin(AdminPayload::ActionGroupDetail { group: group.id }),
     )]);
 
+    let payload = Payload::Admin(AdminPayload::ActionGroupItems {
+        group: group.id,
+        page: page as u16,
+        filter,
+    });
+    db::settings::set_string(
+        &group_items_key(ctx.user_id, group.id),
+        &payload.to_string(),
+        &ctx.config.db,
+    )
+    .await?;
     Ok(View {
         header: Some(t(ctx.lang, "action_groups.devices_title").to_string()),
         notifications: ctx.notifications,
@@ -636,11 +671,7 @@ pub async fn render_group_items(
             total_pages
         ),
         kb: InlineKeyboardMarkup::new(rows),
-        payload: Payload::Admin(AdminPayload::ActionGroupItems {
-            group: group.id,
-            page: page as u16,
-            filter,
-        }),
+        payload,
         ..Default::default()
     })
 }

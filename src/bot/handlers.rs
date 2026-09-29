@@ -1643,9 +1643,27 @@ pub async fn render_current_view(
     let payload = Payload::from_string(context)
         .context("Context decoding failed")?
         .for_refresh();
-    let view = router(payload, user_id, config.clone()).await?;
-
-    update_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+    let token = config.begin_view_update(user_id);
+    let result = async {
+        let view = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Ok(()),
+            result = router(payload, user_id, config.clone()) => result?,
+        };
+        update_view_cancellable(
+            bot,
+            chat_id,
+            message_id,
+            user_id,
+            view,
+            config.clone(),
+            Some(&token),
+        )
+        .await
+    }
+    .await;
+    config.finish_view_update(user_id, &token);
+    result
 }
 
 /// Фоновое live-обновление: только редактирует существующее сообщение.
@@ -1658,9 +1676,25 @@ pub async fn refresh_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
-    if config.view_updates.contains_key(&user_id) {
+    let Some(token) = config.try_begin_view_update(user_id) else {
         return Ok(());
-    }
+    };
+    let result =
+        refresh_current_view_inner(bot, config, user_id, chat_id, message_id, context, &token)
+            .await;
+    config.finish_view_update(user_id, &token);
+    result
+}
+
+async fn refresh_current_view_inner(
+    bot: &Bot,
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    context: &str,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
     if !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before render for user {} context {}",
@@ -1678,15 +1712,17 @@ pub async fn refresh_current_view(
     if payload.is_chart_navigation() {
         return Ok(());
     }
-    let view = router(payload, user_id, config.clone()).await?;
+    let view = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Ok(()),
+        result = router(payload, user_id, config.clone()) => result?,
+    };
     let payload_str = view.payload.to_string();
     let text = view.get_text();
     let ui_lock = config.ui_lock_for(user_id);
     let _guard = ui_lock.lock().await;
 
-    if config.view_updates.contains_key(&user_id)
-        || !is_current_session(config, user_id, message_id, context)
-    {
+    if token.is_cancelled() || !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before edit for user {} context {}",
             user_id,
@@ -1695,7 +1731,17 @@ pub async fn refresh_current_view(
         return Ok(());
     }
 
-    match edit_existing_view(bot, config, user_id, chat_id, message_id, &view, &text).await {
+    let result = edit_existing_view(bot, config, user_id, chat_id, message_id, &view, &text).await;
+    if token.is_cancelled() {
+        // Telegram may already have applied the edit; the UI lock keeps a newer
+        // screen from being sent until this response is resolved. Never commit
+        // the old context or recreate a missing message after cancellation.
+        if let Err(RequestError::RetryAfter(retry_after)) = &result {
+            block_user_ui_refresh(config, user_id, retry_after.chrono_duration());
+        }
+        return Ok(());
+    }
+    match result {
         Ok(EditViewResult::Updated(mode)) => {
             crate::core::update_user_state_with_mode(
                 config,
@@ -1709,7 +1755,16 @@ pub async fn refresh_current_view(
         }
         Ok(EditViewResult::NotModified) => Ok(()),
         Ok(EditViewResult::ModeChanged) => {
-            reanchor_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+            reanchor_view_cancellable(
+                bot,
+                chat_id,
+                message_id,
+                user_id,
+                view,
+                config.clone(),
+                Some(token),
+            )
+            .await
         }
         Ok(EditViewResult::MessageMissing) => {
             log::warn!(
@@ -1732,7 +1787,16 @@ pub async fn refresh_current_view(
         }
         Err(e) => {
             log_telegram_refresh_error("Live refresh", user_id, &e);
-            reanchor_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+            reanchor_view_cancellable(
+                bot,
+                chat_id,
+                message_id,
+                user_id,
+                view,
+                config.clone(),
+                Some(token),
+            )
+            .await
         }
     }
 }
@@ -1764,7 +1828,19 @@ pub async fn update_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> anyhow::Result<()> {
-    update_view_cancellable(bot, chat_id, message_id, user_id, view, config, None).await
+    let token = config.begin_view_update(user_id);
+    let result = update_view_cancellable(
+        bot,
+        chat_id,
+        message_id,
+        user_id,
+        view,
+        config.clone(),
+        Some(&token),
+    )
+    .await;
+    config.finish_view_update(user_id, &token);
+    result
 }
 
 pub(crate) async fn update_view_cancellable(
@@ -1991,17 +2067,6 @@ async fn edit_existing_view(
         Err(e) if is_missing_message_error(&e) => Ok(EditViewResult::MessageMissing),
         Err(e) => Err(e),
     }
-}
-
-async fn reanchor_view(
-    bot: &Bot,
-    chat_id: ChatId,
-    old_message_id: MessageId,
-    user_id: u64,
-    view: View,
-    config: Arc<AppConfig>,
-) -> Result<()> {
-    reanchor_view_cancellable(bot, chat_id, old_message_id, user_id, view, config, None).await
 }
 
 async fn reanchor_view_cancellable(
@@ -2237,11 +2302,18 @@ pub async fn handle_custom_interval(
     if let Some(hours) = text.parse::<u32>().ok().filter(|hours| {
         (1..=crate::bot::screens::control::sensor_view::MAX_PERIOD_HOURS).contains(hours)
     }) {
-        let new_payload = Payload::Control(crate::bot::router::ControlPayload::QuickAction {
-            room: room_id,
-            device: device_id,
-            cmd: crate::bot::router::DeviceCmd::ShowChart { h: hours, o: 0 },
-        });
+        let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+        let mut new_payload = crate::bot::screens::control::sensor_view::saved_chart_payload(
+            user_id, room_id, device_id, &config,
+        )
+        .await?;
+        if let Payload::Control(crate::bot::router::ControlPayload::QuickAction {
+            cmd: crate::bot::router::DeviceCmd::ShowChart { h, .. },
+            ..
+        }) = &mut new_payload
+        {
+            *h = hours;
+        }
 
         // Завершаем диалог с ПЕРЕХОДОМ на новый график
         return finalize_dialogue(bot, dialogue, msg, config, Some(new_payload)).await;

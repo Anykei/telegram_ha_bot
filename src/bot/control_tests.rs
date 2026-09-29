@@ -16,6 +16,9 @@ struct FakeHa {
     empty_history: AtomicBool,
     fail_write: AtomicBool,
     stale_temperature: AtomicBool,
+    pause_next_read: AtomicBool,
+    read_started: tokio::sync::Notify,
+    release_read: tokio::sync::Notify,
     pause_next_write: AtomicBool,
     write_started: tokio::sync::Notify,
     release_write: tokio::sync::Notify,
@@ -37,14 +40,19 @@ impl HomeAssistantClient for FakeHa {
     async fn fetch_states_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Entity>> {
         self.state_reads.fetch_add(1, Ordering::SeqCst);
         anyhow::ensure!(!self.fail_read.load(Ordering::SeqCst), "HA offline");
-        Ok(self
+        let states = self
             .states
             .lock()
             .unwrap()
             .iter()
             .filter(|e| ids.contains(&e.entity_id))
             .cloned()
-            .collect())
+            .collect();
+        if self.pause_next_read.swap(false, Ordering::SeqCst) {
+            self.read_started.notify_one();
+            self.release_read.notified().await;
+        }
+        Ok(states)
     }
     async fn fetch_history(
         &self,
@@ -1853,5 +1861,338 @@ fn legacy_callback_bytes_and_dialogue_state_keep_their_meaning() -> anyhow::Resu
             room_id: 1
         }
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_refresh_cannot_overwrite_a_newer_visit_to_the_same_screen() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let context =
+        Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 }).to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    ha.pause_next_read.store(true, Ordering::SeqCst);
+    let (bot, mut server) = mock_telegram_edits(vec![(200, telegram_message(7, true))]).await?;
+    let job = {
+        let config = config.clone();
+        let context = context.clone();
+        tokio::spawn(async move {
+            crate::bot::handlers::refresh_current_view(
+                &bot,
+                &config,
+                42,
+                teloxide::types::ChatId(42),
+                teloxide::types::MessageId(7),
+                &context,
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ha.read_started.notified(),
+    )
+    .await?;
+    config.cancel_view_update(42);
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &Payload::Home.to_string(),
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let token = config.begin_view_update(42);
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    config.finish_view_update(42, &token);
+    ha.release_read.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), job).await???;
+    let response = tokio::time::timeout(std::time::Duration::from_millis(100), &mut server).await;
+    server.abort();
+    assert!(
+        response.is_err(),
+        "An old HA response was uploaded over a newer visit to the same screen"
+    );
+    assert_eq!(config.sessions.get(&42).unwrap().current_context, context);
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_live_refresh_cannot_clear_session_after_telegram_missing_message(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let context = Payload::Control(ControlPayload::RoomDetail { room: 1 }).to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (bot, server) = mock_telegram_responses(
+        vec![(
+            400,
+            serde_json::json!({"ok":false,
+        "error_code":400,"description":"Bad Request: message to edit not found"}),
+        )],
+        Some((started.clone(), release.clone())),
+    )
+    .await?;
+    let job = {
+        let config = config.clone();
+        tokio::spawn(async move {
+            crate::bot::handlers::refresh_current_view(
+                &bot,
+                &config,
+                42,
+                teloxide::types::ChatId(42),
+                teloxide::types::MessageId(7),
+                &context,
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified()).await?;
+    let latest = config.begin_view_update(42);
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), job).await???;
+    assert_eq!(server.await??.len(), 1);
+    assert!(config.sessions.contains_key(&42));
+    assert!(Arc::ptr_eq(&config.view_updates.get(&42).unwrap(), &latest));
+    assert!(!latest.is_cancelled());
+    assert!(ha.calls.lock().unwrap().is_empty());
+    config.finish_view_update(42, &latest);
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_live_refresh_does_not_supersede_loading_screen() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let context = Payload::Control(ControlPayload::RoomDetail { room: 1 }).to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let token = config.begin_view_update(42);
+    let (bot, server) = mock_telegram_edits(vec![]).await?;
+    crate::bot::handlers::refresh_current_view(
+        &bot,
+        &config,
+        42,
+        teloxide::types::ChatId(42),
+        teloxide::types::MessageId(7),
+        &context,
+    )
+    .await?;
+    assert!(server.await??.is_empty());
+    assert_eq!(ha.state_reads.load(Ordering::SeqCst), 0);
+    assert!(Arc::ptr_eq(&config.view_updates.get(&42).unwrap(), &token));
+    assert!(!token.is_cancelled());
+    config.finish_view_update(42, &token);
+    Ok(())
+}
+
+#[tokio::test]
+async fn group_items_restore_filter_page_and_keep_admin_access() -> anyhow::Result<()> {
+    use db::action_groups::ActionGroupItemsFilter;
+    let (config, ha) = setup().await?;
+    let group = db::action_groups::create_action_group("Свет", &config.db).await?;
+    for n in 0..12 {
+        let entity_id = format!("light.extra_{n:02}");
+        db::devices::sync_device(
+            &entity_id,
+            "bedroom",
+            &format!("Свет {n}"),
+            "light",
+            &config.db,
+        )
+        .await?;
+        let device_id: i64 = sqlx::query_scalar("SELECT id FROM devices WHERE entity_id = ?")
+            .bind(&entity_id)
+            .fetch_one(&config.db)
+            .await?;
+        db::action_groups::toggle_action_group_item(group, device_id, &config.db).await?;
+        ha.states.lock().unwrap().push(entity(&entity_id, "off"));
+    }
+    let selection = Payload::Admin(AdminPayload::ActionGroupItems {
+        group,
+        page: 1,
+        filter: ActionGroupItemsFilter::Selected,
+    });
+    let selected = router(selection.clone(), config.root_user, config.clone()).await?;
+    assert_eq!(selected.payload, selection);
+    let back = callbacks(&selected)
+        .into_iter()
+        .find(|p| matches!(p, Payload::Admin(AdminPayload::ActionGroupDetail { .. })))
+        .unwrap();
+    let detail = router(back.clone(), config.root_user, config.clone()).await?;
+    assert!(callbacks(&detail).contains(&selection));
+    let returned = router(selection.clone(), config.root_user, config.clone()).await?;
+    assert_eq!(callbacks(&returned), callbacks(&selected));
+    let denied = router(selection, 42, config.clone()).await?;
+    assert!(denied.alert.is_some());
+    assert!(
+        db::settings::get_string(&format!("ui:group-items:42:{group}"), &config.db)
+            .await?
+            .is_none()
+    );
+    // Changing the filter is still an explicit choice, even after restoring Selected.
+    let all = Payload::Admin(AdminPayload::ActionGroupItems {
+        group,
+        page: 0,
+        filter: ActionGroupItemsFilter::All,
+    });
+    router(all.clone(), config.root_user, config.clone()).await?;
+    let detail = router(back, config.root_user, config.clone()).await?;
+    assert!(callbacks(&detail).contains(&all));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_graph_interval_keeps_viewed_date_without_changing_dialogue_format(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    ha.empty_history.store(true, Ordering::SeqCst);
+    let previous = open(
+        &config,
+        ControlPayload::QuickAction {
+            room: 1,
+            device: 2,
+            cmd: DeviceCmd::ShowChart { h: 72, o: -48 },
+        },
+    )
+    .await?;
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &previous.payload.to_string(),
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let chat = teloxide::types::ChatId(42);
+    let dialogue = crate::bot::handlers::MyDialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::new(),
+        chat,
+    );
+    dialogue
+        .update(State::WaitingForGraphInterval {
+            room_id: 1,
+            device_id: 2,
+        })
+        .await?;
+    let message: teloxide::types::Message = serde_json::from_value(serde_json::json!({
+        "message_id": 9, "date": 1_700_000_000, "chat": {"id":42,"type":"private"},
+        "from": {"id":42,"is_bot":false,"first_name":"Test"}, "text":"48",
+    }))?;
+    let (bot, server) = mock_telegram_edits(vec![
+        (200, serde_json::json!({"ok":true,"result":true})),
+        (200, telegram_message(7, true)),
+    ])
+    .await?;
+    crate::bot::handlers::handle_custom_interval(
+        bot,
+        message,
+        config.clone(),
+        dialogue.clone(),
+        (2, 1),
+    )
+    .await?;
+    assert_eq!(server.await??.len(), 2);
+    assert!(dialogue.get().await?.is_none());
+    assert_eq!(
+        ha.history_requests.lock().unwrap().as_slice(),
+        &[(72, -48), (48, -48)]
+    );
+    assert_eq!(
+        Payload::from_string(&config.sessions.get(&42).unwrap().current_context)?,
+        Payload::Control(ControlPayload::QuickAction {
+            room: 1,
+            device: 2,
+            cmd: DeviceCmd::ShowChart { h: 48, o: -48 }
+        })
+    );
+    assert!(ha.calls.lock().unwrap().is_empty());
+    assert!(!config.view_updates.contains_key(&42));
+    Ok(())
+}
+
+#[tokio::test]
+async fn foreground_result_supersedes_a_loading_live_refresh_of_the_same_card() -> anyhow::Result<()>
+{
+    let (config, ha) = setup().await?;
+    let payload = Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 });
+    let context = payload.to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    ha.pause_next_read.store(true, Ordering::SeqCst);
+    let (bot, server) = mock_telegram_edits(vec![(200, telegram_message(7, true))]).await?;
+    let job = {
+        let config = config.clone();
+        let bot = bot.clone();
+        tokio::spawn(async move {
+            crate::bot::handlers::refresh_current_view(
+                &bot,
+                &config,
+                42,
+                teloxide::types::ChatId(42),
+                teloxide::types::MessageId(7),
+                &context,
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ha.read_started.notified(),
+    )
+    .await?;
+    crate::bot::handlers::update_view(
+        &bot,
+        teloxide::types::ChatId(42),
+        teloxide::types::MessageId(7),
+        42,
+        View {
+            compact: true,
+            text: "Температура: 23°".into(),
+            payload,
+            ..Default::default()
+        },
+        config.clone(),
+    )
+    .await?;
+    ha.release_read.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), job).await???;
+    assert_eq!(server.await??.len(), 1);
+    assert!(!config.view_updates.contains_key(&42));
+    assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
 }
