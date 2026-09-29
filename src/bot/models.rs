@@ -22,10 +22,15 @@ pub struct View {
     pub compact: bool,
     #[serde(default)]
     pub rendered_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub text_page: Option<super::text_pages::TextPage>,
 }
 
 impl View {
     pub fn get_text(&self) -> String {
+        if self.text_page.is_some() {
+            return super::utils::md::plain(&self.get_plain_text());
+        }
         if self.compact {
             return super::utils::md::plain(&self.get_compact_text());
         }
@@ -106,6 +111,13 @@ impl View {
     }
 
     pub fn get_plain_text(&self) -> String {
+        if let Some(page) = self.text_page {
+            return super::text_pages::page_text(self, page.page);
+        }
+        self.get_full_plain_text()
+    }
+
+    pub(crate) fn get_full_plain_text(&self) -> String {
         if self.compact {
             return self.get_compact_text();
         }

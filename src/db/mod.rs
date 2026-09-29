@@ -16,6 +16,7 @@ pub(crate) mod rooms;
 pub(crate) mod settings;
 pub(crate) mod subscriptions;
 pub(crate) mod ui_confirmations;
+pub(crate) mod ui_text_pages;
 mod user;
 pub(crate) mod user_notification_schedule;
 

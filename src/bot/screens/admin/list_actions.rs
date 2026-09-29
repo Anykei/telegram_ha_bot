@@ -266,10 +266,26 @@ pub async fn render_camera_rooms(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<View> {
+    render_room_cameras_page(ctx, room_id, None).await
+}
+
+pub async fn render_room_cameras_page(
+    ctx: RenderContext,
+    room_id: i64,
+    requested: Option<u16>,
+) -> Result<View> {
+    use crate::bot::screens::common;
     let room = crate::db::rooms::get_room_by_id(room_id, &ctx.config.db)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Room not found"))?;
     let cameras = crate::db::cameras::list_room_cameras(room_id, &ctx.config.db).await?;
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Admin(AdminPayload::RoomCameras { room: room_id }),
+        requested,
+        cameras.len(),
+    )
+    .await?;
     let mut rows = vec![
         vec![InlineKeyboardButton::callback(
             "➕ Добавить камеру",
@@ -281,7 +297,11 @@ pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<Vie
         )],
     ];
 
-    for camera in &cameras {
+    for camera in cameras
+        .iter()
+        .skip(page * common::LIST_PAGE_SIZE)
+        .take(common::LIST_PAGE_SIZE)
+    {
         rows.push(vec![
             InlineKeyboardButton::callback(
                 format!(
@@ -305,6 +325,15 @@ pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<Vie
         ]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Admin(AdminPayload::RoomCamerasPage {
+            room: room_id,
+            page,
+        })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Admin(AdminPayload::CameraRooms),

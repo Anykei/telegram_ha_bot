@@ -6,13 +6,29 @@ use chrono::Utc;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 pub async fn render_list(ctx: RenderContext) -> Result<View> {
+    render_list_page(ctx, None).await
+}
+
+pub async fn render_list_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use super::common;
     let cameras =
         crate::db::cameras::list_accessible_cameras(ctx.user_id, ctx.is_admin, &ctx.config.db)
             .await?;
     let cameras_empty = cameras.is_empty();
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Camera(CameraPayload::ListCameras),
+        requested,
+        cameras.len(),
+    )
+    .await?;
     let mut rows = Vec::new();
 
-    for camera in cameras {
+    for camera in cameras
+        .into_iter()
+        .skip(page * common::LIST_PAGE_SIZE)
+        .take(common::LIST_PAGE_SIZE)
+    {
         let label = if ctx.is_admin {
             format!("📹 #{} {}", camera.id, camera.name)
         } else {
@@ -29,6 +45,12 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
         Payload::Camera(CameraPayload::RecordingGroupModes).to_string(),
     )]);
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Camera(CameraPayload::ListCamerasPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Home,
@@ -51,20 +73,45 @@ pub async fn render_list(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn render_recording_group_modes(ctx: RenderContext) -> Result<View> {
+    render_recording_group_modes_page(ctx, None).await
+}
+
+pub async fn render_recording_group_modes_page(
+    ctx: RenderContext,
+    requested: Option<u16>,
+) -> Result<View> {
+    use super::common;
     let groups = crate::db::camera_recording_rule_groups::list_groups_visible_to_user(
         ctx.user_id,
         ctx.config.root_user,
         &ctx.config.db,
     )
     .await?;
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Camera(CameraPayload::RecordingGroupModes),
+        requested,
+        groups.len(),
+    )
+    .await?;
     let mut rows = Vec::new();
-    for group in &groups {
+    for group in groups
+        .iter()
+        .skip(page * common::LIST_PAGE_SIZE)
+        .take(common::LIST_PAGE_SIZE)
+    {
         let icon = if group.is_enabled() { "✅" } else { "⏸" };
         rows.push(vec![InlineKeyboardButton::callback(
             format!("{} {} · {} правил", icon, group.name, group.rules_count),
             Payload::Camera(CameraPayload::RecordingGroupModeDetail { group: group.id })
                 .to_string(),
         )]);
+    }
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Camera(CameraPayload::RecordingGroupModesPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
     }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,

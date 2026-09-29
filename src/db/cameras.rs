@@ -66,7 +66,7 @@ pub async fn list_room_cameras(room_id: i64, pool: &SqlitePool) -> Result<Vec<Ca
         SELECT id, name, room_id, stream_url, snapshot_url, clip_seconds
         FROM cameras
         WHERE room_id = ? AND enabled != 0
-        ORDER BY name
+        ORDER BY name, id
         "#,
     )
     .bind(room_id)
@@ -80,7 +80,7 @@ pub async fn list_enabled_cameras(pool: &SqlitePool) -> Result<Vec<Camera>> {
         SELECT id, name, room_id, stream_url, snapshot_url, clip_seconds
         FROM cameras
         WHERE enabled != 0
-        ORDER BY name
+        ORDER BY name, id
         "#,
     )
     .fetch_all(pool)
@@ -175,7 +175,7 @@ pub async fn list_accessible_cameras(
         SELECT id, name, room_id, stream_url, snapshot_url, clip_seconds
         FROM cameras
         WHERE enabled != 0
-        ORDER BY name
+        ORDER BY name, id
         "#,
     )
     .fetch_all(pool)

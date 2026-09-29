@@ -219,7 +219,7 @@ pub async fn list_action_groups(pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
         LEFT JOIN action_schedules s
           ON s.target_type = 'bot_group' AND s.target_id = g.id
         GROUP BY g.id
-        ORDER BY g.name COLLATE NOCASE
+        ORDER BY g.name COLLATE NOCASE, g.id
         "#,
         pool,
     )
@@ -247,7 +247,7 @@ pub async fn list_visible_action_groups(
         WHERE g.access_scope = 'all_users'
           AND g.enabled = 1
         GROUP BY g.id
-        ORDER BY g.name COLLATE NOCASE
+        ORDER BY g.name COLLATE NOCASE, g.id
         "#,
     )
     .fetch_all(pool)
@@ -553,7 +553,7 @@ pub async fn list_ha_native_targets(pool: &SqlitePool) -> Result<Vec<HaNativeTar
         LEFT JOIN action_schedules s
           ON s.target_type = 'ha_native' AND s.target_id = h.id
         GROUP BY h.id
-        ORDER BY h.archived ASC, COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE
+        ORDER BY h.archived ASC, COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE, h.id
         "#,
     )
     .fetch_all(pool)
@@ -580,7 +580,7 @@ pub async fn list_visible_ha_native_targets(
           AND h.enabled = 1
           AND h.archived = 0
         GROUP BY h.id
-        ORDER BY COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE
+        ORDER BY COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE, h.id
         "#,
     )
     .fetch_all(pool)

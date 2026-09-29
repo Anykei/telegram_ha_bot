@@ -218,6 +218,10 @@ pub enum Payload {
     InDev,
     Command(CommandPayload),
     AdminSettings(SettingsPayload),
+    TextPage {
+        screen: i64,
+        page: u16,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -264,6 +268,9 @@ pub enum ControlPayload {
     },
     RoomPage {
         room: i64,
+        page: u16,
+    },
+    ActionGroupsPage {
         page: u16,
     },
 }
@@ -327,6 +334,12 @@ pub enum CameraPayload {
     RecordingArchivePage {
         camera: i64,
         filter: String,
+        page: u16,
+    },
+    ListCamerasPage {
+        page: u16,
+    },
+    RecordingGroupModesPage {
         page: u16,
     },
 }
@@ -906,6 +919,13 @@ pub enum AdminPayload {
     ToggleUserQuietHours {
         id: u64,
     },
+    ActionGroupsPage {
+        page: u16,
+    },
+    RoomCamerasPage {
+        room: i64,
+        page: u16,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -993,6 +1013,7 @@ impl Payload {
             Self::Home
                 | Self::Control(
                     ControlPayload::ListRooms
+                        | ControlPayload::ActionGroupsPage { .. }
                         | ControlPayload::RoomDetail { .. }
                         | ControlPayload::RoomsPage { .. }
                         | ControlPayload::RoomPage { .. }
@@ -1002,6 +1023,8 @@ impl Payload {
                 )
                 | Self::Camera(
                     CameraPayload::ListCameras
+                        | CameraPayload::ListCamerasPage { .. }
+                        | CameraPayload::RecordingGroupModesPage { .. }
                         | CameraPayload::CameraDetail { .. }
                         | CameraPayload::RecordingArchive { .. }
                         | CameraPayload::RecordingArchiveFiltered { .. }
@@ -1055,6 +1078,9 @@ pub async fn router(
     user_id: u64,
     config: Arc<AppConfig>,
 ) -> anyhow::Result<View> {
+    if let Payload::TextPage { screen, page } = payload {
+        return super::text_pages::render(screen, page, user_id, config).await;
+    }
     let notifications = config.get_header_data(user_id).await;
     // let notifications = super::view::format_header(header_data);
     let is_admin = config.root_user == user_id;
@@ -1102,6 +1128,7 @@ pub async fn router(
             )
         }
         Ok(None) => match payload {
+            Payload::TextPage { .. } => unreachable!("handled before routing"),
             Payload::Home => super::screens::home::render(ctx).await?,
             Payload::Control(sub_payload) => router_control(ctx, sub_payload).await?,
             Payload::Settings(sub_payload) => router_settings(ctx, sub_payload).await?,
@@ -1159,6 +1186,7 @@ pub async fn router(
     }
     view.lang = final_lang;
     view.rendered_at = Some(chrono::Utc::now());
+    super::text_pages::prepare(&mut view, user_id, &config).await?;
     Ok(view)
 }
 
@@ -1284,6 +1312,9 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
         }
         ControlPayload::ListRooms => {
             Ok(super::screens::rooms::render(ctx, RoomViewMode::Control).await?)
+        }
+        ControlPayload::ActionGroupsPage { page } => {
+            super::screens::action_groups::render_user_list_page(ctx, Some(page)).await
         }
         ControlPayload::ActionGroups => {
             Ok(super::screens::action_groups::render_user_list(ctx).await?)
@@ -1494,6 +1525,12 @@ fn access_denied_view(ctx: RenderContext, back_payload: Payload) -> View {
 async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Result<View> {
     match payload {
         CameraPayload::ListCameras => Ok(super::screens::cameras::render_list(ctx).await?),
+        CameraPayload::ListCamerasPage { page } => {
+            super::screens::cameras::render_list_page(ctx, Some(page)).await
+        }
+        CameraPayload::RecordingGroupModesPage { page } => {
+            super::screens::cameras::render_recording_group_modes_page(ctx, Some(page)).await
+        }
         CameraPayload::CameraDetail { id }
         | CameraPayload::Snapshot { id }
         | CameraPayload::Clip { id, .. } => {
@@ -1924,6 +1961,8 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
     }
 
     match payload {
+        AdminPayload::ActionGroupsPage { page } => super::screens::action_groups::render_admin_list_page(ctx, Some(page)).await,
+        AdminPayload::RoomCamerasPage { room, page } => super::screens::admin::list_actions::render_room_cameras_page(ctx, room, Some(page)).await,
         AdminPayload::ListActions => Ok(super::screens::admin::list_actions::render(ctx).await?),
         AdminPayload::ListUsers => {
             Ok(super::screens::admin::list_actions::render_users(ctx).await?)
@@ -4475,6 +4514,10 @@ mod tests {
     fn all_router_payload_samples() -> Vec<Payload> {
         let mut payloads = vec![
             Payload::Home,
+            Payload::TextPage {
+                screen: i64::MAX,
+                page: u16::MAX,
+            },
             Payload::InDev,
             Payload::Command(CommandPayload::Confirm { id: 1 }),
             Payload::Command(CommandPayload::Cancel { id: 1 }),
@@ -4506,6 +4549,7 @@ mod tests {
                 room: i64::MAX,
                 page: u16::MAX,
             },
+            ControlPayload::ActionGroupsPage { page: u16::MAX },
             ControlPayload::ListRooms,
             ControlPayload::RoomDetail { room: 1 },
             ControlPayload::DeviceControl { room: 1, device: 2 },
@@ -4600,6 +4644,8 @@ mod tests {
                 filter: "rule:9223372036854775807".into(),
                 page: u16::MAX,
             },
+            CameraPayload::ListCamerasPage { page: u16::MAX },
+            CameraPayload::RecordingGroupModesPage { page: u16::MAX },
             CameraPayload::ListCameras,
             CameraPayload::CameraDetail { id: 1 },
             CameraPayload::Snapshot { id: 1 },
@@ -4646,6 +4692,11 @@ mod tests {
 
     fn admin_payload_samples() -> Vec<AdminPayload> {
         let mut payloads = vec![
+            AdminPayload::ActionGroupsPage { page: u16::MAX },
+            AdminPayload::RoomCamerasPage {
+                room: i64::MAX,
+                page: u16::MAX,
+            },
             AdminPayload::ListActions,
             AdminPayload::ListUsers,
             AdminPayload::Status,
@@ -5049,6 +5100,7 @@ mod tests {
 
     fn payload_route_name(payload: &Payload) -> &'static str {
         match payload {
+            Payload::TextPage { .. } => "Payload::TextPage",
             Payload::Home => "Payload::Home",
             Payload::Control(payload) => control_route_name(payload),
             Payload::Settings(payload) => settings_route_name(payload),
@@ -5074,6 +5126,7 @@ mod tests {
             ControlPayload::CancelAction { .. } => "ControlPayload::CancelAction",
             ControlPayload::RoomsPage { .. } => "ControlPayload::RoomsPage",
             ControlPayload::RoomPage { .. } => "ControlPayload::RoomPage",
+            ControlPayload::ActionGroupsPage { .. } => "ControlPayload::ActionGroupsPage",
             ControlPayload::ListRooms => "ControlPayload::ListRooms",
             ControlPayload::RoomDetail { .. } => "ControlPayload::RoomDetail",
             ControlPayload::DeviceControl { .. } => "ControlPayload::DeviceControl",
@@ -5107,6 +5160,10 @@ mod tests {
     fn camera_route_name(payload: &CameraPayload) -> &'static str {
         match payload {
             CameraPayload::RecordingArchivePage { .. } => "CameraPayload::RecordingArchivePage",
+            CameraPayload::ListCamerasPage { .. } => "CameraPayload::ListCamerasPage",
+            CameraPayload::RecordingGroupModesPage { .. } => {
+                "CameraPayload::RecordingGroupModesPage"
+            }
             CameraPayload::ListCameras => "CameraPayload::ListCameras",
             CameraPayload::CameraDetail { .. } => "CameraPayload::CameraDetail",
             CameraPayload::Snapshot { .. } => "CameraPayload::Snapshot",
@@ -5134,6 +5191,8 @@ mod tests {
 
     fn admin_route_name(payload: &AdminPayload) -> &'static str {
         match payload {
+            AdminPayload::ActionGroupsPage { .. } => "AdminPayload::ActionGroupsPage",
+            AdminPayload::RoomCamerasPage { .. } => "AdminPayload::RoomCamerasPage",
             AdminPayload::ListActions => "AdminPayload::ListActions",
             AdminPayload::ListUsers => "AdminPayload::ListUsers",
             AdminPayload::Status => "AdminPayload::Status",

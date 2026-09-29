@@ -7,6 +7,7 @@ pub(crate) mod recording_rule_wizard;
 pub(crate) mod router;
 mod screens;
 pub(crate) mod text_commands;
+pub(crate) mod text_pages;
 pub(crate) mod utils;
 
 pub(crate) use crate::bot::router::State;

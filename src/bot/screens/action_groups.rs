@@ -8,6 +8,11 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 const ITEMS_PAGE_SIZE: usize = 8;
 
 pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
+    render_user_list_page(ctx, None).await
+}
+
+pub async fn render_user_list_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use super::common;
     let mut sync_alert = None;
     if let Err(error) = crate::core::action_groups::sync_ha_native_targets(&ctx.config).await {
         sync_alert = Some(format!(
@@ -22,8 +27,19 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
     let targets =
         db::action_groups::list_visible_ha_native_targets(ctx.is_admin, &ctx.config.db).await?;
 
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Control(ControlPayload::ActionGroups),
+        requested,
+        groups.len() + targets.len(),
+    )
+    .await?;
+    let visible = page * common::LIST_PAGE_SIZE..(page + 1) * common::LIST_PAGE_SIZE;
     let mut rows = Vec::new();
-    for group in &groups {
+    for (index, group) in groups.iter().enumerate() {
+        if !visible.contains(&index) {
+            continue;
+        }
         let state = crate::core::action_groups::aggregate_group_state(
             group.id,
             ctx.user_id,
@@ -38,7 +54,10 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
+        if !visible.contains(&(groups.len() + index)) {
+            continue;
+        }
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "{} {} · {}",
@@ -51,6 +70,12 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Control(ControlPayload::ActionGroupsPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Home,
@@ -84,6 +109,11 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
+    render_admin_list_page(ctx, None).await
+}
+
+pub async fn render_admin_list_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use super::common;
     let mut sync_alert = None;
     if let Err(error) = crate::core::action_groups::sync_ha_native_targets(&ctx.config).await {
         sync_alert = Some(format!(
@@ -96,12 +126,23 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
     let groups = db::action_groups::list_action_groups(&ctx.config.db).await?;
     let targets = db::action_groups::list_ha_native_targets(&ctx.config.db).await?;
 
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Admin(AdminPayload::ActionGroups),
+        requested,
+        groups.len() + targets.len(),
+    )
+    .await?;
+    let visible = page * common::LIST_PAGE_SIZE..(page + 1) * common::LIST_PAGE_SIZE;
     let mut rows = vec![vec![InlineKeyboardButton::callback(
         t(ctx.lang, "action_groups.create_group"),
         Payload::Admin(AdminPayload::PromptCreateActionGroup).to_string(),
     )]];
 
-    for group in &groups {
+    for (index, group) in groups.iter().enumerate() {
+        if !visible.contains(&index) {
+            continue;
+        }
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "💡 {} · {} {} · {}",
@@ -114,7 +155,10 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
+        if !visible.contains(&(groups.len() + index)) {
+            continue;
+        }
         let archived = if target.is_archived() {
             t(ctx.lang, "action_groups.not_found_suffix")
         } else {
@@ -133,6 +177,12 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Admin(AdminPayload::ActionGroupsPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Admin(AdminPayload::ListActions),

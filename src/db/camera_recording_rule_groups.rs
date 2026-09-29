@@ -81,7 +81,7 @@ pub async fn list_groups(pool: &SqlitePool) -> Result<Vec<RecordingRuleGroup>> {
         LEFT JOIN camera_recording_rule_group_items i ON i.group_id = g.id
         LEFT JOIN camera_recording_rules r ON r.id = i.rule_id AND r.deleted_at IS NULL
         GROUP BY g.id, g.name, g.enabled, g.access_scope, g.created_at
-        ORDER BY g.name
+        ORDER BY g.name, g.id
         "#,
     )
     .fetch_all(pool)
@@ -269,7 +269,7 @@ pub async fn list_groups_visible_to_user(
         LEFT JOIN camera_recording_rules r ON r.id = i.rule_id AND r.deleted_at IS NULL
         WHERE g.access_scope = 'all_users'
         GROUP BY g.id, g.name, g.enabled, g.access_scope, g.created_at
-        ORDER BY g.name
+        ORDER BY g.name, g.id
         "#,
     )
     .fetch_all(pool)

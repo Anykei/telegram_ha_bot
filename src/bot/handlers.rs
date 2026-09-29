@@ -29,7 +29,6 @@ pub type MyDialogue = Dialogue<State, InMemStorage<State>>;
 const TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES: u64 = 50_000_000;
 const TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES: u64 = 500_000;
 const TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS: usize = 1024;
-const TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditViewResult {
@@ -1709,7 +1708,7 @@ async fn refresh_current_view_inner(
         .for_refresh();
     // Graphs are refreshed by their controls. Re-uploading them on every heartbeat
     // competes with navigation for Telegram's edit quota.
-    if payload.is_chart_navigation() {
+    if payload.is_chart_navigation() || matches!(payload, Payload::TextPage { .. }) {
         return Ok(());
     }
     let view = tokio::select! {
@@ -1852,6 +1851,8 @@ pub(crate) async fn update_view_cancellable(
     config: Arc<AppConfig>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> anyhow::Result<()> {
+    let mut view = view;
+    super::text_pages::prepare(&mut view, user_id, &config).await?;
     let ui_lock = config.ui_lock_for(user_id);
     let payload_str = view.payload.to_string();
     let mut retries = 0;
@@ -2017,7 +2018,11 @@ async fn edit_existing_view(
 ) -> std::result::Result<EditViewResult, RequestError> {
     let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
-    let edit_mode = view_mode(text);
+    let edit_mode = if view.text_page.is_some() {
+        UiMessageMode::Text
+    } else {
+        view_mode(&view.get_plain_text())
+    };
     if current_mode.is_some_and(|mode| mode != edit_mode) {
         return Ok(EditViewResult::ModeChanged);
     }
@@ -2030,7 +2035,7 @@ async fn edit_existing_view(
             TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS,
             config.sessions.get(&user_id).map(|session| session.ui_message_mode)
         );
-        let text = telegram_text_message(&view.get_plain_text());
+        let text = view.get_plain_text();
         let res = bot
             .edit_message_text(chat_id, message_id, text)
             .reply_markup(kb)
@@ -2195,10 +2200,12 @@ async fn send_new_view_inner(
     if cancellation.is_some_and(|token| token.is_cancelled()) {
         return Ok(false);
     }
+    let mut view = view;
+    super::text_pages::prepare(&mut view, user_id, &config).await?;
     let text = view.get_text();
     let payload_str = view.payload.to_string();
 
-    if view_mode(&text) == UiMessageMode::Text {
+    if view.text_page.is_some() || view_mode(&view.get_plain_text()) == UiMessageMode::Text {
         log::debug!(
             "New UI view for user {} payload {} uses text mode: {} chars exceed Telegram photo caption limit {}",
             user_id,
@@ -2207,7 +2214,7 @@ async fn send_new_view_inner(
             TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
         );
         let sent = bot
-            .send_message(chat_id, telegram_text_message(&view.get_plain_text()))
+            .send_message(chat_id, view.get_plain_text())
             .reply_markup(view.kb)
             .await?;
 
@@ -2264,27 +2271,7 @@ fn view_mode(text: &str) -> UiMessageMode {
 }
 
 fn should_send_view_as_text(text: &str) -> bool {
-    text.chars().count() > TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
-}
-
-fn telegram_text_message(text: &str) -> String {
-    if text.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS {
-        return text.to_string();
-    }
-
-    let marker = "\n\nСообщение сокращено: экран слишком длинный для Telegram.";
-    let keep_chars = TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS.saturating_sub(marker.chars().count());
-    let mut shortened = text.chars().take(keep_chars).collect::<String>();
-    while shortened.ends_with('\\') {
-        shortened.pop();
-    }
-    log::warn!(
-        "Telegram text view truncated from {} to <= {} chars",
-        text.chars().count(),
-        TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS
-    );
-    shortened.push_str(marker);
-    shortened
+    super::text_pages::text_len(text) > TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
 }
 
 // --- ОБРАБОТЧИКИ ДИАЛОГОВ ---
@@ -4399,15 +4386,6 @@ mod tests {
         assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
         view.text = "x".repeat(TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS + 1);
         assert_eq!(view_mode(&view.get_text()), UiMessageMode::Text);
-    }
-
-    #[test]
-    fn telegram_text_message_is_truncated_to_limit() {
-        let text = "x".repeat(TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS + 100);
-        let shortened = telegram_text_message(&text);
-
-        assert!(shortened.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS);
-        assert!(shortened.contains("Сообщение сокращено"));
     }
 
     #[test]

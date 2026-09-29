@@ -35,7 +35,14 @@ impl HomeAssistantClient for FakeHa {
         Ok(vec![])
     }
     async fn fetch_action_entities(&self) -> anyhow::Result<Vec<Entity>> {
-        Ok(vec![])
+        Ok(self
+            .states
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.entity_id.starts_with("scene.") || e.entity_id.starts_with("script."))
+            .cloned()
+            .collect())
     }
     async fn fetch_states_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Entity>> {
         self.state_reads.fetch_add(1, Ordering::SeqCst);
@@ -218,6 +225,364 @@ fn callbacks(view: &View) -> Vec<Payload> {
             _ => None,
         })
         .collect()
+}
+
+#[tokio::test]
+async fn long_log_pages_keep_all_entries_filter_and_owner_after_session_reset() -> anyhow::Result<()>
+{
+    let (config, ha) = setup().await?;
+    for n in 0..30 {
+        let message = format!("запись-{n:02}: {}", "данные 🏡 ".repeat(40));
+        db::activity_log::log(
+            db::activity_log::NewActivity {
+                user_id: Some(1),
+                kind: "device",
+                entity_type: "device",
+                entity_id: Some("light.bedroom"),
+                action: "turn_on",
+                status: "error",
+                message: Some(&message),
+            },
+            &config.db,
+        )
+        .await?;
+    }
+    let base = Payload::Admin(AdminPayload::ActivityLog {
+        filter: ActivityLogFilter::Errors,
+    });
+    let first = router(base.clone(), 1, config.clone()).await?;
+    let Payload::TextPage { screen, .. } = first.payload else {
+        panic!("Expected pages")
+    };
+    let mut viewed = String::new();
+    let mut page = 0;
+    loop {
+        config.sessions.clear(); // Routes remain valid after losing the in-memory UI session.
+        let current = router(Payload::TextPage { screen, page }, 1, config.clone()).await?;
+        let text = current.get_plain_text();
+        assert!(crate::bot::text_pages::text_len(&text) <= 4096);
+        assert!(text.contains(t(Language::Ru, "common.updated")));
+        assert!(callbacks(&current).contains(&Payload::Admin(AdminPayload::ListActions)));
+        assert!(
+            callbacks(&current).contains(&Payload::Admin(AdminPayload::ActivityLog {
+                filter: ActivityLogFilter::All
+            }))
+        );
+        assert!(callbacks(&current).contains(&Payload::TextPage { screen, page }));
+        viewed.push_str(&text);
+        if !callbacks(&current).contains(&Payload::TextPage {
+            screen,
+            page: page + 1,
+        }) {
+            break;
+        }
+        page += 1;
+        assert!(page < 30);
+    }
+    assert!(page > 1);
+    for n in 0..30 {
+        assert!(
+            viewed.contains(&format!("запись-{n:02}:")),
+            "missing entry {n}"
+        );
+    }
+    let other_user = router(Payload::TextPage { screen, page }, 42, config.clone()).await?;
+    assert!(!other_user.get_plain_text().contains("запись-"));
+    assert!(other_user
+        .text
+        .contains(t(Language::Ru, "common.page_expired")));
+    let saved: serde_json::Value = serde_json::from_str(
+        &db::ui_text_pages::context(screen, 1, &config.db)
+            .await?
+            .unwrap(),
+    )?;
+    assert_eq!(saved["source"], base.to_string());
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn text_pages_recheck_device_access_and_never_replay_a_saved_command() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let long_name = format!("Доступное устройство {}", "длинное имя ".repeat(600));
+    sqlx::query("UPDATE devices SET alias = ? WHERE id = 1")
+        .bind(&long_name)
+        .execute(&config.db)
+        .await?;
+    let mut legacy = View {
+        text: long_name.clone(),
+        payload: Payload::Control(ControlPayload::QuickAction {
+            room: 1,
+            device: 1,
+            cmd: DeviceCmd::SetTemp(25.0),
+        }),
+        ..Default::default()
+    };
+    crate::bot::text_pages::prepare(&mut legacy, 42, &config).await?;
+    let Payload::TextPage { screen, .. } = legacy.payload else {
+        panic!("Expected pages")
+    };
+    router(Payload::TextPage { screen, page: 1 }, 42, config.clone()).await?;
+    assert!(ha.calls.lock().unwrap().is_empty());
+    let card = open(
+        &config,
+        ControlPayload::DeviceControl { room: 1, device: 1 },
+    )
+    .await?;
+    let Payload::TextPage { screen, .. } = card.payload else {
+        panic!("Expected pages")
+    };
+    let second = router(Payload::TextPage { screen, page: 1 }, 42, config.clone()).await?;
+    assert!(matches!(second.payload, Payload::TextPage { page: 1, .. }));
+    assert!(second
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .any(|b| b.text == t(Language::Ru, "control.refresh")));
+    db::access::set_device_access(42, "climate.bedroom", false, false, false, &config.db).await?;
+    let denied = router(Payload::TextPage { screen, page: 1 }, 42, config.clone()).await?;
+    assert!(denied.alert.is_some());
+    assert!(!denied.get_plain_text().contains("Доступное устройство"));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn camera_and_recording_mode_pages_restore_position_and_check_access() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    for n in 0..23 {
+        sqlx::query("INSERT INTO cameras (key, name, room_id, stream_url, enabled) VALUES (?, ?, 1, 'rtsp://unused.invalid', 1)")
+            .bind(format!("camera-{n}")).bind(format!("Камера {n:02}")).execute(&config.db).await?;
+        let group =
+            db::camera_recording_rule_groups::create_group(&format!("Режим {n:02}"), &config.db)
+                .await?;
+        db::camera_recording_rule_groups::cycle_group_access_scope(group, &config.db).await?;
+    }
+    let selection = Payload::Camera(CameraPayload::ListCamerasPage { page: 2 });
+    let cameras = router(selection.clone(), 42, config.clone()).await?;
+    assert_eq!(
+        callbacks(&cameras)
+            .iter()
+            .filter(|p| matches!(p, Payload::Camera(CameraPayload::CameraDetail { .. })))
+            .count(),
+        3
+    );
+    let back = router(
+        Payload::Camera(CameraPayload::ListCameras),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(callbacks(&cameras), callbacks(&back));
+    assert!(callbacks(&back).contains(&Payload::Camera(CameraPayload::RecordingGroupModes)));
+    let modes = router(
+        Payload::Camera(CameraPayload::RecordingGroupModesPage { page: 2 }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    let details: Vec<_> = callbacks(&modes)
+        .into_iter()
+        .filter(|p| {
+            matches!(
+                p,
+                Payload::Camera(CameraPayload::RecordingGroupModeDetail { .. })
+            )
+        })
+        .collect();
+    assert_eq!(details.len(), 3);
+    let detail = router(details[0].clone(), 42, config.clone()).await?;
+    assert!(callbacks(&detail).contains(&Payload::Camera(CameraPayload::RecordingGroupModes)));
+    let restored = router(
+        Payload::Camera(CameraPayload::RecordingGroupModes),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(callbacks(&modes), callbacks(&restored));
+    sqlx::query("UPDATE camera_recording_rule_groups SET access_scope = 'admin_only'")
+        .execute(&config.db)
+        .await?;
+    let denied = router(modes.payload, 42, config.clone()).await?;
+    assert!(!callbacks(&denied).iter().any(|p| matches!(
+        p,
+        Payload::Camera(CameraPayload::RecordingGroupModeDetail { .. })
+    )));
+    db::access::set_room_access(42, 1, false, false, &config.db).await?;
+    let denied = router(selection, 42, config.clone()).await?;
+    assert!(!callbacks(&denied)
+        .iter()
+        .any(|p| matches!(p, Payload::Camera(CameraPayload::CameraDetail { .. }))));
+    let admin = router(
+        Payload::Admin(AdminPayload::RoomCamerasPage { room: 1, page: 2 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(callbacks(&admin).contains(&Payload::Admin(AdminPayload::PromptAddCamera { room: 1 })));
+    assert!(callbacks(&admin).contains(&Payload::Admin(AdminPayload::RecordingRules { room: 1 })));
+    assert_eq!(
+        callbacks(&admin)
+            .iter()
+            .filter(|p| matches!(p, Payload::Admin(AdminPayload::ConfirmDeleteCamera { .. })))
+            .count(),
+        3
+    );
+    let restored = router(
+        Payload::Admin(AdminPayload::RoomCameras { room: 1 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(callbacks(&admin), callbacks(&restored));
+    let denied = router(
+        Payload::Admin(AdminPayload::RoomCamerasPage { room: 1, page: 2 }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert!(denied.alert.is_some());
+    let enabled: i64 = sqlx::query_scalar("SELECT SUM(enabled) FROM camera_recording_rule_groups")
+        .fetch_one(&config.db)
+        .await?;
+    assert_eq!(enabled, 23);
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn action_group_and_scene_pages_keep_all_targets_and_admin_controls() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    for n in 0..13 {
+        db::action_groups::create_action_group(&format!("Группа {n:02}"), &config.db).await?;
+        let id = format!("scene.test_{n:02}");
+        ha.states.lock().unwrap().push(entity(&id, "off"));
+        sqlx::query("INSERT INTO ha_native_targets (entity_id, domain, ha_name, access_scope) VALUES (?, 'scene', ?, 'all_users')")
+            .bind(&id).bind(format!("Сцена {n:02}")).execute(&config.db).await?;
+    }
+    sqlx::query("UPDATE action_groups SET access_scope = 'all_users'")
+        .execute(&config.db)
+        .await?;
+    let mut seen = std::collections::HashSet::new();
+    for page in 0..3 {
+        let view = open(&config, ControlPayload::ActionGroupsPage { page }).await?;
+        for item in callbacks(&view).into_iter().filter(|p| {
+            matches!(
+                p,
+                Payload::Control(
+                    ControlPayload::ActionGroupDetail { .. }
+                        | ControlPayload::HaNativeActionDetail { .. }
+                )
+            )
+        }) {
+            assert!(seen.insert(item.to_string()));
+        }
+    }
+    assert_eq!(seen.len(), 26);
+    let restored = open(&config, ControlPayload::ActionGroups).await?;
+    let selected = open(&config, ControlPayload::ActionGroupsPage { page: 2 }).await?;
+    assert_eq!(callbacks(&selected), callbacks(&restored));
+    let admin = router(
+        Payload::Admin(AdminPayload::ActionGroupsPage { page: 2 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(callbacks(&admin).contains(&Payload::Admin(AdminPayload::PromptCreateActionGroup)));
+    let restored = router(
+        Payload::Admin(AdminPayload::ActionGroups),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(callbacks(&admin), callbacks(&restored));
+    sqlx::query("UPDATE action_groups SET access_scope = 'admin_only'")
+        .execute(&config.db)
+        .await?;
+    sqlx::query("UPDATE ha_native_targets SET access_scope = 'admin_only'")
+        .execute(&config.db)
+        .await?;
+    let denied = open(&config, ControlPayload::ActionGroupsPage { page: 2 }).await?;
+    assert!(!callbacks(&denied).iter().any(|p| matches!(
+        p,
+        Payload::Control(
+            ControlPayload::ActionGroupDetail { .. } | ControlPayload::HaNativeActionDetail { .. }
+        )
+    )));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn paginated_prompt_keeps_dialogue_state_and_its_cancel_button() -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    {
+        let mut status = config.runtime_status.write().await;
+        status.shutdown_requested_at = Some(Utc::now());
+        status.shutdown_reason = Some("Подробный статус системы\n".repeat(400));
+    }
+    let group = db::action_groups::create_action_group("Свет", &config.db).await?;
+    let first = router(
+        Payload::Admin(AdminPayload::PromptRenameActionGroup { group }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    let Payload::TextPage { screen, .. } = first.payload else {
+        panic!("Expected pages")
+    };
+    let second = router(Payload::TextPage { screen, page: 1 }, 1, config.clone()).await?;
+    assert!(
+        matches!(second.next_state, Some(State::RenameActionGroup { group_id }) if group_id == group)
+    );
+    assert!(callbacks(&second).contains(&Payload::Admin(AdminPayload::ActionGroupDetail { group })));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn long_command_receipt_survives_pages_without_reexecution_and_is_not_shared(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let mut view = open(
+        &config,
+        ControlPayload::QuickAction {
+            room: 1,
+            device: 1,
+            cmd: DeviceCmd::SetTemp(24.0),
+        },
+    )
+    .await?;
+    let receipt = format!(
+        "Начало результата\n{}\nКонец результата",
+        "Подробный результат команды\n".repeat(450)
+    );
+    view.notice = Some(receipt.clone());
+    crate::bot::text_pages::prepare(&mut view, 42, &config).await?;
+    let Payload::TextPage { screen, .. } = view.payload else {
+        panic!("Expected pages")
+    };
+    let last = router(
+        Payload::TextPage {
+            screen,
+            page: u16::MAX,
+        },
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(last.notice, Some(receipt));
+    assert!(last.get_plain_text().contains("Конец результата"));
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    let foreign = router(last.payload.clone(), 1, config.clone()).await?;
+    assert!(!foreign.get_plain_text().contains("результат команды"));
+    db::access::set_device_access(42, "climate.bedroom", false, false, false, &config.db).await?;
+    let denied = router(last.payload, 42, config.clone()).await?;
+    assert!(denied.alert.is_some());
+    assert!(denied.notice.is_none());
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    Ok(())
 }
 
 async fn open(config: &Arc<AppConfig>, payload: ControlPayload) -> anyhow::Result<View> {
@@ -1724,7 +2089,7 @@ async fn background_graph_snapshot_and_long_text_switch_back_to_camera_backgroun
         let (bot, server) = mock_telegram_edits(vec![(200, telegram_message(7, true))]).await?;
         let view = View {
             compact: true,
-            text: "Экран".into(),
+            text: "*_[]()~".repeat(80),
             image,
             ..Default::default()
         };
@@ -1753,11 +2118,21 @@ async fn background_graph_snapshot_and_long_text_switch_back_to_camera_backgroun
         teloxide::types::ChatId(42),
         teloxide::types::MessageId(7),
         42,
-        graph_update_view(),
+        View {
+            text: "Полное содержимое 🏡\n".repeat(500),
+            ..graph_update_view()
+        },
         config.clone(),
     )
     .await?;
-    server.await??;
+    let requests = server.await??;
+    let sent_text = requests[0]["text"].as_str().unwrap();
+    assert!(crate::bot::text_pages::text_len(sent_text) <= 4096);
+    assert!(sent_text.contains("Страница 1 /"));
+    assert!(matches!(
+        Payload::from_string(&config.sessions.get(&42).unwrap().current_context)?,
+        Payload::TextPage { page: 0, .. }
+    ));
     assert_eq!(
         config.sessions.get(&42).unwrap().ui_message_mode,
         crate::models::UiMessageMode::Text
