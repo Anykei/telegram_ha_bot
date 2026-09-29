@@ -4,6 +4,9 @@ use teloxide::types::MessageId;
 pub const UI_PLACEHOLDER_BYTES: &[u8] = include_bytes!("assets/ha_logo.png");
 
 pub fn spawn_delayed_delete(bot: Bot, chat_id: ChatId, msg_id: MessageId, delay_secs: u64) {
+    if delay_secs == 0 {
+        return;
+    }
     debug!("Deleting message id {} delay: {}", msg_id, delay_secs);
 
     tokio::spawn(async move {
@@ -13,6 +16,9 @@ pub fn spawn_delayed_delete(bot: Bot, chat_id: ChatId, msg_id: MessageId, delay_
 }
 
 pub async fn delete_message_after(bot: Bot, chat_id: ChatId, msg_id: MessageId, delay_secs: u64) {
+    if delay_secs == 0 {
+        return;
+    }
     tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
     let _ = bot.delete_message(chat_id, msg_id).await;
 }
@@ -40,10 +46,6 @@ pub mod md {
     pub fn italic(text: &str) -> String {
         format!("_{}_", plain(text))
     }
-
-    pub fn code(text: &str) -> String {
-        format!("`{}`", plain(text))
-    }
 }
 
 #[cfg(test)]
@@ -62,6 +64,5 @@ mod tests {
     fn markdown_helpers_escape_inner_text() {
         assert_eq!(md::bold("A_B"), "*A\\_B*");
         assert_eq!(md::italic("10.5"), "_10\\.5_");
-        assert_eq!(md::code("x`y"), "`x\\`y`");
     }
 }

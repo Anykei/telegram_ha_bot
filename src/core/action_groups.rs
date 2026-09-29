@@ -209,6 +209,16 @@ pub async fn execute_action_group(
     actor: ActionActor,
     config: Arc<AppConfig>,
 ) -> Result<ActionExecutionResult> {
+    execute_action_group_with_targets(group_id, command, actor, config, None).await
+}
+
+pub(crate) async fn execute_action_group_with_targets(
+    group_id: i64,
+    command: db::action_groups::ActionGroupCommand,
+    actor: ActionActor,
+    config: Arc<AppConfig>,
+    approved_targets: Option<&[i64]>,
+) -> Result<ActionExecutionResult> {
     let lock = target_lock(format!("bot_group:{}", group_id));
     let _guard = lock
         .try_lock()
@@ -245,6 +255,18 @@ pub async fn execute_action_group(
         targets.push(device);
     }
     ensure!(!targets.is_empty(), "Нет доступных устройств");
+
+    if let Some(approved) = approved_targets {
+        let mut current = targets
+            .iter()
+            .map(|target| target.device_id)
+            .collect::<Vec<_>>();
+        current.sort_unstable();
+        ensure!(
+            current == approved,
+            "Состав группы или права изменились. Откройте группу заново."
+        );
+    }
 
     let service = match command {
         db::action_groups::ActionGroupCommand::Toggle => {
@@ -519,6 +541,7 @@ mod tests {
                     name: entity_id.clone(),
                     state: "off".to_string(),
                     device_class: None,
+                    attributes: Default::default(),
                 })
                 .collect())
         }
@@ -689,6 +712,8 @@ mod tests {
             voice_response_format: VoiceResponseFormat::Text,
             sessions: DashMap::new(),
             ui_locks: DashMap::new(),
+            view_updates: DashMap::new(),
+            climate_controls: Default::default(),
             recording_sends_in_progress: DashMap::new(),
             name_aliases: DashMap::new(),
             state_aliases: DashMap::new(),

@@ -6,6 +6,7 @@ pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
 pub(crate) mod camera_snapshots;
 pub(crate) mod cameras;
+pub(crate) mod climate_control;
 pub(crate) mod commands;
 pub mod devices;
 pub(crate) mod maintenance;
@@ -36,7 +37,6 @@ const USER_SESSION_REFRESH_PERSIST_INTERVAL_S: i64 = 300;
 
 impl AppConfig {
     pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
-        use crate::bot::utils::md;
         use crate::core::presentation::StateFormatter;
         use crate::i18n::t;
         let mut items = Vec::new();
@@ -57,7 +57,7 @@ impl AppConfig {
             items.push(HeaderItem {
                 icon: "🛑".into(),
                 label: t(lang, "system.shutdown.label").into(),
-                value: md::bold(&format!("{}: {}", t(lang, "system.shutdown.value"), reason)),
+                value: format!("{}: {}", t(lang, "system.shutdown.value"), reason),
                 last_update: shutdown_requested_at,
             });
         }
@@ -100,13 +100,10 @@ impl AppConfig {
                                         camera.name
                                     ),
                                     value: format!(
-                                        "{} · {}",
-                                        md::bold(t(lang, "recording.active")),
-                                        md::plain(&format!(
-                                            "{} {}",
-                                            t(lang, "recording.remaining"),
-                                            remaining
-                                        ))
+                                        "{} · {} {}",
+                                        t(lang, "recording.active"),
+                                        t(lang, "recording.remaining"),
+                                        remaining
                                     ),
                                     last_update: session.last_event_at,
                                 });
@@ -181,7 +178,7 @@ impl AppConfig {
                     items.push(HeaderItem {
                         icon: icon.into(),
                         label: format!("{}{}", room_prefix, name),
-                        value: format!("{}{}", md::bold(&human_state), md::plain(&count_suffix)),
+                        value: format!("{human_state}{count_suffix}"),
                         last_update: alert.last_updated,
                     });
                 }

@@ -7,11 +7,12 @@ use crate::bot::router::{ControlPayload, DeviceCmd, Payload, RenderContext};
 use crate::bot::State;
 use crate::core::devices::{ChartParams, SmartDevice};
 use crate::core::types::Device;
-use crate::core::HeaderItem;
+use crate::i18n::t;
 
 // Константа глубины истории в HA (обычно 10 дней)
 const MAX_HISTORY_DAYS: i32 = 10;
 const MAX_BACK_HOURS: i32 = MAX_HISTORY_DAYS * 24;
+pub(crate) const MAX_PERIOD_HOURS: u32 = MAX_BACK_HOURS as u32;
 
 pub async fn render(
     ctx: RenderContext,
@@ -32,6 +33,27 @@ pub async fn render(
         },
     };
 
+    anyhow::ensure!(
+        (1..=MAX_PERIOD_HOURS).contains(&params.period_hours)
+            && (-MAX_BACK_HOURS..=0).contains(&params.offset_hours),
+        "Invalid graph interval"
+    );
+
+    crate::db::settings::set_string(
+        &format!("ui:chart:{}:{}", ctx.user_id, dev.id),
+        &Payload::Control(ControlPayload::QuickAction {
+            room: room_id,
+            device: dev.id,
+            cmd: DeviceCmd::ShowChart {
+                h: params.period_hours,
+                o: params.offset_hours,
+            },
+        })
+        .to_string(),
+        &ctx.config.db,
+    )
+    .await?;
+
     // 2. Получаем историю
     let history = ctx
         .config
@@ -39,26 +61,9 @@ pub async fn render(
         .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
         .await?;
 
-    // 3. Формируем расширенную шапку (Status Bar)
-    let mut notifications = ctx.notifications.clone();
-
-    // Добавляем информацию о временном диапазоне в начало списка уведомлений
+    // Период относится к графику, а не к уведомлениям о состоянии системы.
     let start_local = history.start_time.with_timezone(&Local);
     let end_local = history.end_time.with_timezone(&Local);
-
-    notifications.insert(
-        0,
-        HeaderItem {
-            icon: "📅".into(),
-            label: "Период".into(),
-            value: crate::bot::utils::md::code(&format!(
-                "{} — {}",
-                start_local.format("%d.%m %H:%M"),
-                end_local.format("%H:%M")
-            )),
-            last_update: chrono::Utc::now(),
-        },
-    );
 
     // 4. Отрисовка графика
     let style = match SmartDevice::new(entity.clone()) {
@@ -67,15 +72,41 @@ pub async fn render(
         _ => return Err(anyhow::anyhow!("Тип устройства не поддерживает графики")),
     };
 
-    let device_name = dev.alias.as_deref().unwrap_or(&entity.entity_id);
-    let image = crate::charts::draw_ha_chart(
-        &history.points,
-        device_name,
-        history.start_time,
-        history.end_time,
-        style,
-    )
-    .context("Drawing failed")?;
+    let device_name = super::labels::device_name(&dev, &entity, ctx.lang);
+    let metric_name = if entity.entity_id.starts_with("sensor.")
+        && entity.device_class.as_deref() == Some("battery")
+    {
+        format!("{} — {}", t(ctx.lang, "sensor.battery"), device_name)
+    } else {
+        device_name
+    };
+    let chart_title = match entity.attributes.unit_of_measurement.as_deref() {
+        Some(unit) if !unit.trim().is_empty() => format!("{} ({})", metric_name, unit),
+        _ => metric_name,
+    };
+    let no_data = !history.points.iter().any(|(_, state)| match style {
+        crate::charts::ChartStyle::Numeric => state.parse::<f64>().is_ok_and(f64::is_finite),
+        crate::charts::ChartStyle::Binary => matches!(state.as_str(), "on" | "off"),
+    });
+    let image_title = chart_title.clone();
+    let image = if no_data {
+        None
+    } else {
+        Some(
+            tokio::task::spawn_blocking(move || {
+                crate::charts::draw_ha_chart(
+                    &history.points,
+                    &image_title,
+                    history.start_time,
+                    history.end_time,
+                    style,
+                )
+            })
+            .await
+            .context("Chart worker failed")?
+            .context("Drawing failed")?,
+        )
+    };
 
     // 5. Логика кнопок навигации
     let mut nav_row = vec![];
@@ -101,7 +132,10 @@ pub async fn render(
         Payload::Control(ControlPayload::QuickAction {
             room: room_id,
             device: dev.id,
-            cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+            cmd: DeviceCmd::ShowChart {
+                h: params.period_hours,
+                o: 0,
+            },
         })
         .to_string(),
     ));
@@ -136,7 +170,11 @@ pub async fn render(
             .iter()
             .map(|(label, h)| {
                 InlineKeyboardButton::callback(
-                    *label,
+                    if *h == params.period_hours {
+                        format!("✓ {}", label)
+                    } else {
+                        label.to_string()
+                    },
                     Payload::Control(ControlPayload::QuickAction {
                         room: room_id,
                         device: dev.id,
@@ -181,10 +219,26 @@ pub async fn render(
         }
     };
 
-    let text = format!(
-        "📊 *{}*\nОтображение: {}\n\nВыберите масштаб или используйте навигацию:",
-        device_name, time_desc
+    let mut text = format!(
+        "📊 {}\nПериод: {} — {}\nОтображение: {}\n\nВыберите масштаб или используйте навигацию:",
+        chart_title,
+        start_local.format("%d.%m.%Y %H:%M"),
+        end_local.format("%d.%m.%Y %H:%M"),
+        time_desc
     );
+
+    if no_data {
+        text.push_str(&format!("\n\n{}", t(ctx.lang, "sensor.empty")));
+    }
+    let inverted = crate::db::devices::is_state_inverted(&dev.entity_id, &ctx.config.db).await?;
+    let alias = ctx
+        .config
+        .state_alias_for_display(&dev.entity_id, &entity.state, inverted);
+    text.push_str(&format!(
+        "\n{}: {}",
+        t(ctx.lang, "control.details"),
+        super::labels::state(&entity, ctx.lang, inverted, alias.as_deref())
+    ));
 
     let current_state_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
@@ -195,14 +249,58 @@ pub async fn render(
         },
     });
 
+    rows.insert(
+        rows.len() - 1,
+        vec![InlineKeyboardButton::callback(
+            t(ctx.lang, "control.refresh"),
+            current_state_payload.to_string(),
+        )],
+    );
     Ok(View {
-        image: Some(image),
-        notifications,
+        compact: true,
+        image,
+        notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: current_state_payload,
+        lang: ctx.lang,
         ..Default::default()
     })
+}
+
+pub async fn saved_chart_payload(
+    ctx: &RenderContext,
+    room: i64,
+    device: i64,
+) -> anyhow::Result<Payload> {
+    let saved = crate::db::settings::get_string(
+        &format!("ui:chart:{}:{device}", ctx.user_id),
+        &ctx.config.db,
+    )
+    .await?
+    .and_then(|value| Payload::from_string(&value).ok());
+    if let Some(Payload::Control(ControlPayload::QuickAction {
+        device: saved_device,
+        cmd: DeviceCmd::ShowChart { h, o },
+        ..
+    })) = saved
+    {
+        if saved_device == device
+            && (1..=MAX_PERIOD_HOURS).contains(&h)
+            && (-MAX_BACK_HOURS..=0).contains(&o)
+        {
+            return Ok(Payload::Control(ControlPayload::QuickAction {
+                room,
+                device,
+                cmd: DeviceCmd::ShowChart { h, o },
+            }));
+        }
+    }
+    Ok(Payload::Control(ControlPayload::QuickAction {
+        room,
+        device,
+        cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+    }))
 }
 
 pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
@@ -218,9 +316,10 @@ pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
     });
 
     View {
+        compact: true,
         header: Some("⌨️ Ввод данных".into()),
-        text: "Введите количество часов для отображения на графике (целое число).\n\n\
-               Например: `48` для двух суток."
+        text: "Введите количество часов для отображения на графике: целое число от 1 до 240.\n\n\
+               Например: 48 для двух суток."
             .into(),
         kb: InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
             "❌ Отмена",

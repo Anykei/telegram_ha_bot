@@ -28,7 +28,6 @@ pub type MyDialogue = Dialogue<State, InMemStorage<State>>;
 
 const TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES: u64 = 50_000_000;
 const TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES: u64 = 500_000;
-const RECORDING_VIDEO_MESSAGE_TTL_SECONDS: u64 = 60;
 const TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS: usize = 1024;
 const TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS: usize = 4096;
 
@@ -37,6 +36,7 @@ enum EditViewResult {
     Updated(UiMessageMode),
     NotModified,
     MessageMissing,
+    ModeChanged,
 }
 
 #[derive(BotCommands, Clone, Debug)]
@@ -56,6 +56,7 @@ pub async fn handle_command(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().context("User missing")?.id.0;
     let chat_id = msg.chat.id;
+    config.cancel_view_update(user_id);
 
     log::info!("Processing command {:?} for user {}", cmd, user_id);
 
@@ -118,10 +119,8 @@ pub async fn handle_idle_text(bot: Bot, msg: Message, config: Arc<AppConfig>) ->
                 &config.db,
             )
             .await;
-            let sent = bot
-                .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
+            bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
                 .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
             let _ = bot.delete_message(chat_id, msg.id).await;
         }
     }
@@ -175,10 +174,8 @@ pub async fn handle_text_command_message(
                 &config.db,
             )
             .await;
-            let sent = bot
-                .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
+            bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
                 .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
             let _ = bot.delete_message(chat_id, msg.id).await;
         }
     }
@@ -242,15 +239,12 @@ async fn handle_voice_command_error(
         &config.db,
     )
     .await;
-    let sent = bot
+    let _ = bot
         .send_message(
             chat_id,
             format!("Не удалось выполнить голосовую команду: {}", error),
         )
         .await;
-    if let Ok(sent) = sent {
-        crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
-    }
 }
 
 async fn handle_voice_message_inner(
@@ -431,8 +425,7 @@ async fn apply_command_execution(
 ) -> Result<()> {
     match execution {
         CommandExecution::Done { message } => {
-            let sent = bot.send_message(chat_id, message).await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 8);
+            bot.send_message(chat_id, message).await?;
         }
         CommandExecution::NeedsConfirmation {
             pending_id,
@@ -486,15 +479,153 @@ pub async fn handle_callback(
     config: Arc<AppConfig>,
     dialogue: MyDialogue,
 ) -> Result<()> {
-    // 1. Мгновенно гасим spinner в Telegram (UX Standard)
-    let _ = bot.answer_callback_query(q.id).await;
-
     let data = q.data.as_ref().context("No callback data")?;
     let user_id = q.from.id.0;
     let msg = q.message.as_ref().context("Message missing")?;
 
     // 2. Декодирование (Infallible logic)
-    let payload = Payload::from_string(data).context("Critical: Binary payload decoding failed")?;
+    let payload = match Payload::from_string(data) {
+        Ok(payload) => payload,
+        Err(_) => {
+            let _ = bot
+                .answer_callback_query(q.id)
+                .text("Кнопка устарела. Откройте меню командой /start.")
+                .await;
+            return Ok(());
+        }
+    };
+    let is_chart = payload.is_chart_navigation();
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let temperature = payload.temperature_command();
+    // Critical targets go through the router's persisted confirmation screen.
+    // Fail closed on a DB error; the router will render a recoverable error.
+    let temperature = if let Some((_, device, _)) = temperature {
+        if super::confirmations::is_critical_device(device, &config)
+            .await
+            .unwrap_or(true)
+        {
+            None
+        } else {
+            temperature
+        }
+    } else {
+        None
+    };
+    let temperature_request = if let Some((room, device, command)) = temperature {
+        match config
+            .climate_controls
+            .enqueue(config.clone(), user_id, device, command)
+        {
+            Ok(reply) => Some((room, device, reply)),
+            Err(_) => {
+                let _ = bot
+                    .answer_callback_query(q.id)
+                    .text(crate::i18n::t(lang, "climate.busy"))
+                    .await;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    config.cancel_view_update(user_id);
+    let is_background_view = is_chart
+        || payload.is_device_view()
+        || payload.is_navigation_view()
+        || temperature_request.is_some();
+    let mut answer = bot.answer_callback_query(q.id);
+    if temperature_request.is_some() {
+        answer = answer.text(crate::i18n::t(lang, "climate.queued"));
+    } else if is_chart {
+        answer = answer.text(crate::i18n::t(lang, "sensor.loading"));
+    } else if is_background_view {
+        answer = answer.text(crate::i18n::t(lang, "control.loading"));
+    } else if matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd))
+    {
+        answer = answer.text(crate::i18n::t(lang, "control.accepted"));
+    }
+    let _ = answer.await;
+
+    if is_background_view {
+        dialogue.exit().await?;
+        let token = config.begin_view_update(user_id);
+        let chat_id = msg.chat().id;
+        let message_id = msg.id();
+        tokio::spawn(async move {
+            let result = async {
+                // Accepted temperature commands execute once in device order.
+                // Cancellation only prevents their old screen from replacing
+                // newer navigation; it never interrupts an in-flight HA call.
+                let (payload, temperature_result) =
+                    if let Some((room, device, reply)) = temperature_request {
+                        let outcome = reply.await.context("Climate command worker stopped")?;
+                        (
+                            Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                                room,
+                                device,
+                            }),
+                            Some(outcome),
+                        )
+                    } else {
+                        (payload, None)
+                    };
+                if let Some(Err(error)) = &temperature_result {
+                    log::warn!("Temperature command failed for user {}: {}", user_id, error);
+                }
+                let mut view = tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    result = router(payload, user_id, config.clone()) => result?,
+                };
+                if let Some(outcome) = temperature_result {
+                    match outcome {
+                        Ok(result) => {
+                            view.notice =
+                                Some(crate::bot::screens::control::temperature_command_notice(
+                                    lang, &result,
+                                ))
+                        }
+                        Err(_) => {
+                            view.alert = Some(crate::i18n::t(lang, "control.action_failed").into());
+                        }
+                    }
+                }
+                update_view_cancellable(
+                    &bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    Some(&token),
+                )
+                .await
+            }
+            .await;
+            config.finish_view_update(user_id, &token);
+            if let Err(error) = result {
+                log::warn!("Device view update failed for user {}: {}", user_id, error);
+                if !token.is_cancelled() {
+                    let _ = bot
+                        .send_message(
+                            chat_id,
+                            crate::i18n::t(
+                                lang,
+                                if is_chart {
+                                    "sensor.load_failed"
+                                } else {
+                                    "control.load_failed"
+                                },
+                            ),
+                        )
+                        .await;
+                }
+            }
+        });
+        return Ok(());
+    }
 
     if let Payload::Command(command_payload) = payload {
         handle_command_callback(
@@ -552,10 +683,8 @@ async fn handle_command_callback(
                     apply_command_execution(bot, chat_id, user_id, execution, config).await?;
                 }
                 Err(error) => {
-                    let sent = bot
-                        .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
+                    bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
                         .await?;
-                    crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
                 }
             }
         }
@@ -1403,16 +1532,10 @@ async fn send_recording_video_file(
     } else {
         request
     };
-    let sent = request.await?;
+    request.await?;
     if compressed {
         let _ = tokio::fs::remove_file(sent_path).await;
     }
-    crate::bot::utils::spawn_delayed_delete(
-        bot.clone(),
-        chat_id,
-        sent.id,
-        RECORDING_VIDEO_MESSAGE_TTL_SECONDS,
-    );
 
     Ok(())
 }
@@ -1517,7 +1640,9 @@ pub async fn render_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
-    let payload = Payload::from_string(context).context("Context decoding failed")?;
+    let payload = Payload::from_string(context)
+        .context("Context decoding failed")?
+        .for_refresh();
     let view = router(payload, user_id, config.clone()).await?;
 
     update_view(bot, chat_id, message_id, user_id, view, config.clone()).await
@@ -1533,6 +1658,9 @@ pub async fn refresh_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
+    if config.view_updates.contains_key(&user_id) {
+        return Ok(());
+    }
     if !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before render for user {} context {}",
@@ -1542,14 +1670,23 @@ pub async fn refresh_current_view(
         return Ok(());
     }
 
-    let payload = Payload::from_string(context).context("Context decoding failed")?;
+    let payload = Payload::from_string(context)
+        .context("Context decoding failed")?
+        .for_refresh();
+    // Graphs are refreshed by their controls. Re-uploading them on every heartbeat
+    // competes with navigation for Telegram's edit quota.
+    if payload.is_chart_navigation() {
+        return Ok(());
+    }
     let view = router(payload, user_id, config.clone()).await?;
     let payload_str = view.payload.to_string();
     let text = view.get_text();
     let ui_lock = config.ui_lock_for(user_id);
     let _guard = ui_lock.lock().await;
 
-    if !is_current_session(config, user_id, message_id, context) {
+    if config.view_updates.contains_key(&user_id)
+        || !is_current_session(config, user_id, message_id, context)
+    {
         log::debug!(
             "Skip stale refresh before edit for user {} context {}",
             user_id,
@@ -1571,6 +1708,9 @@ pub async fn refresh_current_view(
             Ok(())
         }
         Ok(EditViewResult::NotModified) => Ok(()),
+        Ok(EditViewResult::ModeChanged) => {
+            reanchor_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+        }
         Ok(EditViewResult::MessageMissing) => {
             log::warn!(
                 "Live refresh target message is missing for user {}. Clearing session.",
@@ -1624,38 +1764,157 @@ pub async fn update_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> anyhow::Result<()> {
-    let ui_lock = config.ui_lock_for(user_id);
-    let _guard = ui_lock.lock().await;
-    let text = view.get_text();
-    let payload_str = view.payload.to_string();
+    update_view_cancellable(bot, chat_id, message_id, user_id, view, config, None).await
+}
 
-    match edit_existing_view(bot, &config, user_id, chat_id, message_id, &view, &text).await {
-        Ok(EditViewResult::Updated(mode)) => {
-            crate::core::update_user_state_with_mode(
-                &config,
-                user_id,
-                message_id.0,
-                &payload_str,
-                mode,
-            )
-            .await;
-            Ok(())
+pub(crate) async fn update_view_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> anyhow::Result<()> {
+    let ui_lock = config.ui_lock_for(user_id);
+    let payload_str = view.payload.to_string();
+    let mut retries = 0;
+
+    loop {
+        let guard = ui_lock.lock().await;
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            return Ok(());
         }
-        Ok(EditViewResult::NotModified) => Ok(()),
-        Ok(EditViewResult::MessageMissing) => {
-            log::warn!(
-                "Detected ghost message for user {}. Re-anchoring UI.",
-                user_id
-            );
-            reanchor_view(bot, chat_id, message_id, user_id, view, config).await
+        let delay = config.sessions.get(&user_id).and_then(|session| {
+            session.ui_refresh_blocked_until.and_then(|until| {
+                (until - Utc::now())
+                    .to_std()
+                    .ok()
+                    .filter(|delay| !delay.is_zero())
+            })
+        });
+        if let Some(delay) = delay {
+            drop(guard);
+            if let Some(token) = cancellation {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            } else {
+                tokio::time::sleep(delay).await;
+            }
+            continue;
         }
-        Err(e @ RequestError::RetryAfter(_)) => {
-            log_telegram_refresh_error("UI update", user_id, &e);
-            Err(e.into())
+        let message_id = config
+            .sessions
+            .get(&user_id)
+            .map(|session| MessageId(session.last_menu_id))
+            .unwrap_or(message_id);
+        let text = view.get_text();
+
+        let result =
+            edit_existing_view(bot, &config, user_id, chat_id, message_id, &view, &text).await;
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            if let Err(RequestError::RetryAfter(retry_after)) = &result {
+                block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+            }
+            return Ok(());
         }
-        Err(e) => {
-            log::info!("UI Mode transition for user {}: {}", user_id, e);
-            reanchor_view(bot, chat_id, message_id, user_id, view, config).await
+        match result {
+            Ok(EditViewResult::Updated(mode)) => {
+                crate::core::update_user_state_with_mode(
+                    &config,
+                    user_id,
+                    message_id.0,
+                    &payload_str,
+                    mode,
+                )
+                .await;
+                return Ok(());
+            }
+            Ok(EditViewResult::NotModified) => return Ok(()),
+            Ok(EditViewResult::MessageMissing | EditViewResult::ModeChanged) => {
+                match reanchor_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view.clone(),
+                    config.clone(),
+                    cancellation,
+                )
+                .await
+                {
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<RequestError>(),
+                            Some(RequestError::RetryAfter(_))
+                        ) =>
+                    {
+                        let RequestError::RetryAfter(retry_after) =
+                            error.downcast_ref::<RequestError>().unwrap()
+                        else {
+                            unreachable!()
+                        };
+                        let until =
+                            block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+                        log_telegram_retry_after(
+                            "UI mode change",
+                            user_id,
+                            retry_after.seconds(),
+                            until,
+                        );
+                        if retries >= 2 {
+                            return Err(error);
+                        }
+                        retries += 1;
+                        // The next iteration waits without holding the UI lock.
+                        // Retry only the new message; the action has already completed.
+                    }
+                    outcome => return outcome,
+                }
+            }
+            Err(RequestError::RetryAfter(retry_after)) => {
+                let blocked_until =
+                    block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+                log_telegram_retry_after(
+                    "UI update",
+                    user_id,
+                    retry_after.seconds(),
+                    blocked_until,
+                );
+                if retries >= 2 {
+                    return Err(RequestError::RetryAfter(retry_after).into());
+                }
+                retries += 1;
+                // Release the UI lock while waiting so a newer graph request or Back
+                // can supersede this update. Only message edits are retried.
+                drop(guard);
+                let delay = (blocked_until - Utc::now()).to_std().unwrap_or_default();
+                if let Some(token) = cancellation {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => return Ok(()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                } else {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            Err(e) => {
+                log::info!("UI Mode transition for user {}: {}", user_id, e);
+                return reanchor_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config,
+                    cancellation,
+                )
+                .await;
+            }
         }
     }
 }
@@ -1681,7 +1940,11 @@ async fn edit_existing_view(
     text: &str,
 ) -> std::result::Result<EditViewResult, RequestError> {
     let kb = view.kb.clone();
-    let edit_mode = edit_view_mode(config, user_id, text);
+    let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
+    let edit_mode = view_mode(text);
+    if current_mode.is_some_and(|mode| mode != edit_mode) {
+        return Ok(EditViewResult::ModeChanged);
+    }
     if edit_mode == UiMessageMode::Text {
         log::debug!(
             "UI view for user {} payload {} uses text mode: {} chars, caption limit {}, current message mode {:?}",
@@ -1738,7 +2001,21 @@ async fn reanchor_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> Result<()> {
-    send_new_view(bot, chat_id, user_id, view, config).await?;
+    reanchor_view_cancellable(bot, chat_id, old_message_id, user_id, view, config, None).await
+}
+
+async fn reanchor_view_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    old_message_id: MessageId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    if !send_new_view_inner(bot, chat_id, user_id, view, config, cancellation).await? {
+        return Ok(());
+    }
 
     let b = bot.clone();
     tokio::spawn(async move {
@@ -1837,10 +2114,26 @@ async fn send_new_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> Result<()> {
+    send_new_view_inner(bot, chat_id, user_id, view, config, None)
+        .await
+        .map(|_| ())
+}
+
+async fn send_new_view_inner(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<bool> {
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        return Ok(false);
+    }
     let text = view.get_text();
     let payload_str = view.payload.to_string();
 
-    if should_send_view_as_text(&text) {
+    if view_mode(&text) == UiMessageMode::Text {
         log::debug!(
             "New UI view for user {} payload {} uses text mode: {} chars exceed Telegram photo caption limit {}",
             user_id,
@@ -1853,6 +2146,10 @@ async fn send_new_view(
             .reply_markup(view.kb)
             .await?;
 
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            let _ = bot.delete_message(chat_id, sent.id).await;
+            return Ok(false);
+        }
         crate::core::update_user_state_with_mode(
             &config,
             user_id,
@@ -1861,7 +2158,7 @@ async fn send_new_view(
             UiMessageMode::Text,
         )
         .await;
-        return Ok(());
+        return Ok(true);
     }
 
     // Исправлено: send_photo принимает InputFile, а не InputMedia
@@ -1875,6 +2172,10 @@ async fn send_new_view(
         .reply_markup(view.kb)
         .await?;
 
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        let _ = bot.delete_message(chat_id, sent.id).await;
+        return Ok(false);
+    }
     // Критическая правка: сохраняем ID СООБЩЕНИЯ БОТА (sent.id), а не входящего апдейта
     crate::core::update_user_state_with_mode(
         &config,
@@ -1884,16 +2185,13 @@ async fn send_new_view(
         UiMessageMode::Photo,
     )
     .await;
-    Ok(())
+    Ok(true)
 }
 
-fn edit_view_mode(config: &Arc<AppConfig>, user_id: u64, text: &str) -> UiMessageMode {
-    let current_is_text = config
-        .sessions
-        .get(&user_id)
-        .is_some_and(|session| session.ui_message_mode == UiMessageMode::Text);
-
-    if current_is_text || should_send_view_as_text(text) {
+fn view_mode(text: &str) -> UiMessageMode {
+    // Compact formatting must not disable the configured background. Text is
+    // only a fallback for captions that exceed Telegram's photo limit.
+    if should_send_view_as_text(text) {
         UiMessageMode::Text
     } else {
         UiMessageMode::Photo
@@ -1936,7 +2234,9 @@ pub async fn handle_custom_interval(
     let text = msg.text().unwrap_or("").trim();
 
     // Пытаемся распарсить ввод
-    if let Ok(hours) = text.parse::<u32>() {
+    if let Some(hours) = text.parse::<u32>().ok().filter(|hours| {
+        (1..=crate::bot::screens::control::sensor_view::MAX_PERIOD_HOURS).contains(hours)
+    }) {
         let new_payload = Payload::Control(crate::bot::router::ControlPayload::QuickAction {
             room: room_id,
             device: device_id,
@@ -1952,7 +2252,7 @@ pub async fn handle_custom_interval(
         &dialogue,
         &msg,
         State::WaitingForGraphInterval { device_id, room_id },
-        "⚠️ Ошибка: введите целое число часов.".to_string(),
+        "⚠️ Ошибка: введите целое число часов от 1 до 240.".to_string(),
     )
     .await
 }
@@ -4011,6 +4311,22 @@ mod tests {
         let text = "x".repeat(TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS + 1);
 
         assert!(should_send_view_as_text(&text));
+    }
+
+    #[test]
+    fn compact_menus_keep_background_and_images_with_text_fallback_for_long_captions() {
+        let mut view = View {
+            compact: true,
+            text: "Кухня".into(),
+            ..Default::default()
+        };
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.image = Some(vec![1, 2, 3]);
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.compact = false;
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.text = "x".repeat(TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS + 1);
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Text);
     }
 
     #[test]

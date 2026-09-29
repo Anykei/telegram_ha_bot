@@ -12,6 +12,7 @@ pub async fn render(ctx: RenderContext) -> Result<View> {
     let kb = make_keyboard(ctx.is_admin, ctx.lang);
 
     Ok(View {
+        compact: true,
         notifications: ctx.notifications.clone(),
         text,
         kb,

@@ -1,3 +1,4 @@
+pub(crate) mod confirmations;
 pub(crate) mod format;
 pub(crate) mod handlers;
 pub(crate) mod models;

@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
         db: db_pool,
         root_user: options.root_user,
 
-        delete_notification_messages_timeout_s: 5,
+        delete_notification_messages_timeout_s: 0,
         ttl_notifications: 60 * 12,
         background_maintenance_interval_s: options.background_maintenance_interval_s,
         event_refresh_min_interval_s: options.event_refresh_min_interval_s,
@@ -112,6 +112,8 @@ async fn main() -> Result<()> {
 
         sessions: DashMap::new(),
         ui_locks: DashMap::new(),
+        view_updates: DashMap::new(),
+        climate_controls: Default::default(),
         recording_sends_in_progress: DashMap::new(),
 
         name_aliases: DashMap::new(),

@@ -209,7 +209,19 @@ impl HAClient {
                 "entity_id": {{{{ eid | to_json }}}},
                 "state": {{{{ states(eid) | to_json }}}},
                 "name": {{{{ (state_attr(eid, 'friendly_name') | default(eid, true)) | to_json }}}},
-                "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}}
+                "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}},
+                "attributes": {{%- if eid.startswith('climate.') -%}} {{
+                  "current_temperature": {{{{ state_attr(eid, 'current_temperature') | to_json }}}},
+                  "temperature": {{{{ state_attr(eid, 'temperature') | to_json }}}},
+                  "target_temp_low": {{{{ state_attr(eid, 'target_temp_low') | to_json }}}},
+                  "target_temp_high": {{{{ state_attr(eid, 'target_temp_high') | to_json }}}},
+                  "target_temp_step": {{{{ state_attr(eid, 'target_temp_step') | to_json }}}},
+                  "min_temp": {{{{ state_attr(eid, 'min_temp') | to_json }}}},
+                  "max_temp": {{{{ state_attr(eid, 'max_temp') | to_json }}}},
+                  "unit_of_measurement": {{{{ state_attr(eid, 'unit_of_measurement') | to_json }}}}
+                }} {{%- else -%}} {{
+                  "unit_of_measurement": {{{{ state_attr(eid, 'unit_of_measurement') | to_json }}}}
+                }} {{%- endif -%}}
               }} {{{{ "," if not loop.last }}}}
               {{%- endfor -%}}
             ]"#,

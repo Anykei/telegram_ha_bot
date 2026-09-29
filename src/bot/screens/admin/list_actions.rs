@@ -401,15 +401,20 @@ pub async fn render_room_camera_detail(
         Payload::Admin(AdminPayload::RoomCameras { room: room_id }),
     )]);
 
-    let text = format!(
+    let mut text = format!(
         "Камера комнаты\n\nКомната: {}\nКамера: {}\nID: `{}`\nКлип по умолчанию: {}с.",
         room.display_name(),
         camera.name,
         camera.id,
         camera.clip_seconds
     );
-    let image =
-        crate::bot::screens::cameras::camera_snapshot_image(ctx.config.clone(), &camera).await;
+    let (image, preview_text) = crate::bot::screens::cameras::camera_snapshot_preview(
+        ctx.config.clone(),
+        &camera,
+        ctx.lang,
+    )
+    .await;
+    text.push_str(&format!("\n\n{}", preview_text));
 
     Ok(View {
         header: Some("📹 Камера".to_string()),

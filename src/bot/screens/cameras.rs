@@ -234,7 +234,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         })
         .unwrap_or_default();
 
-    let text = format!(
+    let mut text = format!(
         "{}\n\nID: `{}`{}\n\n{}: {}с.",
         camera.name,
         camera.id,
@@ -242,7 +242,9 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         t(ctx.lang, "camera.detail.help"),
         camera.clip_seconds
     );
-    let image = camera_snapshot_image(ctx.config.clone(), &camera).await;
+    let (image, preview_text) =
+        camera_snapshot_preview(ctx.config.clone(), &camera, ctx.lang).await;
+    text.push_str(&format!("\n\n{}", preview_text));
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.detail.header").to_string()),
@@ -256,6 +258,20 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
 }
 
 pub async fn render_recording_archive(ctx: RenderContext, camera_id: i64) -> Result<View> {
+    let key = format!("ui:archive:{}:{camera_id}", ctx.user_id);
+    let saved = crate::db::settings::get_string(&key, &ctx.config.db)
+        .await?
+        .and_then(|value| Payload::from_string(&value).ok());
+    if let Some(Payload::Camera(CameraPayload::RecordingArchivePage {
+        camera,
+        filter,
+        page,
+    })) = saved
+    {
+        if camera == camera_id {
+            return render_recording_archive_page(ctx, camera_id, &filter, page).await;
+        }
+    }
     render_recording_archive_filtered(ctx, camera_id, "all").await
 }
 
@@ -263,6 +279,15 @@ pub async fn render_recording_archive_filtered(
     ctx: RenderContext,
     camera_id: i64,
     filter: &str,
+) -> Result<View> {
+    render_recording_archive_page(ctx, camera_id, filter, 0).await
+}
+
+pub async fn render_recording_archive_page(
+    ctx: RenderContext,
+    camera_id: i64,
+    filter: &str,
+    page: u16,
 ) -> Result<View> {
     let camera = crate::db::cameras::get_accessible_camera(
         ctx.user_id,
@@ -273,11 +298,37 @@ pub async fn render_recording_archive_filtered(
     .await?
     .context("Camera not found or access denied")?;
     let archive_filter = parse_archive_filter(filter);
-    let sessions = crate::db::camera_recording_sessions::list_camera_sessions_filtered(
+    let mut sessions = crate::db::camera_recording_sessions::list_camera_sessions_filtered(
         camera_id,
         archive_filter,
-        30,
-        0,
+        11,
+        i64::from(page) * 10,
+        &ctx.config.db,
+    )
+    .await?;
+    let page = if sessions.is_empty() && page > 0 {
+        sessions = crate::db::camera_recording_sessions::list_camera_sessions_filtered(
+            camera_id,
+            parse_archive_filter(filter),
+            11,
+            0,
+            &ctx.config.db,
+        )
+        .await?;
+        0
+    } else {
+        page
+    };
+    let has_next = sessions.len() > 10;
+    sessions.truncate(10);
+    let current = Payload::Camera(CameraPayload::RecordingArchivePage {
+        camera: camera_id,
+        filter: filter.into(),
+        page,
+    });
+    crate::db::settings::set_string(
+        &format!("ui:archive:{}:{camera_id}", ctx.user_id),
+        &current.to_string(),
         &ctx.config.db,
     )
     .await?;
@@ -301,10 +352,39 @@ pub async fn render_recording_archive_filtered(
         )]);
     }
 
-    rows.push(vec![crate::bot::screens::common::back_button_lang(
+    let mut pager = Vec::new();
+    if page > 0 {
+        pager.push(InlineKeyboardButton::callback(
+            "◀",
+            Payload::Camera(CameraPayload::RecordingArchivePage {
+                camera: camera_id,
+                filter: filter.into(),
+                page: page - 1,
+            })
+            .to_string(),
+        ));
+    }
+    pager.push(InlineKeyboardButton::callback(
+        format!("{} {}", t(ctx.lang, "action_groups.page"), page + 1),
+        current.to_string(),
+    ));
+    if has_next && page < u16::MAX {
+        pager.push(InlineKeyboardButton::callback(
+            "▶",
+            Payload::Camera(CameraPayload::RecordingArchivePage {
+                camera: camera_id,
+                filter: filter.into(),
+                page: page + 1,
+            })
+            .to_string(),
+        ));
+    }
+    rows.push(pager);
+    rows.extend(crate::bot::screens::common::navigation_rows(
         ctx.lang,
+        current.clone(),
         Payload::Camera(CameraPayload::CameraDetail { id: camera_id }),
-    )]);
+    ));
 
     let text = if sessions.is_empty() {
         format!(
@@ -329,7 +409,7 @@ pub async fn render_recording_archive_filtered(
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
-        payload: Payload::Camera(CameraPayload::RecordingArchive { camera: camera_id }),
+        payload: current,
         image,
         ..Default::default()
     })
@@ -632,11 +712,52 @@ fn recording_pre_roll_text(
     "\nPre-roll: ожидает буфер".to_string()
 }
 
-pub(crate) async fn camera_snapshot_image(
+pub(crate) async fn camera_snapshot_preview(
     config: std::sync::Arc<crate::models::AppConfig>,
     camera: &crate::db::cameras::Camera,
-) -> Option<Vec<u8>> {
-    crate::core::camera_snapshots::resolve(config, camera.clone()).await
+    lang: crate::i18n::Language,
+) -> (Option<Vec<u8>>, String) {
+    let preview = crate::core::camera_snapshots::resolve(config, camera.clone()).await;
+    let text = snapshot_preview_text(&preview, lang, Utc::now());
+    // A missing camera frame must not fall back to another camera's UI background.
+    let image = preview
+        .bytes
+        .unwrap_or_else(|| crate::bot::utils::UI_PLACEHOLDER_BYTES.to_vec());
+    (Some(image), text)
+}
+
+fn snapshot_preview_text(
+    preview: &crate::core::camera_snapshots::SnapshotPreview,
+    lang: crate::i18n::Language,
+    now: chrono::DateTime<Utc>,
+) -> String {
+    let Some(received_at) = preview.received_at.filter(|_| preview.bytes.is_some()) else {
+        return t(
+            lang,
+            if preview.refreshing {
+                "camera.preview.refreshing"
+            } else {
+                "camera.preview.unavailable"
+            },
+        )
+        .to_string();
+    };
+    let mut text = format!(
+        "{}: {}",
+        t(lang, "camera.preview.received"),
+        received_at
+            .with_timezone(&chrono::Local)
+            .format("%d.%m.%Y %H:%M:%S %:z")
+    );
+    if preview.failed {
+        text.push_str(&format!("\n{}", t(lang, "camera.preview.failed")));
+    } else if preview.is_stale(now) {
+        text.push_str(&format!("\n{}", t(lang, "camera.preview.stale")));
+    }
+    if preview.refreshing {
+        text.push_str(&format!("\n{}", t(lang, "camera.preview.refreshing")));
+    }
+    text
 }
 
 async fn recording_archive_preview(

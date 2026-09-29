@@ -570,7 +570,7 @@ pub async fn list_camera_sessions_filtered(
     query.push(
         r#"
         ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
-                 created_at DESC
+                 created_at DESC, id DESC
         LIMIT
         "#,
     );

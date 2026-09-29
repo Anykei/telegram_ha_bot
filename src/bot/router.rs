@@ -14,6 +14,7 @@ use teloxide::types::InlineKeyboardMarkup;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 
+#[derive(Clone)]
 pub struct RenderContext {
     pub user_id: u64,
     pub config: Arc<AppConfig>,
@@ -150,6 +151,8 @@ pub enum DeviceCmd {
         o: i32,
     },
     EnterManualInput,
+    // Append variants to preserve existing postcard callback encodings.
+    AdjustTemp(i8),
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -194,6 +197,7 @@ impl From<DeviceCmd> for devices::DeviceAction {
             DeviceCmd::TurnOff => DeviceAction::TurnOff,
             DeviceCmd::SetLevel(v) => DeviceAction::SetLevel(v),
             DeviceCmd::SetTemp(v) => DeviceAction::SetTemperature(v),
+            DeviceCmd::AdjustTemp(v) => DeviceAction::AdjustTemperature(v),
             DeviceCmd::ShowChart { h, o } => DeviceAction::GenerateChart(ChartParams {
                 period_hours: h,
                 offset_hours: o,
@@ -244,6 +248,23 @@ pub enum ControlPayload {
     },
     ExecuteHaNativeAction {
         action: i64,
+    },
+    // Append only: callback indices are persisted in Telegram messages.
+    ReviewAction {
+        id: i64,
+    },
+    ConfirmAction {
+        id: i64,
+    },
+    CancelAction {
+        id: i64,
+    },
+    RoomsPage {
+        page: u16,
+    },
+    RoomPage {
+        room: i64,
+        page: u16,
     },
 }
 
@@ -303,6 +324,11 @@ pub enum CameraPayload {
     ToggleRecordingGroupMode {
         group: i64,
     },
+    RecordingArchivePage {
+        camera: i64,
+        filter: String,
+        page: u16,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -354,6 +380,13 @@ pub enum SettingsPayload {
     ToggleCritical {
         room: i64,
         device: i64,
+    },
+    RoomsPage {
+        page: u16,
+    },
+    RoomPage {
+        room: i64,
+        page: u16,
     },
 }
 
@@ -908,6 +941,90 @@ impl RenderContext {
 }
 
 impl Payload {
+    /// Persisted contexts from older versions can contain action callbacks.
+    /// Refreshing them must only read state, including after a restart.
+    pub fn for_refresh(&self) -> Self {
+        match self {
+            Self::Control(control) => Self::Control(control_recovery_payload(control)),
+            Self::Admin(AdminPayload::ExecuteActionGroup { group, .. }) => {
+                Self::Admin(AdminPayload::ActionGroupDetail { group: *group })
+            }
+            Self::Admin(AdminPayload::ExecuteHaNativeAction { action }) => {
+                Self::Admin(AdminPayload::HaNativeActionDetail { action: *action })
+            }
+            Self::Camera(
+                CameraPayload::StopRecording { camera, session }
+                | CameraPayload::ToggleRecordingPin { camera, session }
+                | CameraPayload::DeleteRecording { camera, session },
+            ) => Self::Camera(CameraPayload::RecordingSession {
+                camera: *camera,
+                session: *session,
+            }),
+            Self::Camera(CameraPayload::ToggleRecordingGroupMode { group }) => {
+                Self::Camera(CameraPayload::RecordingGroupModeDetail { group: *group })
+            }
+            Self::Command(_) => Self::Home,
+            _ => self.clone(),
+        }
+    }
+
+    pub fn temperature_command(
+        &self,
+    ) -> Option<(i64, i64, crate::core::climate_control::TemperatureCommand)> {
+        use crate::core::climate_control::TemperatureCommand;
+        match self {
+            Self::Control(ControlPayload::QuickAction {
+                room,
+                device,
+                cmd: DeviceCmd::SetTemp(target),
+            }) => Some((*room, *device, TemperatureCommand::Set(*target))),
+            Self::Control(ControlPayload::QuickAction {
+                room,
+                device,
+                cmd: DeviceCmd::AdjustTemp(direction),
+            }) => Some((*room, *device, TemperatureCommand::Step(*direction))),
+            _ => None,
+        }
+    }
+
+    pub fn is_navigation_view(&self) -> bool {
+        matches!(
+            self,
+            Self::Home
+                | Self::Control(
+                    ControlPayload::ListRooms
+                        | ControlPayload::RoomDetail { .. }
+                        | ControlPayload::RoomsPage { .. }
+                        | ControlPayload::RoomPage { .. }
+                        | ControlPayload::ActionGroups
+                        | ControlPayload::ActionGroupDetail { .. }
+                        | ControlPayload::HaNativeActionDetail { .. }
+                )
+                | Self::Camera(
+                    CameraPayload::ListCameras
+                        | CameraPayload::CameraDetail { .. }
+                        | CameraPayload::RecordingArchive { .. }
+                        | CameraPayload::RecordingArchiveFiltered { .. }
+                        | CameraPayload::RecordingArchivePage { .. }
+                        | CameraPayload::RecordingSession { .. }
+                )
+        )
+    }
+
+    pub fn is_device_view(&self) -> bool {
+        matches!(self, Self::Control(ControlPayload::DeviceControl { .. }))
+    }
+
+    pub fn is_chart_navigation(&self) -> bool {
+        matches!(
+            self,
+            Self::Control(ControlPayload::QuickAction {
+                cmd: DeviceCmd::ShowChart { .. },
+                ..
+            })
+        )
+    }
+
     /// Сериализация в компактную Base64 строку.
     /// JSON (67 байт) -> Binary (~12 байт) -> Base64 (~16 символов).
     #[allow(clippy::inherent_to_string)]
@@ -962,31 +1079,209 @@ pub async fn router(
         settings_origin: SettingsOrigin::Home,
     };
 
-    let mut view = match payload {
-        Payload::Home => super::screens::home::render(ctx).await?,
-        Payload::Control(sub_payload) => router_control(ctx, sub_payload).await?,
-        Payload::Settings(sub_payload) => router_settings(ctx, sub_payload).await?,
-        Payload::Camera(sub_payload) => router_camera(ctx, sub_payload).await?,
-        Payload::Command(_) => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
-        Payload::Admin(sub_payload) => router_admin(ctx, sub_payload).await?,
-        Payload::InDev => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
-        Payload::AdminSettings(sub_payload) => {
-            let mut ctx = ctx;
-            ctx.settings_origin = SettingsOrigin::Admin;
-            router_settings(ctx, sub_payload).await?
+    if let Payload::Control(ControlPayload::QuickAction { room, device, cmd }) = &payload {
+        if !can_run_device_action(&ctx, *device, cmd).await? {
+            return Ok(access_denied_view(
+                ctx,
+                Payload::Control(ControlPayload::RoomDetail { room: *room }),
+            ));
         }
+    }
+    let compact = matches!(payload, Payload::Home | Payload::Control(_));
+    let mut view = match super::confirmations::intercept(&ctx, &payload).await {
+        Ok(Some(view)) => view,
+        Err(error) => {
+            log::warn!("UI confirmation preparation failed for user {user_id}: {error:#}");
+            control_error_view(
+                ctx,
+                match &payload {
+                    Payload::Control(control) => control_recovery_payload(control),
+                    _ => ControlPayload::ActionGroups,
+                },
+                true,
+            )
+        }
+        Ok(None) => match payload {
+            Payload::Home => super::screens::home::render(ctx).await?,
+            Payload::Control(sub_payload) => router_control(ctx, sub_payload).await?,
+            Payload::Settings(sub_payload) => router_settings(ctx, sub_payload).await?,
+            Payload::Camera(sub_payload) => router_camera(ctx, sub_payload).await?,
+            Payload::Command(_) => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
+            Payload::Admin(sub_payload) => router_admin(ctx, sub_payload).await?,
+            Payload::InDev => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
+            Payload::AdminSettings(sub_payload) => {
+                let mut ctx = ctx;
+                ctx.settings_origin = SettingsOrigin::Admin;
+                router_settings(ctx, sub_payload).await?
+            }
+        },
     };
+    view.compact |= compact;
     let final_lang = db::get_user_language(user_id, &config.db)
         .await
         .ok()
         .flatten()
         .unwrap_or(config.default_language);
+    if matches!(
+        &view.payload,
+        Payload::Camera(_)
+            | Payload::Control(
+                ControlPayload::ActionGroups
+                    | ControlPayload::ActionGroupDetail { .. }
+                    | ControlPayload::HaNativeActionDetail { .. }
+            )
+    ) {
+        let refresh = view.payload.for_refresh().to_string();
+        if !view.kb.inline_keyboard.iter().flatten().any(|button| {
+            matches!(&button.kind,
+            teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if data == &refresh)
+        }) {
+            let position = view.kb.inline_keyboard.len().saturating_sub(1);
+            view.kb.inline_keyboard.insert(
+                position,
+                vec![teloxide::types::InlineKeyboardButton::callback(
+                    t(final_lang, "control.refresh"),
+                    refresh,
+                )],
+            );
+        }
+        let home = Payload::Home.to_string();
+        if !view.kb.inline_keyboard.iter().flatten().any(|button| {
+            matches!(&button.kind,
+            teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if data == &home)
+        }) {
+            view.kb
+                .inline_keyboard
+                .push(vec![super::screens::common::main_menu_button_lang(
+                    final_lang,
+                )]);
+        }
+    }
     view.lang = final_lang;
+    view.rendered_at = Some(chrono::Utc::now());
     Ok(view)
 }
 
 async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::Result<View> {
+    let action_failed = matches!(&payload, ControlPayload::QuickAction { cmd, .. } if action_requires_control(cmd))
+        || matches!(
+            &payload,
+            ControlPayload::ExecuteActionGroup { .. }
+                | ControlPayload::ExecuteHaNativeAction { .. }
+        );
+    let recovery = control_recovery_payload(&payload);
+    match router_control_inner(ctx.clone(), payload).await {
+        Ok(view) => Ok(view),
+        Err(error) => {
+            log::warn!(
+                "Control screen failed for user {}: {:#}",
+                ctx.user_id,
+                error
+            );
+            Ok(control_error_view(ctx, recovery, action_failed))
+        }
+    }
+}
+
+fn control_recovery_payload(payload: &ControlPayload) -> ControlPayload {
     match payload {
+        ControlPayload::ConfirmAction { id } | ControlPayload::CancelAction { id } => {
+            ControlPayload::ReviewAction { id: *id }
+        }
+        ControlPayload::QuickAction {
+            cmd: DeviceCmd::ShowChart { .. } | DeviceCmd::EnterManualInput,
+            ..
+        } => payload.clone(),
+        ControlPayload::QuickAction { room, device, cmd } => match cmd {
+            DeviceCmd::SetTemp(_) => ControlPayload::DeviceControl {
+                room: *room,
+                device: *device,
+            },
+            DeviceCmd::Toggle | DeviceCmd::TurnOn | DeviceCmd::TurnOff | DeviceCmd::SetLevel(_) => {
+                ControlPayload::RoomDetail { room: *room }
+            }
+            _ => ControlPayload::DeviceControl {
+                room: *room,
+                device: *device,
+            },
+        },
+        ControlPayload::ExecuteActionGroup { group, .. } => {
+            ControlPayload::ActionGroupDetail { group: *group }
+        }
+        ControlPayload::ExecuteHaNativeAction { action } => {
+            ControlPayload::HaNativeActionDetail { action: *action }
+        }
+        _ => payload.clone(),
+    }
+}
+
+fn control_error_view(ctx: RenderContext, recovery: ControlPayload, action_failed: bool) -> View {
+    let back = match &recovery {
+        ControlPayload::DeviceControl { room, .. } => {
+            Payload::Control(ControlPayload::RoomDetail { room: *room })
+        }
+        ControlPayload::QuickAction { room, .. } => {
+            Payload::Control(ControlPayload::RoomDetail { room: *room })
+        }
+        ControlPayload::RoomDetail { .. } | ControlPayload::RoomPage { .. } => {
+            Payload::Control(ControlPayload::ListRooms)
+        }
+        ControlPayload::ActionGroupDetail { .. } | ControlPayload::HaNativeActionDetail { .. } => {
+            Payload::Control(ControlPayload::ActionGroups)
+        }
+        _ => Payload::Home,
+    };
+    let payload = Payload::Control(recovery);
+    View {
+        notifications: ctx.notifications,
+        alert: Some(
+            t(
+                ctx.lang,
+                if action_failed {
+                    "control.action_failed"
+                } else {
+                    "control.load_failed"
+                },
+            )
+            .into(),
+        ),
+        kb: InlineKeyboardMarkup::new(vec![
+            vec![teloxide::types::InlineKeyboardButton::callback(
+                t(ctx.lang, "control.refresh"),
+                payload.to_string(),
+            )],
+            vec![super::screens::common::back_button_lang(ctx.lang, back)],
+            vec![super::screens::common::main_menu_button_lang(ctx.lang)],
+        ]),
+        payload,
+        lang: ctx.lang,
+        ..Default::default()
+    }
+}
+
+async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> anyhow::Result<View> {
+    match payload {
+        ControlPayload::ReviewAction { id } => {
+            super::confirmations::handle(&ctx, id, false, false).await
+        }
+        ControlPayload::ConfirmAction { id } => {
+            super::confirmations::handle(&ctx, id, true, false).await
+        }
+        ControlPayload::CancelAction { id } => {
+            super::confirmations::handle(&ctx, id, false, true).await
+        }
+        ControlPayload::RoomsPage { page } => {
+            super::screens::rooms::render_page(ctx, RoomViewMode::Control, Some(page)).await
+        }
+        ControlPayload::RoomPage { room, page } => {
+            if !db::rooms::can_open_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Control(ControlPayload::ListRooms),
+                ));
+            }
+            room::render_page(ctx, room, RoomViewMode::Control, Some(page)).await
+        }
         ControlPayload::ListRooms => {
             Ok(super::screens::rooms::render(ctx, RoomViewMode::Control).await?)
         }
@@ -1042,6 +1337,24 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
 
             Ok(room::render(ctx, room, RoomViewMode::Control).await?)
         }
+        ControlPayload::DeviceControl { room, device } => {
+            if !db::access::can_view_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db)
+                .await?
+            {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Control(ControlPayload::RoomDetail { room }),
+                ));
+            }
+            let saved =
+                super::screens::control::sensor_view::saved_chart_payload(&ctx, room, device)
+                    .await?;
+            let cmd = match saved {
+                Payload::Control(ControlPayload::QuickAction { cmd, .. }) => cmd,
+                _ => DeviceCmd::ShowChart { h: 24, o: 0 },
+            };
+            super::screens::control::device_control::render(ctx, room, device, cmd).await
+        }
         ControlPayload::QuickAction { room, device, cmd } => {
             if !can_run_device_action(&ctx, device, &cmd).await? {
                 return Ok(access_denied_view(
@@ -1050,34 +1363,70 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
                 ));
             }
 
+            if matches!(cmd, DeviceCmd::ShowChart { .. }) {
+                return super::screens::control::device_control::render(ctx, room, device, cmd)
+                    .await;
+            }
+
+            if let Some((_, _, command)) = Payload::Control(ControlPayload::QuickAction {
+                room,
+                device,
+                cmd: cmd.clone(),
+            })
+            .temperature_command()
+            {
+                let result = ctx
+                    .config
+                    .climate_controls
+                    .enqueue(ctx.config.clone(), ctx.user_id, device, command)?
+                    .await
+                    .context("Climate command worker stopped")??;
+                let lang = ctx.lang;
+                let mut view = super::screens::control::device_control::render(
+                    ctx,
+                    room,
+                    device,
+                    DeviceCmd::ShowChart { h: 24, o: 0 },
+                )
+                .await?;
+                view.notice = Some(super::screens::control::temperature_command_notice(
+                    lang, &result,
+                ));
+                return Ok(view);
+            }
+
             let action = devices::DeviceAction::from(cmd.clone());
 
             let result = devices::handle_device_interaction(&ctx.config, device, action).await?;
 
             match result {
                 InteractionResult::Processed => {
-                    Ok(room::render(ctx, room, RoomViewMode::Control).await?)
+                    let lang = ctx.lang;
+                    let mut view = room::render(ctx, room, RoomViewMode::Control).await?;
+                    view.notice = Some(t(lang, "control.sent").into());
+                    Ok(view)
                 }
                 InteractionResult::RequiresDetail => Ok(
                     super::screens::control::device_control::render(ctx, room, device, cmd).await?,
                 ),
                 InteractionResult::RequiresInput(intent) => {
                     let state = State::from_intent(intent, device, room);
-                    Ok(super::screens::control::sensor_view::render_manual_input(
+                    let mut view = super::screens::control::sensor_view::render_manual_input(
                         room, device, state,
-                    ))
+                    );
+                    let previous = super::screens::control::sensor_view::saved_chart_payload(
+                        &ctx, room, device,
+                    )
+                    .await?;
+                    view.kb.inline_keyboard[0][0] = teloxide::types::InlineKeyboardButton::callback(
+                        t(ctx.lang, "common.cancel"),
+                        previous.to_string(),
+                    );
+                    Ok(view)
                 }
-                InteractionResult::Error { error: e } => Ok(View {
-                    alert: Option::from(e),
-                    ..Default::default()
-                }),
+                InteractionResult::Error { error } => Err(anyhow::anyhow!(error)),
             }
         }
-        _ => Ok(super::screens::common::in_dev_menu(
-            ctx,
-            Payload::Control(ControlPayload::ListRooms {}),
-        )
-        .await?),
     }
 }
 
@@ -1109,7 +1458,7 @@ async fn cycle_setting(
     Ok(next)
 }
 
-fn action_requires_control(cmd: &DeviceCmd) -> bool {
+pub(super) fn action_requires_control(cmd: &DeviceCmd) -> bool {
     matches!(
         cmd,
         DeviceCmd::Toggle
@@ -1117,6 +1466,7 @@ fn action_requires_control(cmd: &DeviceCmd) -> bool {
             | DeviceCmd::TurnOff
             | DeviceCmd::SetLevel(_)
             | DeviceCmd::SetTemp(_)
+            | DeviceCmd::AdjustTemp(_)
     )
 }
 
@@ -1158,6 +1508,19 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
             }
 
             Ok(super::screens::cameras::render_recording_archive(ctx, camera).await?)
+        }
+        CameraPayload::RecordingArchivePage {
+            camera,
+            filter,
+            page,
+        } => {
+            if !can_access_camera(&ctx, camera).await? {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Camera(CameraPayload::ListCameras),
+                ));
+            }
+            super::screens::cameras::render_recording_archive_page(ctx, camera, &filter, page).await
         }
         CameraPayload::RecordingArchiveFiltered { camera, filter } => {
             if !can_access_camera(&ctx, camera).await? {
@@ -1359,6 +1722,16 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
     }
 
     match payload {
+        SettingsPayload::RoomsPage { page } => {
+            super::screens::rooms::render_page(ctx, RoomViewMode::Settings, Some(page)).await
+        }
+        SettingsPayload::RoomPage { room, page } => {
+            if !db::rooms::can_open_room(ctx.user_id, ctx.is_admin, room, &ctx.config.db).await? {
+                let back = ctx.settings_payload(SettingsPayload::ListRooms);
+                return Ok(access_denied_view(ctx, back));
+            }
+            room::render_page(ctx, room, RoomViewMode::Settings, Some(page)).await
+        }
         SettingsPayload::ListRooms => {
             Ok(super::screens::rooms::render(ctx, RoomViewMode::Settings).await?)
         }
@@ -3799,6 +4172,10 @@ fn recording_condition_keys(
 }
 
 #[cfg(test)]
+#[path = "control_tests.rs"]
+mod control_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::EnvPaths;
@@ -4114,6 +4491,14 @@ mod tests {
 
     fn control_payload_samples() -> Vec<ControlPayload> {
         vec![
+            ControlPayload::ReviewAction { id: i64::MAX },
+            ControlPayload::ConfirmAction { id: i64::MAX },
+            ControlPayload::CancelAction { id: i64::MAX },
+            ControlPayload::RoomsPage { page: u16::MAX },
+            ControlPayload::RoomPage {
+                room: i64::MAX,
+                page: u16::MAX,
+            },
             ControlPayload::ListRooms,
             ControlPayload::RoomDetail { room: 1 },
             ControlPayload::DeviceControl { room: 1, device: 2 },
@@ -4145,6 +4530,11 @@ mod tests {
             ControlPayload::QuickAction {
                 room: 1,
                 device: 2,
+                cmd: DeviceCmd::AdjustTemp(-1),
+            },
+            ControlPayload::QuickAction {
+                room: 1,
+                device: 2,
                 cmd: DeviceCmd::ShowChart { h: 168, o: -24 },
             },
             ControlPayload::QuickAction {
@@ -4169,6 +4559,11 @@ mod tests {
 
     fn settings_payload_samples() -> Vec<SettingsPayload> {
         vec![
+            SettingsPayload::RoomsPage { page: u16::MAX },
+            SettingsPayload::RoomPage {
+                room: i64::MAX,
+                page: u16::MAX,
+            },
             SettingsPayload::ListRooms,
             SettingsPayload::RoomDetail { room: 1 },
             SettingsPayload::DeviceDetail { room: 1, device: 2 },
@@ -4193,6 +4588,11 @@ mod tests {
 
     fn camera_payload_samples() -> Vec<CameraPayload> {
         vec![
+            CameraPayload::RecordingArchivePage {
+                camera: i64::MAX,
+                filter: "rule:9223372036854775807".into(),
+                page: u16::MAX,
+            },
             CameraPayload::ListCameras,
             CameraPayload::CameraDetail { id: 1 },
             CameraPayload::Snapshot { id: 1 },
@@ -4662,6 +5062,11 @@ mod tests {
 
     fn control_route_name(payload: &ControlPayload) -> &'static str {
         match payload {
+            ControlPayload::ReviewAction { .. } => "ControlPayload::ReviewAction",
+            ControlPayload::ConfirmAction { .. } => "ControlPayload::ConfirmAction",
+            ControlPayload::CancelAction { .. } => "ControlPayload::CancelAction",
+            ControlPayload::RoomsPage { .. } => "ControlPayload::RoomsPage",
+            ControlPayload::RoomPage { .. } => "ControlPayload::RoomPage",
             ControlPayload::ListRooms => "ControlPayload::ListRooms",
             ControlPayload::RoomDetail { .. } => "ControlPayload::RoomDetail",
             ControlPayload::DeviceControl { .. } => "ControlPayload::DeviceControl",
@@ -4676,6 +5081,8 @@ mod tests {
 
     fn settings_route_name(payload: &SettingsPayload) -> &'static str {
         match payload {
+            SettingsPayload::RoomsPage { .. } => "SettingsPayload::RoomsPage",
+            SettingsPayload::RoomPage { .. } => "SettingsPayload::RoomPage",
             SettingsPayload::ListRooms => "SettingsPayload::ListRooms",
             SettingsPayload::RoomDetail { .. } => "SettingsPayload::RoomDetail",
             SettingsPayload::DeviceDetail { .. } => "SettingsPayload::DeviceDetail",
@@ -4692,6 +5099,7 @@ mod tests {
 
     fn camera_route_name(payload: &CameraPayload) -> &'static str {
         match payload {
+            CameraPayload::RecordingArchivePage { .. } => "CameraPayload::RecordingArchivePage",
             CameraPayload::ListCameras => "CameraPayload::ListCameras",
             CameraPayload::CameraDetail { .. } => "CameraPayload::CameraDetail",
             CameraPayload::Snapshot { .. } => "CameraPayload::Snapshot",
@@ -5059,6 +5467,8 @@ mod tests {
 
             sessions: DashMap::new(),
             ui_locks: DashMap::new(),
+            view_updates: DashMap::new(),
+            climate_controls: Default::default(),
             recording_sends_in_progress: DashMap::new(),
 
             name_aliases: DashMap::new(),

@@ -25,6 +25,7 @@ pub enum DeviceAction {
     TurnOff,
     SetLevel(u8),
     SetTemperature(f32),
+    AdjustTemperature(i8),
     GenerateChart(ChartParams),
     EnterManualInput,
 }
@@ -129,7 +130,7 @@ impl SmartEntity for SmartDevice {
                             }
                         };
                     }
-                    _ => "toggle",
+                    _ => return InteractionResult::RequiresDetail,
                 };
 
                 if ha.call_service(domain, service, entity_id).await.is_ok() {
@@ -142,7 +143,34 @@ impl SmartEntity for SmartDevice {
             }
 
             Self::Climate(_) => match action {
+                DeviceAction::AdjustTemperature(direction) => {
+                    if !matches!(direction, -1 | 1) {
+                        return InteractionResult::Error {
+                            error: "Invalid temperature step".into(),
+                        };
+                    }
+                    let Some(current) = entity.attributes.temperature else {
+                        return InteractionResult::Error {
+                            error: "Temperature unavailable".into(),
+                        };
+                    };
+                    let step = entity
+                        .attributes
+                        .target_temp_step
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                        .unwrap_or(0.5);
+                    let target =
+                        ((current + f32::from(direction) * step) * 1000.0).round() / 1000.0;
+                    self.on_click(ha, DeviceAction::SetTemperature(target))
+                        .await
+                }
                 DeviceAction::SetTemperature(tmp) => {
+                    if !entity.temperature_target_is_valid(tmp) {
+                        return InteractionResult::Error {
+                            error: "Temperature target is unavailable or outside device limits"
+                                .into(),
+                        };
+                    }
                     let data = serde_json::json!({ "temperature": tmp });
                     if ha
                         .call_service_with_data("climate", "set_temperature", entity_id, data)
@@ -157,8 +185,12 @@ impl SmartEntity for SmartDevice {
                     }
                 }
                 DeviceAction::Toggle => {
-                    let _ = ha.call_service("climate", "toggle", entity_id).await;
-                    InteractionResult::Processed
+                    match ha.call_service("climate", "toggle", entity_id).await {
+                        Ok(()) => InteractionResult::Processed,
+                        Err(error) => InteractionResult::Error {
+                            error: error.to_string(),
+                        },
+                    }
                 }
                 _ => InteractionResult::RequiresDetail,
             },
@@ -176,8 +208,15 @@ impl SmartEntity for SmartDevice {
             Self::Number(_) => InteractionResult::RequiresDetail,
 
             Self::Unknown(e) => {
-                let _ = ha.call_service(domain, "toggle", &e.entity_id).await;
-                InteractionResult::Processed
+                if !matches!(action, DeviceAction::Toggle) {
+                    return InteractionResult::RequiresDetail;
+                }
+                match ha.call_service(domain, "toggle", &e.entity_id).await {
+                    Ok(()) => InteractionResult::Processed,
+                    Err(error) => InteractionResult::Error {
+                        error: error.to_string(),
+                    },
+                }
             }
         }
     }
@@ -336,6 +375,7 @@ mod tests {
                 name: "Test Lamp".to_string(),
                 state: "off".to_string(),
                 device_class: Some("switch".to_string()),
+                attributes: Default::default(),
             }],
             calls: calls.clone(),
         });
@@ -376,6 +416,8 @@ mod tests {
             voice_response_format: crate::options::VoiceResponseFormat::Text,
             sessions: DashMap::<u64, UserSession>::new(),
             ui_locks: DashMap::new(),
+            view_updates: DashMap::new(),
+            climate_controls: Default::default(),
             recording_sends_in_progress: DashMap::new(),
             name_aliases: DashMap::new(),
             state_aliases: DashMap::<String, HashMap<String, String>>::new(),

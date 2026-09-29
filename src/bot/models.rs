@@ -18,10 +18,17 @@ pub struct View {
     pub notice: Option<String>,
     pub image: Option<Vec<u8>>,
     pub lang: Language,
+    #[serde(default)]
+    pub compact: bool,
+    #[serde(default)]
+    pub rendered_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl View {
     pub fn get_text(&self) -> String {
+        if self.compact {
+            return super::utils::md::plain(&self.get_compact_text());
+        }
         let header_title = self
             .header
             .as_deref()
@@ -40,7 +47,7 @@ impl View {
                 "{} {}: {} {}",
                 item.icon,
                 safe_label,
-                item.value,
+                super::utils::md::bold(&item.value),
                 super::utils::md::italic(&time_ago)
             ));
         }
@@ -82,7 +89,12 @@ impl View {
             final_parts.push(body_content);
         }
 
-        let refreshed_at = Local::now().format("%H:%M:%S").to_string();
+        let refreshed_at = self
+            .rendered_at
+            .unwrap_or_else(chrono::Utc::now)
+            .with_timezone(&Local)
+            .format("%H:%M:%S")
+            .to_string();
         final_parts.push(separator.to_string());
         final_parts.push(format!(
             "{} {}",
@@ -94,6 +106,9 @@ impl View {
     }
 
     pub fn get_plain_text(&self) -> String {
+        if self.compact {
+            return self.get_compact_text();
+        }
         let header_title = self
             .header
             .clone()
@@ -148,7 +163,12 @@ impl View {
             final_parts.push(body_content);
         }
 
-        let refreshed_at = Local::now().format("%H:%M:%S").to_string();
+        let refreshed_at = self
+            .rendered_at
+            .unwrap_or_else(chrono::Utc::now)
+            .with_timezone(&Local)
+            .format("%H:%M:%S")
+            .to_string();
         final_parts.push(separator.to_string());
         final_parts.push(format!(
             "{} {}",
@@ -158,6 +178,42 @@ impl View {
 
         final_parts.join("\n")
     }
+
+    fn get_compact_text(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(header) = &self.header {
+            parts.push(header.clone());
+        }
+        for item in &self.notifications {
+            let time_ago =
+                crate::core::presentation::StateFormatter::format_last_update(item.last_update);
+            parts.push(format!(
+                "{} {}: {} {}",
+                item.icon, item.label, item.value, time_ago
+            ));
+        }
+        if let Some(notice) = &self.notice {
+            parts.push(format!("✅ {notice}"));
+        }
+        if let Some(alert) = &self.alert {
+            parts.push(format!("⚠️ {alert}"));
+        }
+        if !self.text.is_empty() {
+            parts.push(self.text.clone());
+        }
+        if parts.is_empty() {
+            parts.push(t(self.lang, "app.title").into());
+        }
+        parts.push(format!(
+            "{} {}",
+            t(self.lang, "common.updated"),
+            self.rendered_at
+                .unwrap_or_else(chrono::Utc::now)
+                .with_timezone(&Local)
+                .format("%H:%M:%S")
+        ));
+        parts.join("\n\n")
+    }
 }
 
 #[cfg(test)]
@@ -165,10 +221,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compact_view_keeps_system_status_and_alerts_without_separators() {
+        let mut view = View {
+            compact: true,
+            text: "Кухня".into(),
+            ..Default::default()
+        };
+        view.notifications = vec![
+            HeaderItem {
+                icon: "✅".into(),
+                label: t(Language::Ru, "system.label").into(),
+                value: t(Language::Ru, "system.ok").into(),
+                last_update: chrono::Utc::now(),
+            },
+            HeaderItem {
+                icon: "🔴".into(),
+                label: "Дверь".into(),
+                value: "Открыто (2)".into(),
+                last_update: chrono::Utc::now(),
+            },
+        ];
+        let text = view.get_plain_text();
+        assert!(text.contains("🔴 Дверь: Открыто (2)"));
+        assert!(text.contains("✅ Система: Все спокойно"));
+        assert!(text.contains("только что"));
+        assert!(text.contains("Меню обновлено"));
+        assert!(!text.contains("──"));
+        assert!(view.get_text().contains("Открыто \\(2\\)"));
+    }
+
+    #[test]
     fn view_text_contains_visible_refresh_time() {
         let text = View::default().get_text();
 
-        assert!(text.contains("Обновлено:"));
+        assert!(text.contains("Меню обновлено:"));
     }
 
     #[test]

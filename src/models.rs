@@ -44,6 +44,7 @@ pub struct AppConfig {
 
     // pub delete_chart_timeout_s: u64,
     // pub delete_help_messages_timeout_s: u64,
+    /// Zero keeps notifications in the chat until the user deletes them.
     pub delete_notification_messages_timeout_s: u64,
     // pub delete_error_messages_timeout_s: u64,
     pub ttl_notifications: u64,
@@ -74,6 +75,8 @@ pub struct AppConfig {
 
     pub sessions: DashMap<u64, UserSession>,
     pub ui_locks: DashMap<u64, Arc<Mutex<()>>>,
+    pub view_updates: DashMap<u64, Arc<tokio_util::sync::CancellationToken>>,
+    pub climate_controls: crate::core::climate_control::ClimateControls,
     pub recording_sends_in_progress: DashMap<(u64, i64), DateTime<Utc>>,
 
     pub name_aliases: DashMap<String, String>,
@@ -85,6 +88,29 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn begin_view_update(&self, user_id: u64) -> Arc<tokio_util::sync::CancellationToken> {
+        let token = Arc::new(tokio_util::sync::CancellationToken::new());
+        if let Some(previous) = self.view_updates.insert(user_id, token.clone()) {
+            previous.cancel();
+        }
+        token
+    }
+
+    pub fn cancel_view_update(&self, user_id: u64) {
+        if let Some((_, token)) = self.view_updates.remove(&user_id) {
+            token.cancel();
+        }
+    }
+
+    pub fn finish_view_update(
+        &self,
+        user_id: u64,
+        token: &Arc<tokio_util::sync::CancellationToken>,
+    ) {
+        self.view_updates
+            .remove_if(&user_id, |_, current| Arc::ptr_eq(current, token));
+    }
+
     pub fn ui_lock_for(&self, user_id: u64) -> Arc<Mutex<()>> {
         self.ui_locks
             .entry(user_id)
