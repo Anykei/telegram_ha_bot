@@ -29,12 +29,19 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         .config
         .ha_client
         .fetch_states_by_ids(std::slice::from_ref(&dev.entity_id))
-        .await?
-        .into_iter()
-        .next()
-        .context("HA offline")?;
-
-    let status_text = crate::core::presentation::StateFormatter::translate_state(&ha_ent.state);
+        .await
+        .ok()
+        .and_then(|states| states.into_iter().next());
+    let inverted = db::devices::is_state_inverted(&dev.entity_id, db).await?;
+    let status_text = if let Some(entity) = &ha_ent {
+        let alias = ctx
+            .config
+            .state_alias_for_display(&dev.entity_id, &entity.state, inverted);
+        crate::bot::screens::control::labels::state(entity, ctx.lang, inverted, alias.as_deref())
+    } else {
+        crate::bot::personal::words(ctx.lang, "Состояние HA недоступно", "HA state unavailable")
+            .into()
+    };
 
     let mut text = format!(
         "⚙️ Параметры\n\n\
@@ -156,10 +163,16 @@ pub async fn render_state_aliases(
         .config
         .ha_client
         .fetch_states_by_ids(std::slice::from_ref(&dev.entity_id))
-        .await?
-        .into_iter()
-        .next()
-        .context("HA offline")?;
+        .await
+        .ok()
+        .and_then(|states| states.into_iter().next())
+        .unwrap_or_else(|| crate::ha::models::Entity {
+            entity_id: dev.entity_id.clone(),
+            name: String::new(),
+            state: "unavailable".into(),
+            device_class: None,
+            attributes: Default::default(),
+        });
 
     let domain = dev.entity_id.split('.').next().unwrap_or("");
     let class = ha_ent.device_class.as_deref().unwrap_or("");
@@ -171,12 +184,14 @@ pub async fn render_state_aliases(
     let aliases = db::devices::get_state_aliases_for_entity(&dev.entity_id, db).await?;
     let editable_states = editable_state_alias_states(&ha_ent.state);
 
-    let current_display = crate::core::presentation::StateFormatter::format_state_value_with_alias(
-        domain,
-        class,
-        &ha_ent.state,
+    let display_alias = ctx
+        .config
+        .state_alias_for_display(&dev.entity_id, &ha_ent.state, inverted);
+    let current_display = crate::bot::screens::control::labels::state(
+        &ha_ent,
+        ctx.lang,
         inverted,
-        aliases.get(&ha_ent.state).map(String::as_str),
+        display_alias.as_deref(),
     );
 
     let aliases_text = if aliases.is_empty() {

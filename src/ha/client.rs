@@ -135,11 +135,11 @@ impl HAClient {
         let end_iso = end_time.to_rfc3339();
 
         let url = format!(
-            "{}/api/history/period/{}?end_time={}&filter_entity_id={}&no_attributes",
+            "{}/api/history/period/{}?end_time={}&filter_entity_id={}&no_attributes&significant_changes_only=0",
             self.url,
             encode(&start_iso),
             encode(&end_iso),
-            entity_id
+            encode(entity_id)
         );
 
         let res = self
@@ -160,25 +160,11 @@ impl HAClient {
             .map(|item| (item.last_updated, item.state))
             .collect();
 
-        if points.is_empty() {
-            debug!(
-                "Gap detected for {}. Fetching last known state before {}",
-                entity_id, start_iso
-            );
-
-            let backfill_url = format!("{}/api/states/{}", self.url, entity_id);
-            if let Ok(resp) = self.client.get(&backfill_url).send().await {
-                if let Ok(val) = resp.json::<serde_json::Value>().await {
-                    if let Some(s) = val["state"].as_str() {
-                        points.push((start_time, s.to_string()));
-                    }
-                }
-            }
-        }
-
-        if let Some((_, last_state)) = points.last().cloned() {
-            points.push((end_time, last_state));
-        }
+        // The history endpoint includes a recorded state at the start boundary
+        // by default (skip_initial_state is deliberately absent). Never replace
+        // missing recorder data with the current /api/states value.
+        points.retain(|(time, _)| *time <= end_time);
+        points.sort_by_key(|(time, _)| *time);
 
         debug!(
             "Fetched {} points for {} [{} -> {}]",
@@ -342,5 +328,60 @@ impl HomeAssistantClient for HAClient {
         data: serde_json::Value,
     ) -> Result<()> {
         HAClient::call_service_with_data(self, domain, service, entity_id, data).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn empty_history_never_reads_or_inserts_current_state() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let client = HAClient::new(
+            format!("http://{}", listener.local_addr()?),
+            "test".into(),
+            2,
+            2,
+        );
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            loop {
+                let Ok(accepted) =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                        .await
+                else {
+                    break;
+                };
+                let (mut stream, _) = accepted?;
+                let mut request = Vec::new();
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let mut chunk = [0u8; 2048];
+                    let count = stream.read(&mut chunk).await?;
+                    anyhow::ensure!(count > 0, "Incomplete request");
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let request = String::from_utf8(request)?;
+                let path = request.lines().next().unwrap().to_string();
+                let body = if path.contains("/api/states/") {
+                    r#"{"state":"99"}"#
+                } else {
+                    "[]"
+                };
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await?;
+                requests.push(path);
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+        let history = client.fetch_history("sensor.temperature", 24, -168).await?;
+        assert!(history.points.is_empty());
+        assert_eq!(history.end_time - history.start_time, Duration::hours(24));
+        let requests = server.await??;
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("/api/history/period/"));
+        assert!(requests[0].contains("significant_changes_only=0"));
+        assert!(!requests[0].contains("skip_initial_state"));
+        Ok(())
     }
 }

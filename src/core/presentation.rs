@@ -116,11 +116,6 @@ impl StateFormatter {
         }
     }
 
-    /// Переводит техническое состояние Home Assistant на человеческий русский язык.
-    pub fn translate_state(state: &str) -> &str {
-        Self::translate_state_for("", "", state)
-    }
-
     pub fn translate_state_for<'a>(domain: &str, class: &str, state: &'a str) -> &'a str {
         match (domain, class, state) {
             ("binary_sensor", "door" | "window" | "opening" | "garage_door", "on") => "Открыто",

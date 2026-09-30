@@ -32,7 +32,6 @@ pub async fn render(
         .await?
         .map(|r| r.display_name().to_string())
         .unwrap_or_default();
-    let identity = dev_db.entity_id.clone();
     let lang = ctx.lang;
     let smart_obj = SmartDevice::new(ha_ent.clone());
 
@@ -95,7 +94,17 @@ pub async fn render(
         Some(title) => format!("{room_name} · {title}"),
         None => room_name,
     });
-    view.text.push_str(&format!("\n{identity}"));
+    view.kb.inline_keyboard.insert(
+        0,
+        vec![teloxide::types::InlineKeyboardButton::callback(
+            crate::bot::personal::words(lang, "Подробности", "Details"),
+            Payload::DeviceDetails {
+                room: room_id,
+                device: device_id,
+            }
+            .to_string(),
+        )],
+    );
     if !view.kb.inline_keyboard.iter().flatten().any(|button| matches!(&button.kind,
         teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if data == &Payload::Home.to_string())) {
         if let Some(row) = view.kb.inline_keyboard.last_mut() {

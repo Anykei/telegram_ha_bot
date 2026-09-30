@@ -23,6 +23,9 @@ struct PageContext {
     // Keep them for their owner, without caching device state or keyboard actions.
     notice: Option<String>,
     alert: Option<String>,
+    // A cancelled field must not reopen just because its long text is paged.
+    #[serde(default)]
+    suppress_input: bool,
 }
 
 async fn source_payload(view: &View, user: u64, config: &AppConfig) -> Result<Payload> {
@@ -68,7 +71,16 @@ fn split_text(text: &str, limit: usize) -> Vec<String> {
     pages
 }
 
+fn content_limit(view: &View) -> usize {
+    if view.image.is_some() {
+        1024
+    } else {
+        TEXT_LIMIT
+    }
+}
+
 fn layout(view: &View) -> (String, Vec<String>) {
+    let limit = content_limit(view);
     let status = View {
         header: view.header.clone(),
         notifications: view.notifications.clone(),
@@ -80,8 +92,8 @@ fn layout(view: &View) -> (String, Vec<String>) {
         ..Default::default()
     }
     .get_full_plain_text();
-    if text_len(&status) <= TEXT_LIMIT / 2 && !view.text.is_empty() {
-        let budget = TEXT_LIMIT - text_len(&status) - PAGE_RESERVE;
+    if text_len(&status) <= limit / 2 && !view.text.is_empty() {
+        let budget = limit - text_len(&status) - PAGE_RESERVE;
         return (status, split_text(&view.text, budget));
     }
     // An unusually large status/alert block is itself paginated, without dropping
@@ -91,7 +103,7 @@ fn layout(view: &View) -> (String, Vec<String>) {
         t(view.lang, "common.status_items"),
         view.notifications.len()
     );
-    let budget = TEXT_LIMIT - text_len(&summary) - PAGE_RESERVE;
+    let budget = limit - text_len(&summary) - PAGE_RESERVE;
     (summary, split_text(&view.get_full_plain_text(), budget))
 }
 
@@ -153,7 +165,7 @@ fn select_page(view: &mut View, screen: i64, requested: u16) {
 }
 
 pub async fn prepare(view: &mut View, user: u64, config: &AppConfig) -> Result<()> {
-    if view.text_page.is_none() && text_len(&view.get_full_plain_text()) <= TEXT_LIMIT {
+    if view.text_page.is_none() && text_len(&view.get_full_plain_text()) <= content_limit(view) {
         return Ok(());
     }
     let page = view.text_page.map_or(0, |current| current.page);
@@ -166,6 +178,7 @@ pub async fn prepare(view: &mut View, user: u64, config: &AppConfig) -> Result<(
         source: source.to_string(),
         notice: view.notice.clone(),
         alert: view.alert.clone(),
+        suppress_input: view.next_state.is_none(),
     };
     let screen =
         db::ui_text_pages::register(user, &serde_json::to_string(&context)?, &config.db).await?;
@@ -204,6 +217,9 @@ pub async fn render(screen: i64, page: u16, user: u64, config: Arc<AppConfig>) -
         return Ok(view);
     }
     if let Some(saved) = saved {
+        if saved.suppress_input {
+            view.next_state = None;
+        }
         view.notice = saved.notice.or(view.notice);
         view.alert = match (saved.alert, view.alert) {
             (Some(previous), Some(current)) if previous != current => {
@@ -219,6 +235,21 @@ pub async fn render(screen: i64, page: u16, user: u64, config: Arc<AppConfig>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_media_keeps_every_caption_page_within_photo_limit() {
+        let view = View {
+            image: Some(vec![1, 2, 3]),
+            text: "Длинное имя 🌡\n".repeat(800),
+            ..Default::default()
+        };
+        let (_, parts) = layout(&view);
+        assert_eq!(parts.concat(), view.text);
+        for page in 0..parts.len() {
+            assert!(text_len(&page_text(&view, page as u16)) <= 1024);
+        }
+        assert!(view.image.is_some());
+    }
 
     #[test]
     fn split_preserves_all_unicode_and_whitespace() {

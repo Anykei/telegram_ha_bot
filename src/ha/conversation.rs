@@ -41,7 +41,20 @@ pub async fn process(
 
     let value: Value =
         serde_json::from_str(&body).context("Не удалось разобрать HA Conversation JSON")?;
-    ensure_not_error_response(&value)?;
+    if ensure_not_error_response(&value).is_err() {
+        let answer = extract_speech(&value).unwrap_or_else(|| {
+            "HA Assist could not resolve the request / HA Assist не уточнил запрос".into()
+        });
+        return Ok(format!(
+            "{}\n{}",
+            answer,
+            if language == "en" {
+                "Please rephrase the request."
+            } else {
+                "Переформулируйте запрос."
+            }
+        ));
+    }
 
     extract_speech(&value).ok_or_else(|| anyhow!("HA Conversation не вернул текст ответа"))
 }

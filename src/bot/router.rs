@@ -113,6 +113,18 @@ pub enum State {
     },
     RecordingRuleWizardActiveTimeValue,
     RecordingRuleWizardConditionValue,
+    PersonalQuietHours,
+    ExactTemperature {
+        room_id: i64,
+        device_id: i64,
+    },
+    ScheduleDraftTime {
+        id: i64,
+        revision: i64,
+    },
+    EditUserAlias {
+        user_id: u64,
+    },
 }
 
 impl State {
@@ -220,6 +232,21 @@ pub enum Payload {
     AdminSettings(SettingsPayload),
     TextPage {
         screen: i64,
+        page: u16,
+    },
+    Help,
+    Personal(super::personal::PersonalPayload),
+    TemperatureInput {
+        room: i64,
+        device: i64,
+    },
+    DeviceDetails {
+        room: i64,
+        device: i64,
+    },
+    Schedule(super::schedule_drafts::SchedulePayload),
+    GroupDevices {
+        group: i64,
         page: u16,
     },
 }
@@ -342,12 +369,31 @@ pub enum CameraPayload {
     RecordingGroupModesPage {
         page: u16,
     },
+    RecordingArchiveFilters {
+        camera: i64,
+    },
+    RecordingArchiveRules {
+        camera: i64,
+        page: u16,
+    },
+    RecordingArchiveRule {
+        camera: i64,
+        rule: i64,
+        page: u16,
+    },
+    CameraDetails {
+        id: i64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum CommandPayload {
     Confirm { id: i64 },
     Cancel { id: i64 },
+    Choice { id: i64, page: u32 },
+    Choose { id: i64, target: i64 },
+    CancelChoice { id: i64 },
+    Result { id: i64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -926,6 +972,30 @@ pub enum AdminPayload {
         room: i64,
         page: u16,
     },
+    // Append only: persisted callback indices must stay stable.
+    WizardDraft {
+        id: i64,
+        revision: i64,
+        action: Box<AdminPayload>,
+    },
+    WizardResume {
+        id: i64,
+    },
+    WizardNew {
+        room: i64,
+    },
+
+    ListUsersPage {
+        page: u16,
+    },
+    EditUserAlias {
+        id: u64,
+    },
+    WizardActiveDays,
+    WizardToggleActiveDay {
+        day: u8,
+    },
+    WizardTogglePreRoll,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -944,6 +1014,25 @@ pub enum RecordingRuleGroupRulesFilter {
     Unselected,
 }
 
+impl SettingsPayload {
+    fn for_refresh(&self) -> Self {
+        match self {
+            Self::ToggleNotify { room, device }
+            | Self::ToggleHide { room, device }
+            | Self::ToggleStateInversion { room, device }
+            | Self::ToggleCritical { room, device } => Self::DeviceDetail {
+                room: *room,
+                device: *device,
+            },
+            Self::ResetStateAlias { room, device, .. } => Self::StateAliases {
+                room: *room,
+                device: *device,
+            },
+            _ => self.clone(),
+        }
+    }
+}
+
 impl RenderContext {
     pub fn settings_payload(&self, payload: SettingsPayload) -> Payload {
         match self.settings_origin {
@@ -960,12 +1049,125 @@ impl RenderContext {
     }
 }
 
+fn legacy_admin_mutation(payload: &AdminPayload) -> bool {
+    matches!(
+        payload,
+        AdminPayload::CreateBackup
+            | AdminPayload::AddUser { .. }
+            | AdminPayload::DeleteCamera { .. }
+            | AdminPayload::ToggleRecordingRule { .. }
+            | AdminPayload::DeleteRecordingRule { .. }
+            | AdminPayload::CycleRecordingDefaultRetention { .. }
+            | AdminPayload::CycleRecordingStorageQuota { .. }
+            | AdminPayload::SetUiBackgroundCamera { .. }
+            | AdminPayload::CycleUiBackgroundInterval
+            | AdminPayload::CycleUserRole { .. }
+            | AdminPayload::CycleUserLanguage { .. }
+            | AdminPayload::ResetUserAccess { .. }
+            | AdminPayload::ToggleUserRoomAccess { .. }
+            | AdminPayload::ToggleUserDeviceAccess { .. }
+            | AdminPayload::ToggleUserDeviceNotify { .. }
+            | AdminPayload::DeleteUser { .. }
+            | AdminPayload::ToggleRecordingRuleDetail { .. }
+            | AdminPayload::ToggleRecordingRuleNotify { .. }
+            | AdminPayload::DuplicateRecordingRule { .. }
+            | AdminPayload::TestRecordingRule { .. }
+            | AdminPayload::ToggleRecordingRuleNoise { .. }
+            | AdminPayload::CheckCameraHealth { .. }
+            | AdminPayload::ToggleRecordingRuleGroup { .. }
+            | AdminPayload::ToggleRecordingRuleGroupForRoom { .. }
+            | AdminPayload::ToggleRecordingRuleGroupDetail { .. }
+            | AdminPayload::ToggleRecordingRuleGroupDetailForRoom { .. }
+            | AdminPayload::DeleteRecordingRuleGroup { .. }
+            | AdminPayload::DeleteRecordingRuleGroupForRoom { .. }
+            | AdminPayload::CycleRecordingRuleGroupAccess { .. }
+            | AdminPayload::CycleRecordingRuleGroupAccessForRoom { .. }
+            | AdminPayload::ToggleRecordingRuleGroupRule { .. }
+            | AdminPayload::ToggleRecordingRuleGroupRuleForRoom { .. }
+            | AdminPayload::ToggleRuleGroupItem { .. }
+            | AdminPayload::EnsureDefaultRuleGroups
+            | AdminPayload::EnsureDefaultRuleGroupsForRoom { .. }
+            | AdminPayload::EnsureDefaultRuleGroupsForWizard
+            | AdminPayload::EnsureDefaultRuleGroupsForEdit { .. }
+            | AdminPayload::ToggleUserVoice { .. }
+            | AdminPayload::CycleUserVoiceEngine { .. }
+            | AdminPayload::StartRecordingRuleWizard { .. }
+            | AdminPayload::WizardPickCamera { .. }
+            | AdminPayload::WizardPickEntity { .. }
+            | AdminPayload::WizardPickMode { .. }
+            | AdminPayload::WizardPickTail { .. }
+            | AdminPayload::WizardPickRetention { .. }
+            | AdminPayload::WizardPickGroup { .. }
+            | AdminPayload::WizardCreateRule { .. }
+            | AdminPayload::WizardPickConditionEntity { .. }
+            | AdminPayload::WizardPickConditionOperator { .. }
+            | AdminPayload::WizardRemoveCondition { .. }
+            | AdminPayload::WizardToggleLogic
+            | AdminPayload::WizardPickWizardTail { .. }
+            | AdminPayload::WizardPickWizardRetention { .. }
+            | AdminPayload::WizardPickActiveTimePreset { .. }
+            | AdminPayload::WizardToggleGroup { .. }
+            | AdminPayload::WizardCreateCurrentRule
+            | AdminPayload::SetRecordingRuleActiveTimePreset { .. }
+            | AdminPayload::ToggleRecordingRuleActiveDay { .. }
+            | AdminPayload::CycleRecordingRuleLogic { .. }
+            | AdminPayload::DeleteRecordingRuleCondition { .. }
+            | AdminPayload::WizardCancel
+            | AdminPayload::ToggleRecordingRuleEditGroupItem { .. }
+            | AdminPayload::DeleteActionGroup { .. }
+            | AdminPayload::ToggleActionGroupItem { .. }
+            | AdminPayload::ToggleActionGroupAccess { .. }
+            | AdminPayload::ToggleActionGroupEnabled { .. }
+            | AdminPayload::ExecuteActionGroup { .. }
+            | AdminPayload::ToggleHaNativeActionAccess { .. }
+            | AdminPayload::ToggleHaNativeActionEnabled { .. }
+            | AdminPayload::ResetHaNativeActionAlias { .. }
+            | AdminPayload::ExecuteHaNativeAction { .. }
+            | AdminPayload::ToggleActionScheduleDay { .. }
+            | AdminPayload::CycleActionScheduleCommand { .. }
+            | AdminPayload::ToggleActionScheduleEnabled { .. }
+            | AdminPayload::DeleteActionSchedule { .. }
+            | AdminPayload::ToggleRecordingRulePreRoll { .. }
+            | AdminPayload::ToggleUserQuietHours { .. }
+            | AdminPayload::WizardNew { .. }
+            | AdminPayload::WizardToggleActiveDay { .. }
+            | AdminPayload::WizardTogglePreRoll
+    )
+}
+
 impl Payload {
     /// Persisted contexts from older versions can contain action callbacks.
     /// Refreshing them must only read state, including after a restart.
     pub fn for_refresh(&self) -> Self {
         match self {
+            Self::Admin(AdminPayload::WizardDraft { id, .. }) => {
+                Self::Admin(AdminPayload::WizardResume { id: *id })
+            }
+            Self::Admin(
+                AdminPayload::WizardCreateCurrentRule
+                | AdminPayload::WizardCancel
+                | AdminPayload::WizardToggleLogic
+                | AdminPayload::WizardToggleGroup { .. }
+                | AdminPayload::WizardRemoveCondition { .. },
+            ) => Self::Admin(AdminPayload::WizardConfirmGroups),
             Self::Control(control) => Self::Control(control_recovery_payload(control)),
+            Self::Personal(p) => Self::Personal(p.for_refresh()),
+            Self::Schedule(p) => p.for_refresh(),
+            Self::Admin(AdminPayload::PromptCreateActionScheduleTime { target, .. }) => {
+                Self::Admin(AdminPayload::ActionSchedules { target: *target })
+            }
+            Self::Admin(
+                AdminPayload::PromptEditActionScheduleTime { target, schedule }
+                | AdminPayload::ToggleActionScheduleDay {
+                    target, schedule, ..
+                }
+                | AdminPayload::CycleActionScheduleCommand { target, schedule }
+                | AdminPayload::ToggleActionScheduleEnabled { target, schedule }
+                | AdminPayload::DeleteActionSchedule { target, schedule },
+            ) => Self::Admin(AdminPayload::ActionScheduleDetail {
+                target: *target,
+                schedule: *schedule,
+            }),
             Self::Admin(AdminPayload::ExecuteActionGroup { group, .. }) => {
                 Self::Admin(AdminPayload::ActionGroupDetail { group: *group })
             }
@@ -983,7 +1185,31 @@ impl Payload {
             Self::Camera(CameraPayload::ToggleRecordingGroupMode { group }) => {
                 Self::Camera(CameraPayload::RecordingGroupModeDetail { group: *group })
             }
-            Self::Command(_) => Self::Home,
+            Self::Command(
+                CommandPayload::Confirm { id }
+                | CommandPayload::Cancel { id }
+                | CommandPayload::Result { id },
+            ) => Self::Command(CommandPayload::Result { id: *id }),
+            Self::Command(
+                CommandPayload::Choose { id, .. } | CommandPayload::CancelChoice { id },
+            ) => Self::Command(CommandPayload::Choice { id: *id, page: 0 }),
+            Self::Admin(admin) if legacy_admin_mutation(admin) => {
+                Self::Admin(AdminPayload::ListActions)
+            }
+            Self::Settings(settings) => Self::Settings(settings.for_refresh()),
+            Self::AdminSettings(settings) => Self::AdminSettings(settings.for_refresh()),
+            Self::Camera(CameraPayload::Snapshot { id } | CameraPayload::Clip { id, .. }) => {
+                Self::Camera(CameraPayload::CameraDetail { id: *id })
+            }
+            Self::Camera(
+                CameraPayload::SendRecordingSegment {
+                    camera, session, ..
+                }
+                | CameraPayload::SendRecordingAll { camera, session },
+            ) => Self::Camera(CameraPayload::RecordingSession {
+                camera: *camera,
+                session: *session,
+            }),
             _ => self.clone(),
         }
     }
@@ -1011,6 +1237,16 @@ impl Payload {
         matches!(
             self,
             Self::Home
+                | Self::Help
+                | Self::DeviceDetails { .. }
+                | Self::GroupDevices { .. }
+                | Self::Personal(
+                    super::personal::PersonalPayload::Settings
+                        | super::personal::PersonalPayload::Notifications { .. }
+                        | super::personal::PersonalPayload::Subscription { .. }
+                        | super::personal::PersonalPayload::Favorites { .. }
+                        | super::personal::PersonalPayload::FavoriteOptions { .. }
+                )
                 | Self::Control(
                     ControlPayload::ListRooms
                         | ControlPayload::ActionGroupsPage { .. }
@@ -1028,6 +1264,10 @@ impl Payload {
                         | CameraPayload::CameraDetail { .. }
                         | CameraPayload::RecordingArchive { .. }
                         | CameraPayload::RecordingArchiveFiltered { .. }
+                        | CameraPayload::RecordingArchiveFilters { .. }
+                        | CameraPayload::RecordingArchiveRules { .. }
+                        | CameraPayload::RecordingArchiveRule { .. }
+                        | CameraPayload::CameraDetails { .. }
                         | CameraPayload::RecordingArchivePage { .. }
                         | CameraPayload::RecordingSession { .. }
                 )
@@ -1130,10 +1370,32 @@ pub async fn router(
         Ok(None) => match payload {
             Payload::TextPage { .. } => unreachable!("handled before routing"),
             Payload::Home => super::screens::home::render(ctx).await?,
+            Payload::Help => super::personal::help(ctx).await?,
+            Payload::Schedule(p) => super::schedule_drafts::route(ctx, p).await?,
+            Payload::GroupDevices { group, page } => {
+                super::screens::action_groups::render_group_devices(ctx, group, page).await?
+            }
+            Payload::Personal(p) => super::personal::render(ctx, p).await?,
+            Payload::TemperatureInput { room, device } => {
+                super::personal::temperature_input(ctx, room, device).await?
+            }
+            Payload::DeviceDetails { room, device } => {
+                super::personal::device_details(ctx, room, device).await?
+            }
             Payload::Control(sub_payload) => router_control(ctx, sub_payload).await?,
             Payload::Settings(sub_payload) => router_settings(ctx, sub_payload).await?,
             Payload::Camera(sub_payload) => router_camera(ctx, sub_payload).await?,
-            Payload::Command(_) => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
+            Payload::Command(CommandPayload::Choice { id, page }) => {
+                super::command_choices::render(&ctx, id, page).await?
+            }
+            Payload::Command(
+                CommandPayload::Choose { id, .. } | CommandPayload::CancelChoice { id },
+            ) => super::command_choices::render(&ctx, id, 0).await?,
+            Payload::Command(
+                CommandPayload::Result { id }
+                | CommandPayload::Confirm { id }
+                | CommandPayload::Cancel { id },
+            ) => super::command_choices::result(&ctx, id).await?,
             Payload::Admin(sub_payload) => router_admin(ctx, sub_payload).await?,
             Payload::InDev => super::screens::common::in_dev_menu(ctx, Payload::Home).await?,
             Payload::AdminSettings(sub_payload) => {
@@ -1183,6 +1445,88 @@ pub async fn router(
                     final_lang,
                 )]);
         }
+    }
+    let favorite = match &view.payload {
+        Payload::Control(ControlPayload::DeviceControl { room, device }) => {
+            Some(super::personal::FavoriteAction::Device {
+                room: *room,
+                device: *device,
+            })
+        }
+        Payload::Control(ControlPayload::QuickAction {
+            room,
+            device,
+            cmd: DeviceCmd::ShowChart { .. },
+        }) => Some(super::personal::FavoriteAction::Device {
+            room: *room,
+            device: *device,
+        }),
+        Payload::Camera(CameraPayload::CameraDetail { id }) => {
+            Some(super::personal::FavoriteAction::Camera { id: *id })
+        }
+        Payload::Control(ControlPayload::ActionGroupDetail { group }) => {
+            Some(super::personal::FavoriteAction::GroupOn { id: *group })
+        }
+        Payload::Control(ControlPayload::HaNativeActionDetail { action }) => {
+            Some(super::personal::FavoriteAction::Native { id: *action })
+        }
+        _ => None,
+    };
+    if let Some(target) = favorite {
+        let mut row = vec![teloxide::types::InlineKeyboardButton::callback(
+            super::personal::words(final_lang, "☆ В избранное", "☆ Add favorite"),
+            Payload::Personal(super::personal::PersonalPayload::FavoriteOptions {
+                target: target.clone(),
+            })
+            .to_string(),
+        )];
+        if let super::personal::FavoriteAction::Device { device, .. } = target {
+            if let Some(dev) = db::devices::get_device_by_id(device, &config.db).await? {
+                let subscribed =
+                    db::subscriptions::is_subscribed(user_id as i64, &dev.entity_id, &config.db)
+                        .await?;
+                let can_notify = db::access::can_notify_entity_for_device_id(
+                    user_id, is_admin, device, &config.db,
+                )
+                .await?;
+                if subscribed || can_notify {
+                    row.push(teloxide::types::InlineKeyboardButton::callback(
+                        if subscribed {
+                            super::personal::words(
+                                final_lang,
+                                "Выключить уведомления",
+                                "Disable notifications",
+                            )
+                        } else {
+                            super::personal::words(
+                                final_lang,
+                                "Включить уведомления",
+                                "Enable notifications",
+                            )
+                        },
+                        Payload::Personal(super::personal::PersonalPayload::SetSubscription {
+                            device,
+                            enabled: !subscribed,
+                        })
+                        .to_string(),
+                    ));
+                } else {
+                    row.push(teloxide::types::InlineKeyboardButton::callback(
+                        super::personal::words(
+                            final_lang,
+                            "Уведомления запрещены",
+                            "Notifications disabled",
+                        ),
+                        Payload::Personal(super::personal::PersonalPayload::Subscription {
+                            device,
+                        })
+                        .to_string(),
+                    ));
+                }
+            }
+        }
+        let index = view.kb.inline_keyboard.len().saturating_sub(1);
+        view.kb.inline_keyboard.insert(index, row);
     }
     view.lang = final_lang;
     view.rendered_at = Some(chrono::Utc::now());
@@ -1447,7 +1791,7 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                 InteractionResult::RequiresInput(intent) => {
                     let state = State::from_intent(intent, device, room);
                     let mut view = super::screens::control::sensor_view::render_manual_input(
-                        room, device, state,
+                        room, device, state, ctx.lang,
                     );
                     let previous = super::screens::control::sensor_view::saved_chart_payload(
                         ctx.user_id,
@@ -1542,6 +1886,30 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
             }
 
             Ok(super::screens::cameras::render_detail(ctx, id).await?)
+        }
+        CameraPayload::RecordingArchiveFilters { camera }
+        | CameraPayload::RecordingArchiveRules { camera, .. }
+        | CameraPayload::RecordingArchiveRule { camera, .. }
+        | CameraPayload::CameraDetails { id: camera } => {
+            if !can_access_camera(&ctx, camera).await? {
+                return Ok(access_denied_view(
+                    ctx,
+                    Payload::Camera(CameraPayload::ListCameras),
+                ));
+            }
+            match payload {
+                CameraPayload::RecordingArchiveFilters { .. } => {
+                    super::screens::cameras::render_recording_archive_filters(ctx, camera).await
+                }
+                CameraPayload::RecordingArchiveRules { page, .. } => {
+                    super::screens::cameras::render_recording_archive_rules(ctx, camera, page).await
+                }
+                CameraPayload::RecordingArchiveRule { rule, page, .. } => {
+                    super::screens::cameras::render_recording_archive_rule(ctx, camera, rule, page)
+                        .await
+                }
+                _ => super::screens::cameras::render_details(ctx, camera).await,
+            }
         }
         CameraPayload::RecordingArchive { camera } => {
             if !can_access_camera(&ctx, camera).await? {
@@ -1955,15 +2323,370 @@ async fn recording_session_belongs_to_camera(
         .unwrap_or(false))
 }
 
-async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::Result<View> {
+fn is_recording_wizard_payload(payload: &AdminPayload) -> bool {
+    matches!(
+        payload,
+        AdminPayload::StartRecordingRuleWizard { .. }
+            | AdminPayload::WizardPickCamera { .. }
+            | AdminPayload::WizardSourcePage { .. }
+            | AdminPayload::WizardPickEntity { .. }
+            | AdminPayload::WizardPickMode { .. }
+            | AdminPayload::WizardPickTail { .. }
+            | AdminPayload::WizardPickRetention { .. }
+            | AdminPayload::WizardPickGroup { .. }
+            | AdminPayload::WizardAdvancedText { .. }
+            | AdminPayload::WizardCreateRule { .. }
+            | AdminPayload::WizardConditions
+            | AdminPayload::WizardAddCondition
+            | AdminPayload::WizardConditionEntityPage { .. }
+            | AdminPayload::WizardPickConditionEntity { .. }
+            | AdminPayload::WizardPickConditionOperator { .. }
+            | AdminPayload::WizardRemoveCondition { .. }
+            | AdminPayload::WizardToggleLogic
+            | AdminPayload::WizardNextTail
+            | AdminPayload::WizardPickWizardTail { .. }
+            | AdminPayload::WizardPickWizardRetention { .. }
+            | AdminPayload::WizardActiveTime
+            | AdminPayload::WizardPickActiveTimePreset { .. }
+            | AdminPayload::WizardPromptActiveTimeCustom
+            | AdminPayload::WizardGroups
+            | AdminPayload::EnsureDefaultRuleGroupsForWizard
+            | AdminPayload::PromptCreateRecordingRuleGroupForWizard
+            | AdminPayload::WizardCancel
+            | AdminPayload::WizardToggleGroup { .. }
+            | AdminPayload::WizardConfirmGroups
+            | AdminPayload::WizardCreateCurrentRule
+            | AdminPayload::WizardAdvancedCurrentText
+            | AdminPayload::WizardDraft { .. }
+            | AdminPayload::WizardResume { .. }
+            | AdminPayload::WizardNew { .. }
+            | AdminPayload::WizardActiveDays
+            | AdminPayload::WizardToggleActiveDay { .. }
+            | AdminPayload::WizardTogglePreRoll
+    )
+}
+
+async fn router_admin(ctx: RenderContext, payload: AdminPayload) -> anyhow::Result<View> {
+    use super::recording_rule_wizard::{persist_draft, restore_draft, RecordingRuleWizard};
+    use super::screens::admin::list_actions::store_wizard;
+    if !ctx.is_admin || !is_recording_wizard_payload(&payload) {
+        if ctx.is_admin && matches!(payload, AdminPayload::PromptAddRecordingRule { .. }) {
+            update_current_wizard(&ctx, |wizard| wizard.editing_text = false)?;
+            persist_draft(&ctx.config, ctx.user_id).await?;
+        }
+        return router_admin_inner(ctx, payload).await;
+    }
+    let config = ctx.config.clone();
+    let owner = ctx.user_id;
+    let mut reading = false;
+    let mut stale = false;
+    let mut action = match payload {
+        AdminPayload::WizardDraft {
+            id,
+            revision,
+            action,
+        } => {
+            let Some(wizard) = restore_draft(&config, owner, Some(id)).await? else {
+                let mut view = super::screens::admin::list_actions::render(ctx).await?;
+                view.alert = Some("Черновик устарел или отменён. Откройте мастер заново.".into());
+                return Ok(view);
+            };
+            if let Some(rule) = wizard.committed_rule_id {
+                return super::screens::admin::list_actions::render_recording_rule_detail(
+                    ctx,
+                    wizard.room_id,
+                    rule,
+                )
+                .await;
+            }
+            stale = wizard.revision != revision;
+            let next = if stale {
+                wizard_read_payload(&wizard)
+            } else {
+                *action
+            };
+            if !is_recording_wizard_payload(&next)
+                || matches!(
+                    next,
+                    AdminPayload::WizardDraft { .. } | AdminPayload::WizardResume { .. }
+                )
+            {
+                return Ok(access_denied_view(ctx, Payload::Home));
+            }
+            store_wizard(&ctx, wizard)?;
+            reading = stale;
+            next
+        }
+        AdminPayload::WizardResume { id } => {
+            let Some(wizard) = restore_draft(&config, owner, Some(id)).await? else {
+                let mut view = super::screens::admin::list_actions::render(ctx).await?;
+                view.alert = Some("Черновик устарел или отменён. Откройте мастер заново.".into());
+                return Ok(view);
+            };
+            if let Some(rule) = wizard.committed_rule_id {
+                return super::screens::admin::list_actions::render_recording_rule_detail(
+                    ctx,
+                    wizard.room_id,
+                    rule,
+                )
+                .await;
+            }
+            let next = wizard_read_payload(&wizard);
+            store_wizard(&ctx, wizard)?;
+            reading = true;
+            next
+        }
+        AdminPayload::WizardNew { room } => {
+            let mut wizard = RecordingRuleWizard::new(room);
+            wizard.max_segment_seconds = Some(config.camera_recording_max_segment_seconds);
+            wizard.pre_roll_enabled = Some(
+                db::settings::get_i64(db::settings::CAMERA_PRE_ROLL_ENABLED, &config.db)
+                    .await?
+                    .unwrap_or(0)
+                    != 0,
+            );
+            store_wizard(&ctx, wizard)?;
+            AdminPayload::StartRecordingRuleWizard { room }
+        }
+        AdminPayload::WizardCreateCurrentRule => AdminPayload::WizardConfirmGroups,
+        action => {
+            if current_wizard(&ctx).is_none()
+                || (matches!(action, AdminPayload::StartRecordingRuleWizard { .. })
+                    && current_wizard(&ctx).is_some_and(|w| w.committed_rule_id.is_some()))
+            {
+                if let Some(wizard) = restore_draft(&config, owner, None).await? {
+                    store_wizard(&ctx, wizard)?;
+                } else if let Some(mut session) = config.sessions.get_mut(&owner) {
+                    session.recording_rule_wizard = None;
+                }
+            }
+            action
+        }
+    };
+    if let AdminPayload::StartRecordingRuleWizard { room } = action {
+        if current_wizard(&ctx).is_none() {
+            let mut wizard = RecordingRuleWizard::new(room);
+            wizard.max_segment_seconds = Some(config.camera_recording_max_segment_seconds);
+            wizard.pre_roll_enabled = Some(
+                db::settings::get_i64(db::settings::CAMERA_PRE_ROLL_ENABLED, &config.db)
+                    .await?
+                    .unwrap_or(0)
+                    != 0,
+            );
+            let cameras = db::cameras::list_room_cameras(room, &config.db).await?;
+            if cameras.len() == 1 {
+                wizard.camera_id = Some(cameras[0].id);
+                action = AdminPayload::WizardSourcePage { page: 0 };
+            }
+            store_wizard(&ctx, wizard)?;
+        }
+    }
+    if !reading {
+        match &action {
+            AdminPayload::WizardPickCamera { room, camera } => {
+                let valid = db::cameras::get_camera(*camera, &config.db)
+                    .await?
+                    .is_some_and(|c| c.room_id == Some(*room));
+                if valid {
+                    update_current_wizard(&ctx, |wizard| {
+                        wizard.room_id = *room;
+                        wizard.camera_id = Some(*camera);
+                    })?;
+                }
+            }
+            AdminPayload::WizardPickEntity {
+                room,
+                camera,
+                device,
+            } if db::devices::get_recording_wizard_candidate(*device, &config.db)
+                .await?
+                .is_some() =>
+            {
+                update_current_wizard(&ctx, |wizard| {
+                    wizard.room_id = *room;
+                    wizard.camera_id = Some(*camera);
+                    wizard.reset_source(*device);
+                })?;
+            }
+            AdminPayload::WizardPickMode { mode, .. } => {
+                update_current_wizard(&ctx, |wizard| wizard.set_source_mode(*mode, None))?;
+            }
+            AdminPayload::WizardPickWizardTail { tail } => {
+                update_current_wizard(&ctx, |wizard| wizard.tail_seconds = Some(*tail))?;
+            }
+            AdminPayload::WizardPickConditionEntity { device } => {
+                update_current_wizard(&ctx, |wizard| {
+                    if wizard
+                        .pending_condition
+                        .as_ref()
+                        .is_none_or(|pending| pending.device_id != *device)
+                    {
+                        wizard.pending_condition =
+                            Some(super::recording_rule_wizard::WizardPendingCondition {
+                                device_id: *device,
+                                operator: None,
+                            });
+                    }
+                })?;
+            }
+            AdminPayload::WizardPickConditionOperator { operator } => {
+                update_current_wizard(&ctx, |wizard| {
+                    if let Some(pending) = wizard.pending_condition.as_mut() {
+                        pending.operator = Some(*operator);
+                    }
+                })?;
+            }
+            _ => {}
+        }
+    }
+    // Never replay a stored mutation when restoring an old session.
+    let previous = current_wizard(&ctx);
+    if !reading
+        && matches!(action, AdminPayload::WizardGroups)
+        && previous.as_ref().is_some_and(|w| {
+            matches!(
+                Payload::from_string(&w.step),
+                Ok(Payload::Admin(AdminPayload::WizardConfirmGroups))
+            )
+        })
+    {
+        update_current_wizard(&ctx, |wizard| wizard.return_to_summary = true)?;
+    }
+    if !reading
+        && matches!(
+            action,
+            AdminPayload::WizardPickActiveTimePreset { .. }
+                | AdminPayload::WizardPickWizardRetention { .. }
+        )
+    {
+        update_current_wizard(&ctx, |wizard| wizard.return_to_summary = false)?;
+    }
+    if !reading && matches!(action, AdminPayload::WizardAdvancedCurrentText) {
+        update_current_wizard(&ctx, |wizard| wizard.editing_text = true)?;
+    }
+    let mut view = router_admin_inner(ctx, action).await?;
+    if reading {
+        if let (Some(wizard), Some(mut session)) = (previous, config.sessions.get_mut(&owner)) {
+            session.recording_rule_wizard = Some(wizard);
+        }
+    } else if let Some(mut session) = config.sessions.get_mut(&owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            if matches!(&view.payload,Payload::Admin(action) if is_recording_wizard_payload(action))
+                && (!matches!(
+                    view.payload,
+                    Payload::Admin(AdminPayload::StartRecordingRuleWizard { .. })
+                ) || wizard.step.is_empty())
+            {
+                wizard.step = view.payload.to_string();
+            }
+        }
+    }
+    if !reading {
+        persist_draft(&config, owner).await?;
+    }
+    let wizard = config
+        .sessions
+        .get(&owner)
+        .and_then(|s| s.recording_rule_wizard.clone());
+    if let Some(wizard) = wizard {
+        if let Some(id) = wizard.draft_id {
+            for button in view.kb.inline_keyboard.iter_mut().flatten() {
+                if let teloxide::types::InlineKeyboardButtonKind::CallbackData(data) =
+                    &mut button.kind
+                {
+                    if let Ok(Payload::Admin(action)) = Payload::from_string(data) {
+                        if is_recording_wizard_payload(&action)
+                            && !matches!(
+                                action,
+                                AdminPayload::WizardResume { .. }
+                                    | AdminPayload::WizardNew { .. }
+                                    | AdminPayload::WizardDraft { .. }
+                            )
+                        {
+                            *data = Payload::Admin(AdminPayload::WizardDraft {
+                                id,
+                                revision: wizard.revision,
+                                action: Box::new(action),
+                            })
+                            .to_string();
+                        }
+                    }
+                }
+            }
+            if matches!(&view.payload,Payload::Admin(action) if is_recording_wizard_payload(action))
+            {
+                view.payload = Payload::Admin(AdminPayload::WizardResume { id });
+            }
+        }
+    }
+    if stale {
+        view.alert = Some("Этот экран устарел. Показана актуальная версия черновика.".into());
+    }
+    Ok(view)
+}
+
+fn wizard_read_payload(wizard: &super::recording_rule_wizard::RecordingRuleWizard) -> AdminPayload {
+    let payload = Payload::from_string(&wizard.step).ok();
+    match payload {
+        Some(Payload::Admin(
+            AdminPayload::WizardPickActiveTimePreset { .. }
+            | AdminPayload::WizardToggleGroup { .. },
+        )) => AdminPayload::WizardGroups,
+        Some(Payload::Admin(
+            AdminPayload::WizardPickWizardRetention { .. }
+            | AdminPayload::WizardPickRetention { .. }
+            | AdminPayload::WizardPickGroup { .. }
+            | AdminPayload::WizardAdvancedText { .. }
+            | AdminPayload::WizardCreateRule { .. },
+        )) => AdminPayload::WizardActiveTime,
+        Some(Payload::Admin(
+            AdminPayload::WizardCreateCurrentRule | AdminPayload::WizardConfirmGroups,
+        )) => AdminPayload::WizardConfirmGroups,
+        Some(Payload::Admin(action))
+            if is_recording_wizard_payload(&action)
+                && !matches!(
+                    action,
+                    AdminPayload::WizardDraft { .. }
+                        | AdminPayload::WizardResume { .. }
+                        | AdminPayload::WizardCancel
+                        | AdminPayload::WizardNew { .. }
+                        | AdminPayload::WizardToggleLogic
+                        | AdminPayload::WizardRemoveCondition { .. }
+                        | AdminPayload::EnsureDefaultRuleGroupsForWizard
+                        | AdminPayload::WizardCreateRule { .. }
+                ) =>
+        {
+            action
+        }
+        _ if wizard.camera_id.is_some() => AdminPayload::WizardSourcePage { page: 0 },
+        _ => AdminPayload::StartRecordingRuleWizard {
+            room: wizard.room_id,
+        },
+    }
+}
+
+async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::Result<View> {
     if !ctx.is_admin {
         return Ok(access_denied_view(ctx, Payload::Home));
     }
 
     match payload {
+        AdminPayload::WizardActiveDays => super::screens::admin::list_actions::render_recording_rule_wizard_days(ctx).await,
+        AdminPayload::WizardToggleActiveDay { day } => {
+            update_current_wizard(&ctx,|wizard| { if day < 7 { let days = wizard.active_time.days_mask ^ (1_i64 << day); if days != 0 { wizard.active_time.days_mask = days; } } })?;
+            super::screens::admin::list_actions::render_recording_rule_wizard_days(ctx).await
+        }
+        AdminPayload::WizardTogglePreRoll => {
+            update_current_wizard(&ctx,|wizard| wizard.pre_roll_enabled = Some(!wizard.pre_roll_enabled.unwrap_or(false)))?;
+            super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx).await
+        }
+
+        AdminPayload::WizardDraft { .. } | AdminPayload::WizardResume { .. } | AdminPayload::WizardNew { .. } => Ok(access_denied_view(ctx, Payload::Home)),
         AdminPayload::ActionGroupsPage { page } => super::screens::action_groups::render_admin_list_page(ctx, Some(page)).await,
         AdminPayload::RoomCamerasPage { room, page } => super::screens::admin::list_actions::render_room_cameras_page(ctx, room, Some(page)).await,
         AdminPayload::ListActions => Ok(super::screens::admin::list_actions::render(ctx).await?),
+        AdminPayload::ListUsersPage { page } => super::screens::admin::list_actions::render_users_page(ctx, Some(page)).await,
+        AdminPayload::EditUserAlias { id } => super::screens::admin::list_actions::render_user_alias_input(ctx, id).await,
         AdminPayload::ListUsers => {
             Ok(super::screens::admin::list_actions::render_users(ctx).await?)
         }
@@ -2198,7 +2921,7 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
         AdminPayload::WizardPickActiveTimePreset { preset } => {
             let active_time = active_time_from_preset(preset)?;
             update_current_wizard(&ctx, |wizard| {
-                wizard.active_time = active_time;
+                wizard.active_time = db::camera_recording_rules::RecordingRuleActiveTime { days_mask: wizard.active_time.days_mask, ..active_time };
             })?;
             Ok(
                 super::screens::admin::list_actions::render_recording_rule_wizard_groups_from_state(
@@ -2829,88 +3552,9 @@ async fn router_admin(mut ctx: RenderContext, payload: AdminPayload) -> anyhow::
             super::screens::action_groups::render_edit_schedule_time_input(ctx, target, schedule)
                 .await?,
         ),
-        AdminPayload::ToggleActionScheduleDay {
-            target,
-            schedule,
-            day,
-        } => {
-            let lang = ctx.lang;
-            let Some(current) = db::action_groups::get_action_schedule(schedule, &ctx.config.db).await?
-            else {
-                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
-                view.alert =
-                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
-                return Ok(view);
-            };
-            if current.target_ref()? != target {
-                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
-                view.alert =
-                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
-                return Ok(view);
-            }
-            let day_bit = 1_i64 << day;
-            let mut next_mask = current.days_mask ^ day_bit;
-            if next_mask == 0 {
-                next_mask = current.days_mask;
-            }
-            db::action_groups::update_action_schedule_days(schedule, next_mask, &ctx.config.db)
-                .await?;
-            let message = db::action_groups::format_days_mask(next_mask);
-            log_action_activity(
-                &ctx,
-                "action_group",
-                "action_schedule",
-                schedule,
-                "action_group.schedule_days_update",
-                "ok",
-                Some(message),
-            )
-            .await;
-            Ok(
-                super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
-                    .await?,
-            )
-        }
-        AdminPayload::CycleActionScheduleCommand { target, schedule } => {
-            let lang = ctx.lang;
-            let Some(current) = db::action_groups::get_action_schedule(schedule, &ctx.config.db).await?
-            else {
-                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
-                view.alert =
-                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
-                return Ok(view);
-            };
-            if current.target_ref()? != target {
-                let mut view = super::screens::action_groups::render_schedules(ctx, target).await?;
-                view.alert =
-                    Some(crate::i18n::t(lang, "action_groups.schedule_not_found").to_string());
-                return Ok(view);
-            }
-            match db::action_groups::cycle_action_schedule_command(schedule, &ctx.config.db).await {
-                Ok(command) => {
-                    log_action_activity(
-                        &ctx,
-                        "action_group",
-                        "action_schedule",
-                        schedule,
-                        "action_group.schedule_command_update",
-                        "ok",
-                        Some(&command),
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    let mut view =
-                        super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
-                            .await?;
-                    view.alert = Some(error.to_string());
-                    return Ok(view);
-                }
-            }
-            Ok(
-                super::screens::action_groups::render_schedule_detail(ctx, target, schedule)
-                    .await?,
-            )
+        AdminPayload::ToggleActionScheduleDay { target, schedule, .. }
+        | AdminPayload::CycleActionScheduleCommand { target, schedule } => {
+            super::schedule_drafts::route(ctx, super::schedule_drafts::SchedulePayload::Edit { target, schedule }).await
         }
         AdminPayload::ToggleActionScheduleEnabled { target, schedule } => {
             let lang = ctx.lang;
@@ -3858,7 +4502,13 @@ fn active_time_log_message(
 }
 
 async fn cancel_current_wizard(ctx: RenderContext) -> anyhow::Result<View> {
-    let room_id = current_wizard(&ctx).map(|wizard| wizard.room_id);
+    let wizard = current_wizard(&ctx);
+    let room_id = wizard.as_ref().map(|wizard| wizard.room_id);
+    if let Some(wizard) = wizard {
+        if let Some(id) = wizard.draft_id {
+            db::ui_drafts::cancel(id, ctx.user_id, wizard.revision, &ctx.config.db).await?;
+        }
+    }
     {
         if let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) {
             session.recording_rule_wizard = None;
@@ -3878,98 +4528,35 @@ async fn cancel_current_wizard(ctx: RenderContext) -> anyhow::Result<View> {
 }
 
 async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Result<View> {
-    let Some(wizard) = current_wizard(&ctx) else {
-        let mut view = super::screens::admin::list_actions::render(ctx).await?;
-        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
-        return Ok(view);
-    };
-    let Some(camera_id) = wizard.camera_id else {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Камера не выбрана".to_string());
-        return Ok(view);
-    };
-    let Some(source_device_id) = wizard.source_device_id else {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Источник не выбран".to_string());
-        return Ok(view);
-    };
-    let Some(source_mode) = wizard.source_mode else {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Событие источника не выбрано".to_string());
-        return Ok(view);
-    };
-
-    let Some(camera) = db::cameras::get_camera(camera_id, &ctx.config.db).await? else {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Камера не найдена".to_string());
-        return Ok(view);
-    };
-    if camera.room_id != Some(wizard.room_id) {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Камера не принадлежит выбранной комнате".to_string());
-        return Ok(view);
-    }
-
-    let Some(source) =
-        db::devices::get_recording_wizard_candidate(source_device_id, &ctx.config.db).await?
+    super::recording_rule_wizard::persist_draft(&ctx.config, ctx.user_id).await?;
+    let Some((wizard, camera, source, source_mode, conditions)) =
+        super::screens::admin::list_actions::wizard_summary_parts(&ctx).await?
     else {
-        let mut view =
-            super::screens::admin::list_actions::render_recording_rules(ctx, wizard.room_id)
-                .await?;
-        view.alert = Some("Источник не найден или архивирован".to_string());
+        let mut view = super::screens::admin::list_actions::render(ctx).await?;
+        view.alert = Some(
+            "Проверьте камеру, источник и условия черновика. Остальные настройки сохранены.".into(),
+        );
         return Ok(view);
     };
-
-    let tail_seconds = wizard
-        .tail_seconds
-        .unwrap_or(60)
-        .max(5)
-        .min(ctx.config.camera_recording_max_tail_seconds);
-    let max_segment_seconds = ctx.config.camera_recording_max_segment_seconds;
-    let retention_days = wizard.retention_days.unwrap_or(30).clamp(1, 365);
-    let conditions = crate::bot::recording_rule_wizard::build_final_conditions(
-        &source.entity_id,
-        source_mode,
-        wizard.source_value.as_deref(),
-        &wizard.extra_conditions,
-    )
-    .map_err(anyhow::Error::msg)?;
-
-    if let Some(existing_rule_id) = find_duplicate_wizard_rule(
-        camera_id,
-        wizard.condition_logic,
-        &conditions,
-        wizard.active_time,
-        &ctx.config.db,
-    )
-    .await?
+    let camera_id = camera.id;
+    let tail_seconds = wizard.tail_seconds.unwrap_or(60);
+    let max_segment_seconds = wizard
+        .max_segment_seconds
+        .unwrap_or(ctx.config.camera_recording_max_segment_seconds);
+    let retention_days = wizard.retention_days.unwrap_or(30);
+    if !(5..=ctx.config.camera_recording_max_tail_seconds).contains(&tail_seconds)
+        || !(30..=ctx.config.camera_recording_max_segment_seconds).contains(&max_segment_seconds)
+        || !(1..=365).contains(&retention_days)
+        || wizard.cooldown_s.is_some_and(|value| value > 86400)
     {
-        let mut view = super::screens::admin::list_actions::render_recording_rule_detail(
-            ctx,
-            wizard.room_id,
-            existing_rule_id,
-        )
-        .await?;
-        view.notice = Some("Похожее правило уже существует".to_string());
+        let mut view =
+            super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx).await?;
+        view.alert = Some(
+            "Параметры записи выходят за допустимые пределы. Исправьте их в черновике.".into(),
+        );
         return Ok(view);
     }
-
-    let name = crate::bot::recording_rule_wizard::build_rule_name(
-        ctx.lang,
-        &source.display_name,
-        source_mode,
-        wizard.source_value.as_deref(),
-    );
+    let name = wizard.effective_name(ctx.lang, &source.display_name, source_mode);
     let condition_drafts = conditions
         .iter()
         .map(
@@ -3989,37 +4576,48 @@ async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Res
             .unwrap_or(0)
             != 0;
 
-    let rule_id = db::camera_recording_rules::create_rule_with_conditions_and_groups(
+    let result = db::camera_recording_rules::commit_rule_draft(
+        wizard.draft_id.context("Draft missing")?,
+        ctx.user_id,
+        wizard.revision,
+        wizard.room_id,
         db::camera_recording_rules::NewRecordingRule {
             name: &name,
             camera_id,
             condition_logic: wizard.condition_logic,
             tail_seconds: i64::from(tail_seconds),
             max_segment_seconds: i64::from(max_segment_seconds),
-            cooldown_s: i64::from(crate::bot::recording_rule_wizard::default_cooldown_s(
-                source_mode,
-            )),
+            cooldown_s: i64::from(wizard.cooldown_s.unwrap_or_else(|| {
+                crate::bot::recording_rule_wizard::default_cooldown_s(source_mode)
+            })),
             retention_days: i64::from(retention_days),
-            pre_roll_enabled,
-            pre_roll_seconds: db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
+            pre_roll_enabled: wizard.pre_roll_enabled.unwrap_or(pre_roll_enabled),
+            pre_roll_seconds: wizard.pre_roll_seconds,
         },
         &condition_drafts,
         &wizard.group_ids,
+        wizard.active_time,
         &ctx.config.db,
     )
-    .await?;
-
-    if wizard.active_time.enabled {
-        db::camera_recording_rules::update_rule_active_time(
-            rule_id,
-            wizard.active_time,
-            &ctx.config.db,
-        )
-        .await?;
-    }
+    .await;
+    let rule_id = match result {
+        Ok(id) => id,
+        Err(error) => {
+            let mut view =
+                super::screens::admin::list_actions::render_recording_rule_wizard_confirm(ctx)
+                    .await?;
+            view.alert = Some(format!(
+                "Не удалось создать правило: {}. Черновик сохранён.",
+                error
+            ));
+            return Ok(view);
+        }
+    };
 
     if let Some(mut session) = ctx.config.sessions.get_mut(&ctx.user_id) {
-        session.recording_rule_wizard = None;
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.committed_rule_id = Some(rule_id);
+        }
     }
 
     let rule_id_text = rule_id.to_string();
@@ -4045,33 +4643,6 @@ async fn create_current_wizard_recording_rule(ctx: RenderContext) -> anyhow::Res
     .await?;
     view.notice = Some("Правило создано".to_string());
     Ok(view)
-}
-
-async fn find_duplicate_wizard_rule(
-    camera_id: i64,
-    logic: db::camera_recording_rules::ConditionLogic,
-    conditions: &[crate::bot::recording_rule_wizard::WizardCondition],
-    active_time: db::camera_recording_rules::RecordingRuleActiveTime,
-    pool: &sqlx::SqlitePool,
-) -> anyhow::Result<Option<i64>> {
-    let expected = wizard_condition_keys(conditions);
-    for rule in db::camera_recording_rules::list_rules(pool).await? {
-        if rule.camera_id != camera_id
-            || rule.logic() != logic
-            || rule.active_time() != active_time
-            || !rule.is_enabled()
-        {
-            continue;
-        }
-
-        let existing_conditions =
-            db::camera_recording_rules::list_conditions(rule.id, pool).await?;
-        if recording_condition_keys(&existing_conditions) == expected {
-            return Ok(Some(rule.id));
-        }
-    }
-
-    Ok(None)
 }
 
 fn current_wizard(
@@ -4156,7 +4727,7 @@ fn update_wizard_compat_selection(
     let wizard = session
         .recording_rule_wizard
         .get_or_insert_with(|| crate::bot::recording_rule_wizard::RecordingRuleWizard::new(room));
-    let selection_changed = wizard.room_id != room
+    let _selection_changed = wizard.room_id != room
         || wizard.camera_id != Some(camera)
         || wizard.source_device_id != Some(device)
         || wizard.source_mode != Some(mode)
@@ -4169,52 +4740,13 @@ fn update_wizard_compat_selection(
         wizard.source_mode = Some(mode);
         wizard.tail_seconds = Some(tail);
         wizard.retention_days = Some(retention);
-        if selection_changed {
-            wizard.active_time = db::camera_recording_rules::RecordingRuleActiveTime::always();
+        if let Some(group) = group {
+            if !wizard.group_ids.contains(&group) {
+                wizard.group_ids.push(group);
+            }
         }
-        wizard.group_ids = group.into_iter().collect();
     }
     Ok(())
-}
-
-fn wizard_condition_keys(
-    conditions: &[crate::bot::recording_rule_wizard::WizardCondition],
-) -> Vec<String> {
-    let mut keys = conditions
-        .iter()
-        .map(|condition| {
-            format!(
-                "{}|{}|{}|{}|{}",
-                condition.entity_id,
-                condition.operator.as_str(),
-                condition.from_state.as_deref().unwrap_or(""),
-                condition.to_state.as_deref().unwrap_or(""),
-                condition.value.as_deref().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>();
-    keys.sort();
-    keys
-}
-
-fn recording_condition_keys(
-    conditions: &[db::camera_recording_rules::RecordingRuleCondition],
-) -> Vec<String> {
-    let mut keys = conditions
-        .iter()
-        .map(|condition| {
-            format!(
-                "{}|{}|{}|{}|{}",
-                condition.entity_id,
-                condition.operator,
-                condition.from_state.as_deref().unwrap_or(""),
-                condition.to_state.as_deref().unwrap_or(""),
-                condition.value.as_deref().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>();
-    keys.sort();
-    keys
 }
 
 #[cfg(test)]
@@ -4521,6 +5053,10 @@ mod tests {
             Payload::InDev,
             Payload::Command(CommandPayload::Confirm { id: 1 }),
             Payload::Command(CommandPayload::Cancel { id: 1 }),
+            Payload::Command(CommandPayload::Choice { id: 1, page: 0 }),
+            Payload::Command(CommandPayload::Choose { id: 1, target: 2 }),
+            Payload::Command(CommandPayload::CancelChoice { id: 1 }),
+            Payload::Command(CommandPayload::Result { id: 1 }),
         ];
 
         payloads.extend(control_payload_samples().into_iter().map(Payload::Control));
@@ -4639,6 +5175,17 @@ mod tests {
 
     fn camera_payload_samples() -> Vec<CameraPayload> {
         vec![
+            CameraPayload::RecordingArchiveFilters { camera: i64::MAX },
+            CameraPayload::RecordingArchiveRules {
+                camera: i64::MAX,
+                page: u16::MAX,
+            },
+            CameraPayload::RecordingArchiveRule {
+                camera: i64::MAX,
+                rule: i64::MAX,
+                page: u16::MAX,
+            },
+            CameraPayload::CameraDetails { id: i64::MAX },
             CameraPayload::RecordingArchivePage {
                 camera: i64::MAX,
                 filter: "rule:9223372036854775807".into(),
@@ -4692,6 +5239,8 @@ mod tests {
 
     fn admin_payload_samples() -> Vec<AdminPayload> {
         let mut payloads = vec![
+            AdminPayload::ListUsersPage { page: u16::MAX },
+            AdminPayload::EditUserAlias { id: u64::MAX },
             AdminPayload::ActionGroupsPage { page: u16::MAX },
             AdminPayload::RoomCamerasPage {
                 room: i64::MAX,
@@ -5101,6 +5650,12 @@ mod tests {
     fn payload_route_name(payload: &Payload) -> &'static str {
         match payload {
             Payload::TextPage { .. } => "Payload::TextPage",
+            Payload::Help => "Payload::Help",
+            Payload::Schedule(_) => "Payload::Schedule",
+            Payload::GroupDevices { .. } => "Payload::GroupDevices",
+            Payload::Personal(_) => "Payload::Personal",
+            Payload::TemperatureInput { .. } => "Payload::TemperatureInput",
+            Payload::DeviceDetails { .. } => "Payload::DeviceDetails",
             Payload::Home => "Payload::Home",
             Payload::Control(payload) => control_route_name(payload),
             Payload::Settings(payload) => settings_route_name(payload),
@@ -5116,6 +5671,10 @@ mod tests {
         match payload {
             CommandPayload::Confirm { .. } => "CommandPayload::Confirm",
             CommandPayload::Cancel { .. } => "CommandPayload::Cancel",
+            CommandPayload::Choice { .. } => "CommandPayload::Choice",
+            CommandPayload::Choose { .. } => "CommandPayload::Choose",
+            CommandPayload::CancelChoice { .. } => "CommandPayload::CancelChoice",
+            CommandPayload::Result { .. } => "CommandPayload::Result",
         }
     }
 
@@ -5159,6 +5718,12 @@ mod tests {
 
     fn camera_route_name(payload: &CameraPayload) -> &'static str {
         match payload {
+            CameraPayload::RecordingArchiveFilters { .. } => {
+                "CameraPayload::RecordingArchiveFilters"
+            }
+            CameraPayload::RecordingArchiveRules { .. } => "CameraPayload::RecordingArchiveRules",
+            CameraPayload::RecordingArchiveRule { .. } => "CameraPayload::RecordingArchiveRule",
+            CameraPayload::CameraDetails { .. } => "CameraPayload::CameraDetails",
             CameraPayload::RecordingArchivePage { .. } => "CameraPayload::RecordingArchivePage",
             CameraPayload::ListCamerasPage { .. } => "CameraPayload::ListCamerasPage",
             CameraPayload::RecordingGroupModesPage { .. } => {
@@ -5191,6 +5756,8 @@ mod tests {
 
     fn admin_route_name(payload: &AdminPayload) -> &'static str {
         match payload {
+            AdminPayload::ListUsersPage { .. } => "AdminPayload::ListUsersPage",
+            AdminPayload::EditUserAlias { .. } => "AdminPayload::EditUserAlias",
             AdminPayload::ActionGroupsPage { .. } => "AdminPayload::ActionGroupsPage",
             AdminPayload::RoomCamerasPage { .. } => "AdminPayload::RoomCamerasPage",
             AdminPayload::ListActions => "AdminPayload::ListActions",
@@ -5337,6 +5904,12 @@ mod tests {
             AdminPayload::ToggleUserVoice { .. } => "AdminPayload::ToggleUserVoice",
             AdminPayload::ToggleUserQuietHours { .. } => "AdminPayload::ToggleUserQuietHours",
             AdminPayload::CycleUserVoiceEngine { .. } => "AdminPayload::CycleUserVoiceEngine",
+            AdminPayload::WizardActiveDays => "AdminPayload::WizardActiveDays",
+            AdminPayload::WizardToggleActiveDay { .. } => "AdminPayload::WizardToggleActiveDay",
+            AdminPayload::WizardTogglePreRoll => "AdminPayload::WizardTogglePreRoll",
+            AdminPayload::WizardDraft { .. } => "AdminPayload::WizardDraft",
+            AdminPayload::WizardResume { .. } => "AdminPayload::WizardResume",
+            AdminPayload::WizardNew { .. } => "AdminPayload::WizardNew",
             AdminPayload::StartRecordingRuleWizard { .. } => {
                 "AdminPayload::StartRecordingRuleWizard"
             }

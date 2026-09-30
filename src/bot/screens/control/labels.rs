@@ -91,7 +91,20 @@ pub fn state(entity: &Entity, lang: Language, inverted: bool, alias: Option<&str
     }
     let logical = StateFormatter::logical_state(&entity.state, inverted);
     if lang == Language::En {
-        return logical;
+        return match (
+            domain,
+            entity.device_class.as_deref().unwrap_or(""),
+            logical.as_str(),
+        ) {
+            ("binary_sensor", "door" | "window" | "opening" | "garage_door", "on") => "Open",
+            ("binary_sensor", "door" | "window" | "opening" | "garage_door", "off") => "Closed",
+            ("binary_sensor", "motion" | "occupancy" | "presence", "on") => "Detected",
+            ("binary_sensor", "motion" | "occupancy" | "presence", "off") => "Clear",
+            ("binary_sensor", _, "on") => "Active",
+            ("binary_sensor", _, "off") => "Inactive",
+            _ => &logical,
+        }
+        .into();
     }
     StateFormatter::translate_state_for(
         domain,
@@ -99,4 +112,50 @@ pub fn state(entity: &Entity, lang: Language, inverted: bool, alias: Option<&str
         &logical,
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn english_binary_labels_use_classes_inversion_and_aliases_consistently() {
+        let mut entity = Entity {
+            entity_id: "binary_sensor.test".into(),
+            name: "Test".into(),
+            state: "on".into(),
+            device_class: None,
+            attributes: Default::default(),
+        };
+        for (class, on, off) in [
+            ("door", "Open", "Closed"),
+            ("window", "Open", "Closed"),
+            ("motion", "Detected", "Clear"),
+            ("occupancy", "Detected", "Clear"),
+            ("", "Active", "Inactive"),
+        ] {
+            entity.device_class = Some(class.into());
+            entity.state = "on".into();
+            assert_eq!(state(&entity, Language::En, false, None), on);
+            assert_eq!(state(&entity, Language::En, true, None), off);
+            entity.state = "off".into();
+            assert_eq!(state(&entity, Language::En, false, None), off);
+            assert_eq!(state(&entity, Language::En, true, None), on);
+            assert_eq!(
+                state(&entity, Language::En, true, Some("Custom state")),
+                "Custom state"
+            );
+        }
+        for unknown in ["unknown", "unavailable"] {
+            entity.state = unknown.into();
+            assert_eq!(
+                state(&entity, Language::En, false, None),
+                state(&entity, Language::En, true, None)
+            );
+            assert!(!matches!(
+                state(&entity, Language::En, true, None).as_str(),
+                "Active" | "Inactive"
+            ));
+        }
+    }
 }

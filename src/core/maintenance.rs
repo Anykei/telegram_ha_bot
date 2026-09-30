@@ -52,6 +52,9 @@ pub async fn start_background_maintenance(
                 cleanup_expired_sessions(&config).await;
                 cleanup_activity_log(&config).await;
                 cleanup_pending_commands(&config).await;
+                if let Err(error) = db::ui_drafts::purge_expired(&config.db).await {
+                    error!("UI draft cleanup error: {}", error);
+                }
                 cleanup_camera_recordings(&config).await;
                 refresh_all_active_sessions(&bot, &config).await;
                 refresh_system_data(&config).await;

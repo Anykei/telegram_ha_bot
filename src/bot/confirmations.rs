@@ -4,11 +4,15 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 use super::models::View;
 use super::router::{AdminPayload, ControlPayload, DeviceCmd, Payload, RenderContext};
+use crate::core::action_results::{ActionResult, Outcome, TargetKind, TargetResult};
 use crate::db::{self, action_groups::ActionGroupCommand, ui_confirmations as pending};
 use crate::i18n::t;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 enum Action {
+    Native {
+        target: i64,
+    },
     Device {
         device: i64,
         entity_id: String,
@@ -36,7 +40,8 @@ pub async fn is_critical_device(device: i64, config: &crate::models::AppConfig) 
 }
 
 /// Intercept writes, including old callback buttons. Review callbacks never recreate a proposal.
-pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<View>> {
+async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Proposal, bool)>> {
+    let mut auto_execute = false;
     let proposal = match payload {
         Payload::Control(ControlPayload::QuickAction { room, device, cmd })
             if super::router::action_requires_control(cmd) =>
@@ -194,6 +199,7 @@ pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<
             );
             let mut targets = Vec::new();
             let mut critical = false;
+            let mut critical_names = Vec::new();
             for item in db::action_groups::list_action_group_items(*group, &ctx.config.db).await? {
                 if item.is_archived() || !matches!(item.device_domain.as_str(), "light" | "switch")
                 {
@@ -207,14 +213,19 @@ pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<
                 )
                 .await?
                 {
-                    critical |=
+                    let is_critical =
                         db::devices::is_device_critical(&item.entity_id, &ctx.config.db).await?;
+                    critical |= is_critical;
+                    if is_critical {
+                        let device = db::devices::get_device_by_id(item.device_id, &ctx.config.db)
+                            .await?
+                            .context("Device missing")?;
+                        critical_names.push(device.alias.unwrap_or(device.entity_id));
+                    }
                     targets.push(item.device_id);
                 }
             }
-            if !critical {
-                return Ok(None);
-            }
+            auto_execute = !critical;
             targets.sort_unstable();
             let command = if *command == ActionGroupCommand::Toggle {
                 crate::core::action_groups::aggregate_group_state(
@@ -238,11 +249,12 @@ pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<
             );
             Proposal {
                 description: format!(
-                    "{}\n{} · {} {}",
+                    "{}\n{} · {} {}\n{}",
                     group_row.name,
                     verb,
                     targets.len(),
-                    t(ctx.lang, "confirm.devices")
+                    t(ctx.lang, "confirm.devices"),
+                    critical_names.join("\n")
                 ),
                 action: Action::Group {
                     group: *group,
@@ -256,15 +268,138 @@ pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<
                 },
             }
         }
+        Payload::Control(ControlPayload::ExecuteHaNativeAction { action })
+        | Payload::Admin(AdminPayload::ExecuteHaNativeAction { action }) => {
+            ensure!(
+                !matches!(payload, Payload::Admin(_)) || ctx.is_admin,
+                "Access denied"
+            );
+            let target = db::action_groups::get_ha_native_target(*action, &ctx.config.db)
+                .await?
+                .context("Target missing")?;
+            ensure!(
+                !target.is_archived()
+                    && target.is_enabled()
+                    && (ctx.is_admin || target.is_visible_to_all_users()),
+                "Target unavailable"
+            );
+            auto_execute = true;
+            Proposal {
+                action: Action::Native { target: *action },
+                description: target.display_name().to_string(),
+                back: if matches!(payload, Payload::Admin(_)) {
+                    Payload::Admin(AdminPayload::HaNativeActionDetail { action: *action })
+                } else {
+                    Payload::Control(ControlPayload::HaNativeActionDetail { action: *action })
+                },
+            }
+        }
         _ => return Ok(None),
     };
+    Ok(Some((proposal, auto_execute)))
+}
+
+pub async fn intercept(ctx: &RenderContext, payload: &Payload) -> Result<Option<View>> {
+    let Some((proposal, auto_execute)) = proposal(ctx, payload).await? else {
+        return Ok(None);
+    };
+    if ctx.is_admin {
+        db::add_user(ctx.user_id, &ctx.config.db).await?;
+    }
     let id = pending::create(
         ctx.user_id,
         &serde_json::to_string(&proposal)?,
         &ctx.config.db,
     )
     .await?;
-    Ok(Some(render(ctx, id).await?))
+    Ok(Some(handle(ctx, id, auto_execute, false).await?))
+}
+
+/// Rendered mutation buttons carry a single-use server operation ID.
+/// Rendering prepares a proposal, and never sends a command to HA.
+pub async fn prepare_button(ctx: &RenderContext, payload: &Payload) -> Result<Payload> {
+    if !matches!(
+        payload,
+        Payload::Control(
+            ControlPayload::ExecuteActionGroup { .. }
+                | ControlPayload::ExecuteHaNativeAction { .. }
+        ) | Payload::Admin(
+            AdminPayload::ExecuteActionGroup { .. } | AdminPayload::ExecuteHaNativeAction { .. }
+        )
+    ) {
+        return Ok(payload.clone());
+    }
+    let Some((proposal, auto_execute)) = proposal(ctx, payload).await? else {
+        return Ok(payload.clone());
+    };
+    if ctx.is_admin {
+        db::add_user(ctx.user_id, &ctx.config.db).await?;
+    }
+    let id = pending::create_independent(
+        ctx.user_id,
+        &serde_json::to_string(&proposal)?,
+        &ctx.config.db,
+    )
+    .await?;
+    Ok(operation_payload(id, !auto_execute))
+}
+
+fn operation_payload(id: i64, review: bool) -> Payload {
+    Payload::Control(if review {
+        ControlPayload::ReviewAction { id }
+    } else {
+        ControlPayload::ConfirmAction { id }
+    })
+}
+
+/// Adapt already delivered legacy buttons. Their message/payload identity survives restart.
+pub async fn prepare_legacy_callback(
+    payload: Payload,
+    user: u64,
+    chat: i64,
+    message: i32,
+    config: std::sync::Arc<crate::models::AppConfig>,
+) -> Result<Payload> {
+    if !matches!(
+        &payload,
+        Payload::Control(
+            ControlPayload::ExecuteActionGroup { .. }
+                | ControlPayload::ExecuteHaNativeAction { .. }
+        ) | Payload::Admin(
+            AdminPayload::ExecuteActionGroup { .. } | AdminPayload::ExecuteHaNativeAction { .. }
+        )
+    ) {
+        return Ok(payload);
+    }
+    let key = format!("{chat}:{message}:{}", payload.to_string());
+    if let Some((id, review)) = pending::callback_operation(user, &key, &config.db).await? {
+        return Ok(operation_payload(id, review));
+    }
+    let ctx = RenderContext {
+        user_id: user,
+        is_admin: user == config.root_user,
+        lang: db::get_user_language(user, &config.db)
+            .await?
+            .unwrap_or(config.default_language),
+        notifications: Vec::new(),
+        config: config.clone(),
+        settings_origin: super::router::SettingsOrigin::Home,
+    };
+    let Some((proposal, auto_execute)) = proposal(&ctx, &payload).await? else {
+        return Ok(payload);
+    };
+    if ctx.is_admin {
+        db::add_user(user, &config.db).await?;
+    }
+    let (id, review) = pending::bind_callback(
+        user,
+        &key,
+        &serde_json::to_string(&proposal)?,
+        !auto_execute,
+        &config.db,
+    )
+    .await?;
+    Ok(operation_payload(id, review))
 }
 
 pub async fn handle(ctx: &RenderContext, id: i64, execute: bool, cancel: bool) -> Result<View> {
@@ -278,23 +413,72 @@ pub async fn handle(ctx: &RenderContext, id: i64, execute: bool, cancel: bool) -
         // A claimed action stays consumed even if parsing or the service request fails.
         let result = async {
             let proposal: Proposal = serde_json::from_str(&record.action_json)?;
-            perform(ctx, proposal.action).await
+            let targets = match &proposal.action {
+                Action::Device { device, .. } => vec![(TargetKind::Device, *device)],
+                Action::Group { targets, .. } => {
+                    targets.iter().map(|id| (TargetKind::Device, *id)).collect()
+                }
+                Action::Native { target } => vec![(TargetKind::HaNative, *target)],
+            };
+            Ok::<_, anyhow::Error>(perform(ctx, proposal.action).await.unwrap_or_else(|_| {
+                ActionResult::new(
+                    targets
+                        .into_iter()
+                        .map(|(kind, id)| {
+                            TargetResult::new(
+                                kind,
+                                id,
+                                Outcome::Failed,
+                                Some("Validation failed / Проверка не пройдена"),
+                            )
+                        })
+                        .collect(),
+                )
+            }))
         }
         .await;
-        let message = match &result {
-            Ok(message) => message.clone(),
-            Err(error) => {
-                log::warn!("Confirmed UI action {id} failed: {error:#}");
-                t(ctx.lang, "confirm.failed").to_string()
-            }
-        };
-        pending::finish(id, result.is_ok(), &message, &ctx.config.db).await?;
+        let result = result.unwrap_or_else(|_| {
+            ActionResult::new(vec![TargetResult::new(
+                TargetKind::Device,
+                0,
+                Outcome::Failed,
+                Some("Validation failed / Проверка не пройдена"),
+            )])
+        });
+        let message = result.display(ctx.user_id, ctx.lang, &ctx.config).await?;
+        pending::finish(id, &result, &message, &ctx.config.db).await?;
+        let correlation = id.to_string();
+        let _ = db::activity_log::log(
+            db::activity_log::NewActivity {
+                user_id: Some(ctx.user_id),
+                kind: "command_result",
+                entity_type: "ui_confirmation",
+                entity_id: Some(&correlation),
+                action: "finish",
+                status: match result.outcome {
+                    Outcome::Sent => "sent",
+                    Outcome::Partial => "partial",
+                    Outcome::Failed => "failed",
+                    Outcome::Unknown => "unknown",
+                },
+                message: Some(&result.summary(ctx.lang)),
+            },
+            &ctx.config.db,
+        )
+        .await;
     }
     render(ctx, id).await
 }
 
-async fn perform(ctx: &RenderContext, action: Action) -> Result<String> {
+async fn perform(ctx: &RenderContext, action: Action) -> Result<ActionResult> {
     match action {
+        Action::Native { target } => Ok(crate::core::action_groups::execute_ha_native_target(
+            target,
+            crate::core::action_groups::ActionActor::User(ctx.user_id),
+            ctx.config.clone(),
+        )
+        .await?
+        .result),
         Action::Device {
             device,
             entity_id,
@@ -309,25 +493,35 @@ async fn perform(ctx: &RenderContext, action: Action) -> Result<String> {
                 .await?
                 .context("Device removed")?;
             ensure!(current.entity_id == entity_id, "Device changed");
-            if let DeviceCmd::SetTemp(target) = cmd {
-                let result = ctx
+            let outcome = if let DeviceCmd::SetTemp(target) = cmd {
+                match ctx
                     .config
                     .climate_controls
                     .enqueue_confirmed(ctx.config.clone(), ctx.user_id, device, target)?
                     .await
-                    .context("Climate worker stopped")??;
-                return Ok(super::screens::control::temperature_command_notice(
-                    ctx.lang, &result,
-                ));
-            }
-            let result =
-                crate::core::devices::handle_device_interaction(&ctx.config, device, cmd.into())
-                    .await?;
-            ensure!(
-                matches!(result, crate::core::devices::InteractionResult::Processed),
-                "Command did not complete"
-            );
-            Ok(t(ctx.lang, "confirm.sent").into())
+                {
+                    Ok(Ok(_)) => Outcome::Sent,
+                    _ => Outcome::Unknown,
+                }
+            } else {
+                match crate::core::devices::handle_device_interaction(
+                    &ctx.config,
+                    device,
+                    cmd.into(),
+                )
+                .await?
+                {
+                    crate::core::devices::InteractionResult::Processed => Outcome::Sent,
+                    crate::core::devices::InteractionResult::Error { .. } => Outcome::Unknown,
+                    _ => Outcome::Failed,
+                }
+            };
+            Ok(ActionResult::new(vec![TargetResult::new(
+                TargetKind::Device,
+                device,
+                outcome,
+                None,
+            )]))
         }
         Action::Group {
             group,
@@ -342,8 +536,7 @@ async fn perform(ctx: &RenderContext, action: Action) -> Result<String> {
                 Some(&targets),
             )
             .await?;
-            ensure!(result.status() == "ok", "{}", result.user_message());
-            Ok(result.user_message())
+            Ok(result.result)
         }
     }
 }
@@ -363,8 +556,18 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
         });
     };
     let proposal: Proposal = serde_json::from_str(&record.action_json)?;
-    let active = record.status == "pending" && record.expires_at > chrono::Utc::now().timestamp();
+    let allowed = proposal_visible(ctx, &proposal.action).await?;
+    let active =
+        allowed && record.status == "pending" && record.expires_at > chrono::Utc::now().timestamp();
     let mut rows = Vec::new();
+    let saved = match record.result_json.as_deref() {
+        Some(json) => Some(serde_json::from_str::<ActionResult>(json)?),
+        None => None,
+    };
+    let saved_text = match &saved {
+        Some(result) => Some(result.display(ctx.user_id, ctx.lang, &ctx.config).await?),
+        None => None,
+    };
     let status = if active {
         rows.push(vec![
             InlineKeyboardButton::callback(
@@ -379,27 +582,115 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
         t(ctx.lang, "confirm.prompt")
     } else {
         match record.status.as_str() {
-            "executed" | "failed" => record
-                .result_text
+            "executed" | "failed" => saved_text
                 .as_deref()
+                .or(record.result_text.as_deref())
                 .unwrap_or(t(ctx.lang, "confirm.failed")),
-            "executing" => t(ctx.lang, "confirm.executing"),
+            "executing" => {
+                if ctx.lang == crate::i18n::Language::En {
+                    "Send outcome unknown. Check states first."
+                } else {
+                    "Результат отправки не удалось определить. Сначала проверьте состояния."
+                }
+            }
             "cancelled" => t(ctx.lang, "confirm.cancelled"),
             _ => t(ctx.lang, "confirm.expired"),
         }
     };
+    if let Some(result) = &saved {
+        for target in &result.targets {
+            if target.kind == TargetKind::HaNative {
+                if let Some(name) =
+                    crate::core::action_results::target_label(target, ctx.user_id, &ctx.config)
+                        .await?
+                {
+                    rows.push(vec![InlineKeyboardButton::callback(
+                        name,
+                        Payload::Control(ControlPayload::HaNativeActionDetail {
+                            action: target.id,
+                        })
+                        .to_string(),
+                    )]);
+                }
+                continue;
+            }
+            let Some(name) =
+                crate::core::action_results::target_label(target, ctx.user_id, &ctx.config).await?
+            else {
+                continue;
+            };
+            let Some(device) = db::devices::get_device_by_id(target.id, &ctx.config.db).await?
+            else {
+                continue;
+            };
+            let Some(room) =
+                db::devices::get_room_id_by_entity(&device.entity_id, &ctx.config.db).await?
+            else {
+                continue;
+            };
+            rows.push(vec![InlineKeyboardButton::callback(
+                name,
+                Payload::Control(ControlPayload::DeviceControl {
+                    room,
+                    device: target.id,
+                })
+                .to_string(),
+            )]);
+        }
+    }
     rows.push(vec![super::screens::common::back_button_lang(
         ctx.lang,
-        proposal.back,
+        if allowed {
+            proposal.back
+        } else {
+            Payload::Home
+        },
     )]);
     Ok(View {
         compact: true,
         header: Some(t(ctx.lang, "confirm.title").into()),
-        text: format!("{}\n\n{}", proposal.description, status),
+        text: if active {
+            format!("{}\n\n{}", proposal.description, status)
+        } else {
+            status.to_string()
+        },
         notifications: ctx.notifications.clone(),
         kb: InlineKeyboardMarkup::new(rows),
         payload,
         lang: ctx.lang,
         ..Default::default()
     })
+}
+
+async fn proposal_visible(ctx: &RenderContext, action: &Action) -> Result<bool> {
+    match action {
+        Action::Device { device, .. } => {
+            db::access::can_control_device(ctx.user_id, ctx.is_admin, *device, &ctx.config.db).await
+        }
+        Action::Native { target } => Ok(db::action_groups::get_ha_native_target(
+            *target,
+            &ctx.config.db,
+        )
+        .await?
+        .is_some_and(|t| !t.is_archived() && (ctx.is_admin || t.is_visible_to_all_users()))),
+        Action::Group { group, targets, .. } => {
+            let group = db::action_groups::get_action_group(*group, &ctx.config.db).await?;
+            if !group.is_some_and(|g| ctx.is_admin || g.is_visible_to_all_users()) {
+                return Ok(false);
+            }
+            for device in targets {
+                if !db::access::can_control_device(
+                    ctx.user_id,
+                    ctx.is_admin,
+                    *device,
+                    &ctx.config.db,
+                )
+                .await?
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
 }

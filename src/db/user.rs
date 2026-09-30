@@ -109,36 +109,55 @@ pub async fn cycle_user_language(
 }
 
 pub async fn delete_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM user_device_access WHERE user_id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query("DELETE FROM user_room_access WHERE user_id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query("DELETE FROM user_profiles WHERE user_id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query("DELETE FROM subscriptions WHERE user_id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query("DELETE FROM pinned_headers WHERE user_id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
+    for (table, owner_column) in [
+        ("user_favorites", "owner"),
+        ("ui_drafts", "owner_id"),
+        ("user_display_metadata", "user_id"),
+        ("ui_text_pages", "user_id"),
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE {owner_column} = ?"))
+            .bind(user_id as i64)
+            .execute(&mut *tx)
+            .await?;
+    }
+    for namespace in ["list", "chart", "archive", "group-items"] {
+        sqlx::query("DELETE FROM app_settings WHERE key LIKE ?")
+            .bind(format!("ui:{namespace}:{user_id}:%"))
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(user_id as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
+    tx.commit().await?;
     Ok(())
 }
 

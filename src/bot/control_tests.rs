@@ -15,6 +15,7 @@ struct FakeHa {
     fail_read: AtomicBool,
     empty_history: AtomicBool,
     fail_write: AtomicBool,
+    fail_entity: Mutex<Option<String>>,
     stale_temperature: AtomicBool,
     pause_next_read: AtomicBool,
     read_started: tokio::sync::Notify,
@@ -100,7 +101,11 @@ impl HomeAssistantClient for FakeHa {
             self.write_started.notify_one();
             self.release_write.notified().await;
         }
-        anyhow::ensure!(!self.fail_write.load(Ordering::SeqCst), "HA service failed");
+        anyhow::ensure!(
+            !self.fail_write.load(Ordering::SeqCst)
+                && self.fail_entity.lock().unwrap().as_deref() != Some(id),
+            "HA response lost after dispatch"
+        );
         if self.stale_temperature.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -622,7 +627,7 @@ async fn critical_light_confirmation_freezes_toggle_and_is_consumed_once() -> an
     first?;
     duplicate?;
     let done = open(&config, ControlPayload::ReviewAction { id }).await?;
-    assert!(done.text.contains("Команда отправлена"));
+    assert!(done.text.contains("Команды отправлены 1 из 1"));
     assert!(!callbacks(&done).contains(&Payload::Control(ControlPayload::ConfirmAction { id })));
     open(&config, ControlPayload::ConfirmAction { id }).await?;
     let calls = ha.calls.lock().unwrap();
@@ -720,7 +725,9 @@ async fn uncertain_confirmed_command_is_not_retried() -> anyhow::Result<()> {
     );
     ha.fail_write.store(true, Ordering::SeqCst);
     let failed = open(&config, ControlPayload::ConfirmAction { id }).await?;
-    assert!(failed.text.contains("Не удалось"));
+    assert!(failed
+        .text
+        .contains("Результат отправки не удалось определить"));
     ha.fail_write.store(false, Ordering::SeqCst);
     open(&config, ControlPayload::ConfirmAction { id }).await?;
     router(failed.payload, 42, config.clone()).await?;
@@ -1267,10 +1274,11 @@ async fn action_group_refresh_never_repeats_execution() -> anyhow::Result<()> {
     )
     .await?;
     assert!(view.alert.is_none());
-    assert_eq!(
+    assert!(matches!(
         view.payload,
-        Payload::Control(ControlPayload::ActionGroupDetail { group })
-    );
+        Payload::Control(ControlPayload::ReviewAction { .. })
+    ));
+    assert!(view.text.contains("Команды отправлены 1 из 1"));
     router(view.payload.clone(), config.root_user, config.clone()).await?;
     assert_eq!(ha.calls.lock().unwrap().len(), 1);
     assert_eq!(ha.calls.lock().unwrap()[0].0, "light.turn_off");
@@ -1868,7 +1876,11 @@ async fn climate_and_confirmation_use_actual_room_and_show_limits() -> anyhow::R
     assert!(card.header.as_deref().unwrap().contains("Спальня"));
     assert!(card.text.contains("Пределы: 16° – 30°"));
     assert!(card.text.contains("Шаг: 0.5°"));
-    assert!(card.text.contains("climate.bedroom"));
+    assert!(!card.text.contains("climate.bedroom"));
+    let details_payload = Payload::DeviceDetails { room: 1, device: 1 };
+    assert!(callbacks(&card).contains(&details_payload));
+    let details = router(details_payload, 42, config.clone()).await?;
+    assert!(details.text.contains("climate.bedroom"));
     assert!(callbacks(&card).contains(&Payload::Control(ControlPayload::RoomDetail { room: 1 })));
     db::devices::toggle_device_critical(3, &config.db).await?;
     let confirm = open(
@@ -2050,6 +2062,27 @@ async fn archive_pages_keep_filter_on_back_and_refresh_without_revealing_denied_
     assert_eq!(callbacks(&returned), callbacks(&selected));
     let refreshed = router(returned.payload, 42, config.clone()).await?;
     assert_eq!(refreshed.payload, selection);
+    for payload in &sessions {
+        if let Payload::Camera(CameraPayload::RecordingSession { session, .. }) = payload {
+            db::camera_recording_sessions::soft_delete_session(*session, &config.db).await?;
+        }
+    }
+    let shortened = router(selection.clone(), 42, config.clone()).await?;
+    assert_eq!(
+        shortened.payload,
+        Payload::Camera(CameraPayload::RecordingArchivePage {
+            camera,
+            filter: "ready".into(),
+            page: 0,
+        })
+    );
+    assert_eq!(
+        callbacks(&shortened)
+            .iter()
+            .filter(|p| matches!(p, Payload::Camera(CameraPayload::RecordingSession { .. })))
+            .count(),
+        10
+    );
     db::access::set_room_access(42, 1, false, false, &config.db).await?;
     let denied = router(selection, 42, config.clone()).await?;
     assert!(denied.alert.is_some());
@@ -2571,3 +2604,222 @@ async fn foreground_result_supersedes_a_loading_live_refresh_of_the_same_card() 
     assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn archive_filter_picker_is_compact_complete_and_preserves_return_context(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let camera = camera_for_ui_tests(&config).await?;
+    let mut rule_ids = Vec::new();
+    for _ in 0..30 {
+        rule_ids.push(sqlx::query("INSERT INTO camera_recording_rules (name, camera_id) VALUES ('Одинаковое длинное название правила камеры', ?)")
+            .bind(camera).execute(&config.db).await?.last_insert_rowid());
+    }
+    let archive = router(
+        Payload::Camera(CameraPayload::RecordingArchivePage {
+            camera,
+            filter: "ready".into(),
+            page: 0,
+        }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(archive.kb.inline_keyboard[0].len(), 3);
+    assert!(!callbacks(&archive).iter().any(|payload| matches!(payload, Payload::Camera(CameraPayload::RecordingArchiveFiltered { filter, .. }) if filter.starts_with("rule:"))));
+    let selection = Payload::Camera(CameraPayload::RecordingArchivePage {
+        camera,
+        filter: "ready".into(),
+        page: 2,
+    });
+    db::settings::set_string(
+        &format!("ui:archive:42:{camera}"),
+        &selection.to_string(),
+        &config.db,
+    )
+    .await?;
+    let filters = router(
+        Payload::Camera(CameraPayload::RecordingArchiveFilters { camera }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert!(callbacks(&filters).contains(&selection));
+    let mut found = Vec::new();
+    for page in 0..3 {
+        let rules = router(
+            Payload::Camera(CameraPayload::RecordingArchiveRules { camera, page }),
+            42,
+            config.clone(),
+        )
+        .await?;
+        let choices = callbacks(&rules)
+            .into_iter()
+            .filter_map(|payload| match payload {
+                Payload::Camera(CameraPayload::RecordingArchiveRule { rule, .. }) => Some(rule),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(choices.len(), 10);
+        found.extend(choices);
+    }
+    assert_eq!(found, rule_ids);
+    let preview = router(
+        Payload::Camera(CameraPayload::RecordingArchiveRule {
+            camera,
+            rule: rule_ids[29],
+            page: 2,
+        }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert!(preview
+        .text
+        .contains("Одинаковое длинное название правила камеры"));
+    assert!(
+        callbacks(&preview).contains(&Payload::Camera(CameraPayload::RecordingArchiveRules {
+            camera,
+            page: 2
+        }))
+    );
+    assert_eq!(
+        db::settings::get_string(&format!("ui:archive:42:{camera}"), &config.db).await?,
+        Some(selection.to_string())
+    );
+    let apply = Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+        camera,
+        filter: format!("rule:{}", rule_ids[29]),
+    });
+    let applied = router(apply, 42, config.clone()).await?;
+    assert_eq!(
+        applied.payload,
+        Payload::Camera(CameraPayload::RecordingArchivePage {
+            camera,
+            filter: format!("rule:{}", rule_ids[29]),
+            page: 0
+        })
+    );
+    assert!(applied.text.contains("Показано: 0"));
+    sqlx::query("UPDATE camera_recording_rules SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(rule_ids[29])
+        .execute(&config.db)
+        .await?;
+    let deleted = router(applied.payload, 42, config.clone()).await?;
+    assert!(deleted.alert.is_some());
+    assert_eq!(
+        deleted.payload,
+        Payload::Camera(CameraPayload::RecordingArchivePage {
+            camera,
+            filter: "all".into(),
+            page: 0
+        })
+    );
+    db::access::set_room_access(42, 1, false, false, &config.db).await?;
+    for payload in [
+        CameraPayload::RecordingArchiveFilters { camera },
+        CameraPayload::RecordingArchiveRules { camera, page: 0 },
+        CameraPayload::RecordingArchiveRule {
+            camera,
+            rule: rule_ids[0],
+            page: 0,
+        },
+    ] {
+        let denied = router(Payload::Camera(payload), 42, config.clone()).await?;
+        assert!(denied.alert.is_some());
+        assert!(!denied.text.contains("Одинаковое"));
+    }
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn admin_user_names_and_aliases_keep_identity_pagination_and_root_permissions(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    for id in 100..112 {
+        db::add_user(id, &config.db).await?;
+        db::user_display::capture(id, "Одинаковое имя", None, Some("same_name"), &config.db)
+            .await?;
+    }
+    let first = router(Payload::Admin(AdminPayload::ListUsers), 1, config.clone()).await?;
+    let names: Vec<_> = first
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .filter(|button| button.text.contains("Одинаковое имя"))
+        .map(|button| button.text.clone())
+        .collect();
+    assert_eq!(names.len(), 9);
+    assert!(names
+        .iter()
+        .all(|name| name.contains(" · #") && name.ends_with(" · user")));
+    assert!(first
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .any(|button| button.text.contains("Пользователь #42")));
+    let second = router(
+        Payload::Admin(AdminPayload::ListUsersPage { page: 1 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(
+        callbacks(&second)
+            .iter()
+            .filter(|payload| matches!(payload, Payload::Admin(AdminPayload::UserProfile { .. })))
+            .count(),
+        3
+    );
+    let restored = router(Payload::Admin(AdminPayload::ListUsers), 1, config.clone()).await?;
+    assert_eq!(callbacks(&restored), callbacks(&second));
+    let prompt = router(
+        Payload::Admin(AdminPayload::EditUserAlias { id: 111 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(matches!(
+        prompt.next_state,
+        Some(State::EditUserAlias { user_id: 111 })
+    ));
+    assert!(callbacks(&prompt).contains(&Payload::Admin(AdminPayload::UserProfile { id: 111 })));
+    db::user_display::set_alias(111, Some("Семья"), &config.db).await?;
+    let profile = router(
+        Payload::Admin(AdminPayload::UserProfile { id: 111 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(profile.text.contains("Семья"));
+    assert!(profile.text.contains("ID: 111"));
+    assert!(
+        callbacks(&profile).contains(&Payload::Admin(AdminPayload::ConfirmDeleteUser { id: 111 }))
+    );
+    db::access::set_user_role(42, "admin", &config.db).await?;
+    let denied = router(
+        Payload::Admin(AdminPayload::EditUserAlias { id: 111 }),
+        42,
+        config.clone(),
+    )
+    .await?;
+    assert!(denied.alert.is_some());
+    assert!(!denied.text.contains("Семья"));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[path = "command_tests.rs"]
+mod command_ux;
+
+#[path = "schedule_tests.rs"]
+mod schedule_ux;
+
+#[path = "recording_wizard_tests.rs"]
+mod recording_wizard_tests;
+
+#[path = "personal_tests.rs"]
+mod personal_ux;

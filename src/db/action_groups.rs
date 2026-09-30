@@ -717,6 +717,7 @@ pub async fn get_action_schedule(
     .await?)
 }
 
+#[cfg(test)]
 pub async fn create_action_schedule(
     target: ActionTargetRef,
     command: ActionScheduleCommand,
@@ -741,23 +742,7 @@ pub async fn create_action_schedule(
     Ok(result.last_insert_rowid())
 }
 
-pub async fn update_action_schedule_time(
-    schedule_id: i64,
-    time_minute: i64,
-    pool: &SqlitePool,
-) -> Result<()> {
-    ensure!((0..=1439).contains(&time_minute), "Invalid schedule time");
-    let result = sqlx::query(
-        "UPDATE action_schedules SET time_minute = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(time_minute)
-    .bind(schedule_id)
-    .execute(pool)
-    .await?;
-    ensure!(result.rows_affected() > 0, "Action schedule not found");
-    Ok(())
-}
-
+#[cfg(test)]
 pub async fn update_action_schedule_days(
     schedule_id: i64,
     days_mask: i64,
@@ -776,30 +761,6 @@ pub async fn update_action_schedule_days(
     .await?;
     ensure!(result.rows_affected() > 0, "Action schedule not found");
     Ok(())
-}
-
-pub async fn cycle_action_schedule_command(schedule_id: i64, pool: &SqlitePool) -> Result<String> {
-    let schedule = get_action_schedule(schedule_id, pool)
-        .await?
-        .ok_or_else(|| anyhow!("Schedule not found"))?;
-    ensure!(
-        schedule.target_type == TARGET_BOT_GROUP,
-        "HA-native schedule command is fixed"
-    );
-    let next = match schedule.command.as_str() {
-        COMMAND_TURN_ON => COMMAND_TURN_OFF,
-        COMMAND_TURN_OFF => COMMAND_TURN_ON,
-        _ => COMMAND_TURN_ON,
-    };
-    let result = sqlx::query(
-        "UPDATE action_schedules SET command = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(next)
-    .bind(schedule_id)
-    .execute(pool)
-    .await?;
-    ensure!(result.rows_affected() > 0, "Action schedule not found");
-    Ok(next.to_string())
 }
 
 pub async fn toggle_action_schedule_enabled(schedule_id: i64, pool: &SqlitePool) -> Result<bool> {
@@ -880,6 +841,7 @@ pub async fn mark_action_schedule_run(
     Ok(())
 }
 
+#[cfg(test)]
 async fn validate_schedule(
     target: ActionTargetRef,
     command: ActionScheduleCommand,
@@ -949,15 +911,6 @@ pub fn parse_time_minute(value: &str) -> Result<i64> {
         "Минуты должны быть от 00 до 59"
     );
     Ok(hours * 60 + minutes)
-}
-
-pub fn format_days_mask(days_mask: i64) -> &'static str {
-    match days_mask {
-        0b111_1111 => "ежедневно",
-        0b001_1111 => "Пн-Пт",
-        0b110_0000 => "Сб-Вс",
-        _ => "выбранные дни",
-    }
 }
 
 #[cfg(test)]

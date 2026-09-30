@@ -20,8 +20,25 @@ pub enum WizardTriggerMode {
     NumericBelow,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RecordingRuleWizard {
+    pub draft_id: Option<i64>,
+    pub revision: i64,
+    pub committed_rule_id: Option<i64>,
+    pub name: Option<String>,
+    pub name_touched: bool,
+    pub cooldown_s: Option<u32>,
+    pub cooldown_touched: bool,
+    pub max_segment_seconds: Option<u32>,
+    pub pre_roll_enabled: Option<bool>,
+    pub pre_roll_seconds: i64,
+    pub custom_conditions: Option<Vec<WizardCondition>>,
+    pub raw_text: Option<String>,
+    pub pending_input: Option<String>,
+    pub editing_text: bool,
+    pub step: String,
+    pub return_to_summary: bool,
     pub room_id: i64,
     pub camera_id: Option<i64>,
     pub source_device_id: Option<i64>,
@@ -40,6 +57,22 @@ pub struct RecordingRuleWizard {
 impl RecordingRuleWizard {
     pub fn new(room_id: i64) -> Self {
         Self {
+            draft_id: None,
+            revision: 0,
+            committed_rule_id: None,
+            name: None,
+            name_touched: false,
+            cooldown_s: None,
+            cooldown_touched: false,
+            max_segment_seconds: None,
+            pre_roll_enabled: None,
+            pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
+            custom_conditions: None,
+            raw_text: None,
+            pending_input: None,
+            editing_text: false,
+            step: String::new(),
+            return_to_summary: false,
             room_id,
             camera_id: None,
             source_device_id: None,
@@ -56,36 +89,83 @@ impl RecordingRuleWizard {
         }
     }
 
+    /// Only an actual source change invalidates source-dependent fields.
     pub fn reset_source(&mut self, device_id: i64) {
+        if self.source_device_id == Some(device_id) {
+            return;
+        }
         self.source_device_id = Some(device_id);
         self.source_mode = None;
         self.source_value = None;
-        self.extra_conditions.clear();
-        self.condition_logic = ConditionLogic::Any;
-        self.logic_touched = false;
-        self.tail_seconds = None;
-        self.retention_days = None;
-        self.active_time = RecordingRuleActiveTime::always();
-        self.group_ids.clear();
-        self.pending_condition = None;
-    }
-
-    pub fn set_source_mode(&mut self, mode: WizardTriggerMode, value: Option<String>) {
-        self.source_mode = Some(mode);
-        self.source_value = value;
+        if let Some(conditions) = self.custom_conditions.take() {
+            self.extra_conditions = conditions;
+        }
         self.apply_default_logic();
     }
 
+    pub fn set_source_mode(&mut self, mode: WizardTriggerMode, value: Option<String>) {
+        let old_mode = self.source_mode;
+        self.source_value = if mode.needs_value() {
+            value.or_else(|| {
+                old_mode
+                    .filter(|old| old.needs_value())
+                    .and(self.source_value.clone())
+            })
+        } else {
+            None
+        };
+        self.source_mode = Some(mode);
+        if old_mode != Some(mode) {
+            if let Some(conditions) = self.custom_conditions.take() {
+                self.extra_conditions = conditions;
+            }
+        }
+        if !self.cooldown_touched {
+            self.cooldown_s = Some(default_cooldown_s(mode));
+        }
+        self.apply_default_logic();
+    }
+
+    pub fn conditions(
+        &self,
+        entity_id: &str,
+        mode: WizardTriggerMode,
+    ) -> Result<Vec<WizardCondition>, String> {
+        match &self.custom_conditions {
+            Some(conditions) => Ok(conditions.clone()),
+            None => build_final_conditions(
+                entity_id,
+                mode,
+                self.source_value.as_deref(),
+                &self.extra_conditions,
+            ),
+        }
+    }
+
+    pub fn effective_name(&self, lang: Language, source: &str, mode: WizardTriggerMode) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| build_rule_name(lang, source, mode, self.source_value.as_deref()))
+    }
+
     pub fn add_extra_condition(&mut self, condition: WizardCondition) {
-        self.extra_conditions.push(condition);
+        if let Some(conditions) = self.custom_conditions.as_mut() {
+            conditions.push(condition);
+        } else {
+            self.extra_conditions.push(condition);
+        }
         self.apply_default_logic();
     }
 
     pub fn remove_extra_condition(&mut self, index: usize) -> bool {
-        if index >= self.extra_conditions.len() {
+        let conditions = self
+            .custom_conditions
+            .as_mut()
+            .unwrap_or(&mut self.extra_conditions);
+        if index >= conditions.len() {
             return false;
         }
-        self.extra_conditions.remove(index);
+        conditions.remove(index);
         self.apply_default_logic();
         true
     }
@@ -127,7 +207,13 @@ impl RecordingRuleWizard {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Default for RecordingRuleWizard {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WizardPendingCondition {
     pub device_id: i64,
     pub operator: Option<ConditionOperator>,
@@ -204,7 +290,7 @@ impl WizardTriggerMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WizardCondition {
     pub entity_id: String,
     pub operator: ConditionOperator,
@@ -512,9 +598,12 @@ fn normalized_number(value: Option<&str>) -> Result<String, String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Введите числовое значение.".to_string())?;
-    value
+    let number = value
         .parse::<f64>()
         .map_err(|_| "Значение должно быть числом.".to_string())?;
+    if !number.is_finite() {
+        return Err("Значение должно быть конечным числом.".to_string());
+    }
     Ok(value.to_string())
 }
 
@@ -536,6 +625,123 @@ fn parse_from_to(value: &str) -> Result<(String, String), String> {
     }
 
     Ok((from.to_string(), to.to_string()))
+}
+
+pub const DRAFT_KIND: &str = "recording_rule";
+
+pub async fn restore_draft(
+    config: &crate::models::AppConfig,
+    owner: u64,
+    id: Option<i64>,
+) -> anyhow::Result<Option<RecordingRuleWizard>> {
+    let draft = match id {
+        Some(id) => crate::db::ui_drafts::load(id, owner, DRAFT_KIND, &config.db).await?,
+        None => crate::db::ui_drafts::latest(owner, DRAFT_KIND, &config.db).await?,
+    };
+    let Some(draft) = draft else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        draft.schema_version == 1,
+        "Unsupported recording draft version"
+    );
+    let mut wizard: RecordingRuleWizard = serde_json::from_str(&draft.payload)?;
+    wizard.draft_id = Some(draft.id);
+    wizard.revision = draft.revision;
+    wizard.committed_rule_id = draft.committed_target_id;
+    wizard.step = draft.step;
+    Ok(Some(wizard))
+}
+
+/// Save a snapshot only after a successful input/navigation transition.
+pub async fn persist_draft(config: &crate::models::AppConfig, owner: u64) -> anyhow::Result<()> {
+    let Some(mut wizard) = config
+        .sessions
+        .get(&owner)
+        .and_then(|s| s.recording_rule_wizard.clone())
+    else {
+        return Ok(());
+    };
+    if wizard.committed_rule_id.is_some() {
+        return Ok(());
+    }
+    if !wizard.name_touched {
+        if let (Some(device), Some(mode)) = (wizard.source_device_id, wizard.source_mode) {
+            if let Some(source) =
+                crate::db::devices::get_recording_wizard_candidate(device, &config.db).await?
+            {
+                let lang = crate::db::get_user_language(owner, &config.db)
+                    .await?
+                    .unwrap_or(config.default_language);
+                wizard.name = Some(build_rule_name(
+                    lang,
+                    &source.display_name,
+                    mode,
+                    wizard.source_value.as_deref(),
+                ));
+            }
+        }
+    }
+
+    if let Some(id) = wizard.draft_id {
+        let json = serde_json::to_string(&wizard)?;
+        let existing = crate::db::ui_drafts::load(id, owner, DRAFT_KIND, &config.db)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Draft expired; reopen the wizard"))?;
+        // Revision is carried separately in the row, not in the payload comparison.
+        let mut previous: RecordingRuleWizard = serde_json::from_str(&existing.payload)?;
+        previous.revision = wizard.revision;
+        previous.draft_id = wizard.draft_id;
+        if previous == wizard && existing.step == wizard.step {
+            return Ok(());
+        }
+        wizard.revision = crate::db::ui_drafts::save(
+            id,
+            owner,
+            wizard.revision,
+            &json,
+            &wizard.step,
+            if wizard.return_to_summary {
+                "summary"
+            } else {
+                "linear"
+            },
+            false,
+            config.session_ttl_hours,
+            &config.db,
+        )
+        .await?;
+    } else {
+        let row = crate::db::ui_drafts::create(
+            owner,
+            DRAFT_KIND,
+            &serde_json::to_string(&wizard)?,
+            config.session_ttl_hours,
+            &config.db,
+        )
+        .await?;
+        wizard.draft_id = Some(row.id);
+        wizard.revision = crate::db::ui_drafts::save(
+            row.id,
+            owner,
+            row.revision,
+            &serde_json::to_string(&wizard)?,
+            &wizard.step,
+            if wizard.return_to_summary {
+                "summary"
+            } else {
+                "linear"
+            },
+            false,
+            config.session_ttl_hours,
+            &config.db,
+        )
+        .await?;
+    }
+    if let Some(mut session) = config.sessions.get_mut(&owner) {
+        session.recording_rule_wizard = Some(wizard);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -636,5 +842,98 @@ mod tests {
             condition_line(&conditions[1]),
             "binary_sensor.security;is;;;on"
         );
+    }
+}
+
+#[cfg(test)]
+mod remediation_tests {
+    use super::*;
+
+    fn filled() -> RecordingRuleWizard {
+        let mut wizard = RecordingRuleWizard::new(3);
+        wizard.camera_id = Some(5);
+        wizard.source_device_id = Some(7);
+        wizard.source_mode = Some(WizardTriggerMode::NumericAbove);
+        wizard.source_value = Some("24.5".into());
+        wizard.name = Some("My recording".into());
+        wizard.name_touched = true;
+        wizard.cooldown_s = Some(123);
+        wizard.cooldown_touched = true;
+        wizard.condition_logic = ConditionLogic::Any;
+        wizard.logic_touched = true;
+        wizard.tail_seconds = Some(120);
+        wizard.retention_days = Some(90);
+        wizard.active_time = RecordingRuleActiveTime::window(1320, 420, 0b001_1111).unwrap();
+        wizard.group_ids = vec![1, 2];
+        wizard.extra_conditions.push(
+            condition_from_input("binary_sensor.guard", ConditionOperator::Is, "on").unwrap(),
+        );
+        wizard
+    }
+
+    #[test]
+    fn source_changes_only_reset_source_dependencies() {
+        let mut wizard = filled();
+        let original = wizard.clone();
+        wizard.reset_source(7);
+        assert_eq!(wizard, original);
+        wizard.reset_source(8);
+        assert_eq!(wizard.source_mode, None);
+        assert_eq!(wizard.source_value, None);
+        let mut expected = original;
+        expected.source_device_id = Some(8);
+        expected.source_mode = None;
+        expected.source_value = None;
+        assert_eq!(wizard, expected);
+    }
+
+    #[test]
+    fn opposite_numeric_operator_keeps_threshold_and_manual_defaults() {
+        let mut wizard = filled();
+        wizard.set_source_mode(WizardTriggerMode::NumericBelow, None);
+        assert_eq!(wizard.source_value.as_deref(), Some("24.5"));
+        assert_eq!(wizard.cooldown_s, Some(123));
+        assert_eq!(wizard.condition_logic, ConditionLogic::Any);
+        wizard.set_source_mode(WizardTriggerMode::AnyChange, None);
+        assert!(wizard.source_value.is_none());
+        assert_eq!(wizard.tail_seconds, Some(120));
+        assert_eq!(wizard.group_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn complete_draft_and_legacy_json_round_trip_without_losing_fields() {
+        let mut wizard = filled();
+        wizard.custom_conditions = Some(vec![condition_from_input(
+            "sensor.other",
+            ConditionOperator::Below,
+            "0",
+        )
+        .unwrap()]);
+        wizard.raw_text = Some("unfinished block".into());
+        wizard.pending_input = Some("22:".into());
+        wizard.max_segment_seconds = Some(240);
+        wizard.pre_roll_enabled = Some(true);
+        assert_eq!(
+            serde_json::from_str::<RecordingRuleWizard>(&serde_json::to_string(&wizard).unwrap())
+                .unwrap(),
+            wizard
+        );
+        let legacy = serde_json::json!({"room_id":3,"camera_id":5,"source_device_id":7,"source_mode":"NumericAbove","source_value":"24.5"});
+        let decoded: RecordingRuleWizard = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.source_value.as_deref(), Some("24.5"));
+        assert_eq!(decoded.pre_roll_seconds, 15);
+        assert_eq!(
+            wizard
+                .conditions("ignored", WizardTriggerMode::AnyChange)
+                .unwrap(),
+            wizard.custom_conditions.unwrap()
+        );
+    }
+
+    #[test]
+    fn thresholds_reject_non_finite_numbers() {
+        for value in ["NaN", "inf", "-inf", "1e999"] {
+            assert!(source_threshold_value(value).is_err());
+        }
     }
 }

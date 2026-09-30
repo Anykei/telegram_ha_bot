@@ -79,7 +79,11 @@ pub fn valid_hh_mm(value: &str) -> bool {
     let Some((hours, minutes)) = value.split_once(':') else {
         return false;
     };
-    if hours.len() != 2 || minutes.len() != 2 {
+    if hours.len() != 2
+        || minutes.len() != 2
+        || !hours.bytes().all(|b| b.is_ascii_digit())
+        || !minutes.bytes().all(|b| b.is_ascii_digit())
+    {
         return false;
     }
     let Ok(hours) = hours.parse::<u32>() else {

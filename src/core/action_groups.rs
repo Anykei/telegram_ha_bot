@@ -1,3 +1,4 @@
+use super::action_results::{ActionResult, Outcome, TargetKind, TargetResult};
 use crate::db;
 use crate::models::AppConfig;
 use anyhow::{anyhow, ensure, Result};
@@ -42,18 +43,13 @@ impl ActionActor {
 }
 
 #[derive(Debug, Clone)]
-pub struct ActionTargetError {
-    pub entity_id: String,
-    pub error: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct ActionExecutionResult {
     pub requested: usize,
     pub attempted: usize,
     pub succeeded: usize,
-    pub failed: Vec<ActionTargetError>,
+    pub failed: Vec<TargetResult>,
     pub message: String,
+    pub result: ActionResult,
 }
 
 impl ActionExecutionResult {
@@ -68,25 +64,7 @@ impl ActionExecutionResult {
     }
 
     pub fn user_message(&self) -> String {
-        if self.status() == "ok" {
-            return self.message.clone();
-        }
-
-        let mut text = if self.status() == "partial" {
-            format!(
-                "⚠️ Выполнено частично: {} / {}.",
-                self.succeeded, self.attempted
-            )
-        } else {
-            format!(
-                "⚠️ Выполнить не удалось: {} / {}.",
-                self.succeeded, self.attempted
-            )
-        };
-        for error in self.failed.iter().take(4) {
-            text.push_str(&format!("\n{}: {}", error.entity_id, error.error));
-        }
-        text
+        self.result.summary(crate::i18n::Language::Ru)
     }
 }
 
@@ -219,7 +197,7 @@ pub(crate) async fn execute_action_group_with_targets(
     config: Arc<AppConfig>,
     approved_targets: Option<&[i64]>,
 ) -> Result<ActionExecutionResult> {
-    let lock = target_lock(format!("bot_group:{}", group_id));
+    let lock = target_lock(format!("{:p}:bot_group:{}", Arc::as_ptr(&config), group_id));
     let _guard = lock
         .try_lock()
         .map_err(|_| anyhow!("Действие уже выполняется"))?;
@@ -286,17 +264,28 @@ pub(crate) async fn execute_action_group_with_targets(
 
     let mut succeeded = 0usize;
     let mut failed = Vec::new();
+    let mut outcomes = Vec::new();
     for target in &targets {
         match config
             .ha_client
             .call_service(&target.device_domain, service, &target.entity_id)
             .await
         {
-            Ok(()) => succeeded += 1,
-            Err(error) => failed.push(ActionTargetError {
-                entity_id: target.entity_id.clone(),
-                error: crate::db::sanitize_error(&error.to_string()),
-            }),
+            Ok(()) => {
+                succeeded += 1;
+                outcomes.push(TargetResult::new(
+                    TargetKind::Device,
+                    target.device_id,
+                    Outcome::Sent,
+                    None,
+                ));
+            }
+            Err(error) => {
+                let outcome =
+                    super::action_results::send_error(TargetKind::Device, target.device_id, &error);
+                failed.push(outcome.clone());
+                outcomes.push(outcome);
+            }
         }
     }
 
@@ -309,6 +298,7 @@ pub(crate) async fn execute_action_group_with_targets(
             "Команда отправлена: {} · {} устройств",
             group.name, succeeded
         ),
+        result: ActionResult::new(outcomes),
     };
     log_action_group_execution(&config, actor, group.id, service, &result).await;
     Ok(result)
@@ -319,7 +309,11 @@ pub async fn execute_ha_native_target(
     actor: ActionActor,
     config: Arc<AppConfig>,
 ) -> Result<ActionExecutionResult> {
-    let lock = target_lock(format!("ha_native:{}", target_id));
+    let lock = target_lock(format!(
+        "{:p}:ha_native:{}",
+        Arc::as_ptr(&config),
+        target_id
+    ));
     let _guard = lock
         .try_lock()
         .map_err(|_| anyhow!("Действие уже выполняется"))?;
@@ -351,19 +345,32 @@ pub async fn execute_ha_native_target(
         attempted: 1,
         succeeded: 0,
         failed: Vec::new(),
-        message: format!("Запущено: {}", target.display_name()),
+        message: format!("Команда отправлена: {}", target.display_name()),
+        result: ActionResult::new(Vec::new()),
     };
     if let Err(error) = config
         .ha_client
         .call_service(&target.domain, service, &target.entity_id)
         .await
     {
-        result.failed.push(ActionTargetError {
-            entity_id: target.entity_id.clone(),
-            error: crate::db::sanitize_error(&error.to_string()),
-        });
+        result.failed.push(super::action_results::send_error(
+            TargetKind::HaNative,
+            target_id,
+            &error,
+        ));
+        result.result = ActionResult::new(vec![super::action_results::send_error(
+            TargetKind::HaNative,
+            target_id,
+            &error,
+        )]);
     } else {
         result.succeeded = 1;
+        result.result = ActionResult::new(vec![TargetResult::new(
+            TargetKind::HaNative,
+            target_id,
+            Outcome::Sent,
+            None,
+        )]);
     }
 
     log_ha_native_execution(&config, actor, target.id, &result).await;

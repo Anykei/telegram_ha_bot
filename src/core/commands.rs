@@ -1,3 +1,4 @@
+use crate::core::action_results::{ActionResult, Outcome, TargetKind, TargetResult};
 use crate::core::devices::{DeviceAction, InteractionResult};
 use crate::db;
 use crate::models::AppConfig;
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandSource {
     Text,
     Voice,
@@ -94,6 +95,8 @@ pub enum CommandExecution {
     SendCameraSnapshot { camera_id: i64 },
     SendCameraClip { camera_id: i64, seconds: u32 },
     NotACommand,
+    NeedsChoice { choice_id: i64 },
+    SavedResult { pending_id: i64 },
 }
 
 pub async fn execute_text(
@@ -109,10 +112,27 @@ pub async fn execute_text(
         anyhow::bail!("голосовые команды выключены для пользователя");
     }
 
-    let Some(parsed) = parse_text(user_id, is_admin, text, config).await? else {
-        return Ok(CommandExecution::NotACommand);
+    if user_id == config.root_user {
+        db::add_user(user_id, &config.db).await?;
+    }
+    db::command_choices::cancel_all(user_id, &config.db).await?;
+    let parsed = match parse_text(user_id, is_admin, text, config).await {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => return Ok(CommandExecution::NotACommand),
+        Err(error) => {
+            let engine = if source == CommandSource::Voice {
+                db::access::get_user_voice_command_engine(
+                    user_id,
+                    config.voice_command_engine,
+                    &config.db,
+                )
+                .await?
+            } else {
+                VoiceCommandEngine::LocalParser
+            };
+            return handle_parse_error(error, user_id, source, text, engine.as_str(), config).await;
+        }
     };
-
     execute_intent(user_id, is_admin, source, text, parsed, config).await
 }
 
@@ -130,12 +150,30 @@ pub async fn execute_voice_text(
         db::access::get_user_voice_command_engine(user_id, config.voice_command_engine, &config.db)
             .await?;
 
+    if user_id == config.root_user {
+        db::add_user(user_id, &config.db).await?;
+    }
+    db::command_choices::cancel_all(user_id, &config.db).await?;
     match engine {
         VoiceCommandEngine::LocalParser => {
             execute_text(user_id, is_admin, CommandSource::Voice, text, config).await
         }
         VoiceCommandEngine::HaConversationReadonly => {
-            if let Some(parsed) = parse_bot_owned_text(user_id, text, config).await? {
+            let parsed = match parse_bot_owned_text(user_id, text, config).await {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    return handle_parse_error(
+                        error,
+                        user_id,
+                        CommandSource::Voice,
+                        text,
+                        engine.as_str(),
+                        config,
+                    )
+                    .await
+                }
+            };
+            if let Some(parsed) = parsed {
                 return execute_intent(
                     user_id,
                     is_admin,
@@ -181,7 +219,21 @@ pub async fn execute_voice_text(
             Ok(CommandExecution::Done { message: answer })
         }
         VoiceCommandEngine::HaConversationFull => {
-            if let Some(parsed) = parse_bot_owned_text(user_id, text, config).await? {
+            let parsed = match parse_bot_owned_text(user_id, text, config).await {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    return handle_parse_error(
+                        error,
+                        user_id,
+                        CommandSource::Voice,
+                        text,
+                        engine.as_str(),
+                        config,
+                    )
+                    .await
+                }
+            };
+            if let Some(parsed) = parsed {
                 return execute_intent(
                     user_id,
                     is_admin,
@@ -195,27 +247,12 @@ pub async fn execute_voice_text(
 
             match execute_ha_conversation(user_id, text, config).await {
                 Ok(execution) => Ok(execution),
-                Err(ha_error) => {
-                    if let Some(parsed) = parse_text(user_id, is_admin, text, config).await? {
-                        return execute_intent(
-                            user_id,
-                            is_admin,
-                            CommandSource::Voice,
-                            text,
-                            parsed,
-                            config,
-                        )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "HA Assist не выполнил команду: {}. Локальный fallback тоже не сработал",
-                                ha_error
-                            )
-                        });
-                    }
-
-                    Err(ha_error)
+                Err(ha_error) if crate::core::action_results::definitely_not_sent(&ha_error) => {
+                    execute_text(user_id, is_admin, CommandSource::Voice, text, config).await
                 }
+                Err(_) => Ok(CommandExecution::Done {
+                    message: unknown_message(user_id, config).await?,
+                }),
             }
         }
     }
@@ -227,25 +264,118 @@ pub async fn confirm_pending(
     pending_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
+    if !db::pending_commands::claim(pending_id, user_id, &config.db).await? {
+        return Ok(CommandExecution::SavedResult { pending_id });
+    }
     let pending = db::pending_commands::get_pending(pending_id, user_id, &config.db)
         .await?
-        .context("команда не найдена или уже обработана")?;
-
-    if pending.expires_at <= Utc::now() {
-        db::pending_commands::expire_old(&config.db).await?;
-        anyhow::bail!("время подтверждения истекло");
-    }
-
-    let intent: CommandIntent = serde_json::from_str(&pending.intent_json)?;
-    let label = intent_label(&intent, config).await?;
-    let parsed = ParsedCommand {
-        intent,
-        target_label: label,
+        .context("Command missing")?;
+    let result = match serde_json::from_str::<CommandIntent>(&pending.intent_json) {
+        Ok(intent) => execute_device_intent(user_id, is_admin, &intent, config).await,
+        Err(error) => Err(error.into()),
     };
+    let result = result.unwrap_or_else(|_| {
+        ActionResult::new(vec![TargetResult::new(
+            TargetKind::Device,
+            0,
+            Outcome::Failed,
+            Some("Validation failed / Проверка не пройдена"),
+        )])
+    });
+    let language = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let message = result.display(user_id, language, config).await?;
+    db::pending_commands::finish(pending_id, &result, &message, &config.db).await?;
+    let correlation = pending_id.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(user_id),
+            kind: "command_result",
+            entity_type: "pending_command",
+            entity_id: Some(&correlation),
+            action: "finish",
+            status: match result.outcome {
+                Outcome::Sent => "sent",
+                Outcome::Partial => "partial",
+                Outcome::Failed => "failed",
+                Outcome::Unknown => "unknown",
+            },
+            message: Some(&result.summary(language)),
+        },
+        &config.db,
+    )
+    .await;
 
-    let result = execute_intent_without_confirmation(user_id, is_admin, parsed, config).await?;
-    db::pending_commands::mark_executed(pending.id, &config.db).await?;
-    Ok(result)
+    Ok(CommandExecution::SavedResult { pending_id })
+}
+
+pub async fn pending_result_text(user: u64, id: i64, config: &Arc<AppConfig>) -> Result<String> {
+    let lang = db::get_user_language(user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let Some(pending) = db::pending_commands::get_pending(id, user, &config.db).await? else {
+        return Ok(if lang == crate::i18n::Language::En {
+            "Command expired or unavailable."
+        } else {
+            "Команда истекла или недоступна."
+        }
+        .into());
+    };
+    if let Some(json) = pending.result_json {
+        return serde_json::from_str::<ActionResult>(&json)?
+            .display(user, lang, config)
+            .await;
+    }
+    if pending.status == "confirmed" {
+        return unknown_message(user, config).await;
+    }
+    if pending.status == "pending" && pending.expires_at > Utc::now() {
+        let intent: CommandIntent = serde_json::from_str(&pending.intent_json)?;
+        return confirmation_description(
+            user,
+            user == config.root_user,
+            &ParsedCommand {
+                intent,
+                target_label: String::new(),
+            },
+            config,
+        )
+        .await;
+    }
+    Ok(pending.result_text.unwrap_or_else(|| {
+        match pending.status.as_str() {
+            "cancelled" => {
+                if lang == crate::i18n::Language::En {
+                    "Command cancelled."
+                } else {
+                    "Команда отменена."
+                }
+            }
+            "pending" if pending.expires_at > Utc::now() => {
+                if lang == crate::i18n::Language::En {
+                    "Awaiting confirmation."
+                } else {
+                    "Ожидается подтверждение."
+                }
+            }
+            _ => {
+                if lang == crate::i18n::Language::En {
+                    "Command expired or unavailable."
+                } else {
+                    "Команда истекла или недоступна."
+                }
+            }
+        }
+        .to_string()
+    }))
+}
+
+async fn unknown_message(user: u64, config: &Arc<AppConfig>) -> Result<String> {
+    let lang = db::get_user_language(user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    Ok(if lang == crate::i18n::Language::En { "The send outcome could not be determined. Check states first; the command will not be retried automatically." } else { "Результат отправки не удалось определить. Сначала проверьте состояния; автоматического повтора не будет." }.into())
 }
 
 pub async fn cancel_pending(user_id: u64, pending_id: i64, config: &Arc<AppConfig>) -> Result<()> {
@@ -263,9 +393,11 @@ async fn parse_text(
 ) -> Result<Option<ParsedCommand>> {
     let normalized = crate::bot::text_commands::normalize_command_text(text);
 
-    if let Some(query) = normalized.strip_prefix("снимок ") {
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+    if let Some(query) = normalized
+        .strip_prefix("снимок ")
+        .or_else(|| normalized.strip_prefix("snapshot "))
+    {
+        let camera = resolve_camera(user_id, query, ChoiceAction::Snapshot, config).await?;
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
             intent: CommandIntent::CameraSnapshot {
@@ -274,10 +406,20 @@ async fn parse_text(
         }));
     }
 
-    if let Some(rest) = normalized.strip_prefix("видео ") {
+    if let Some(rest) = normalized
+        .strip_prefix("видео ")
+        .or_else(|| normalized.strip_prefix("video "))
+    {
         let (query, seconds) = crate::bot::text_commands::split_camera_video_command(rest);
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+        let camera = resolve_camera(
+            user_id,
+            query,
+            ChoiceAction::Clip {
+                seconds: seconds.unwrap_or(config.camera_default_clip_s),
+            },
+            config,
+        )
+        .await?;
         let seconds = seconds.unwrap_or(config.camera_default_clip_s);
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
@@ -288,9 +430,11 @@ async fn parse_text(
         }));
     }
 
-    if let Some(query) = normalized.strip_prefix("архив ") {
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+    if let Some(query) = normalized
+        .strip_prefix("архив ")
+        .or_else(|| normalized.strip_prefix("archive "))
+    {
+        let camera = resolve_camera(user_id, query, ChoiceAction::Archive, config).await?;
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
             intent: CommandIntent::CameraArchive {
@@ -314,9 +458,14 @@ async fn parse_text(
             return Ok(Some(parsed));
         }
 
-        let device =
-            crate::bot::text_commands::find_device_for_text(user_id, is_admin, query, config)
-                .await?;
+        let device = resolve_device(
+            user_id,
+            is_admin,
+            query,
+            SerializableDeviceAction::try_from(action.clone())?,
+            config,
+        )
+        .await?;
         let action = SerializableDeviceAction::try_from(action)?;
         let label = device
             .alias
@@ -341,9 +490,11 @@ async fn parse_bot_owned_text(
 ) -> Result<Option<ParsedCommand>> {
     let normalized = crate::bot::text_commands::normalize_command_text(text);
 
-    if let Some(query) = normalized.strip_prefix("снимок ") {
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+    if let Some(query) = normalized
+        .strip_prefix("снимок ")
+        .or_else(|| normalized.strip_prefix("snapshot "))
+    {
+        let camera = resolve_camera(user_id, query, ChoiceAction::Snapshot, config).await?;
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
             intent: CommandIntent::CameraSnapshot {
@@ -352,10 +503,20 @@ async fn parse_bot_owned_text(
         }));
     }
 
-    if let Some(rest) = normalized.strip_prefix("видео ") {
+    if let Some(rest) = normalized
+        .strip_prefix("видео ")
+        .or_else(|| normalized.strip_prefix("video "))
+    {
         let (query, seconds) = crate::bot::text_commands::split_camera_video_command(rest);
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+        let camera = resolve_camera(
+            user_id,
+            query,
+            ChoiceAction::Clip {
+                seconds: seconds.unwrap_or(config.camera_default_clip_s),
+            },
+            config,
+        )
+        .await?;
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
             intent: CommandIntent::CameraClip {
@@ -365,9 +526,11 @@ async fn parse_bot_owned_text(
         }));
     }
 
-    if let Some(query) = normalized.strip_prefix("архив ") {
-        let camera =
-            crate::bot::text_commands::find_camera_for_text(user_id, query, config).await?;
+    if let Some(query) = normalized
+        .strip_prefix("архив ")
+        .or_else(|| normalized.strip_prefix("archive "))
+    {
+        let camera = resolve_camera(user_id, query, ChoiceAction::Archive, config).await?;
         return Ok(Some(ParsedCommand {
             target_label: camera.name,
             intent: CommandIntent::CameraArchive {
@@ -387,7 +550,30 @@ async fn execute_intent(
     parsed: ParsedCommand,
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
-    if requires_confirmation(&parsed.intent, config).await? && config.voice_confirm_dangerous {
+    let was_mass = matches!(parsed.intent, CommandIntent::AllLightsAction { .. });
+    let mut parsed = parsed;
+    if let CommandIntent::AllLightsAction { action } = parsed.intent {
+        anyhow::ensure!(
+            is_admin,
+            "Bulk lights require root / Массовое управление доступно root"
+        );
+        let ids = db::devices::list_active_lights(&config.db)
+            .await?
+            .into_iter()
+            .map(|d| d.id)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            !ids.is_empty(),
+            "No active lights / Нет активных светильников"
+        );
+        parsed.intent = CommandIntent::MultiDeviceAction {
+            device_ids: ids,
+            action,
+        };
+    }
+    if (was_mass || requires_confirmation(&parsed.intent, config).await?)
+        && config.voice_confirm_dangerous
+    {
         let reason = "критичное действие".to_string();
         let expires_at = Utc::now() + Duration::seconds(config.voice_pending_ttl_s as i64);
         let intent_json = serde_json::to_string(&parsed.intent)?;
@@ -404,10 +590,7 @@ async fn execute_intent(
 
         return Ok(CommandExecution::NeedsConfirmation {
             pending_id,
-            message: format!(
-                "Распознано: `{}`\n\nЭто критичное действие для `{}`.\nПодтвердить выполнение?",
-                command_text, parsed.target_label
-            ),
+            message: confirmation_description(user_id, is_admin, &parsed, config).await?,
         });
     }
 
@@ -421,140 +604,15 @@ async fn execute_intent_without_confirmation(
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
     match parsed.intent {
-        CommandIntent::AllLightsAction { action } => {
-            if !is_admin {
-                anyhow::bail!("массовое управление светом доступно только root пользователю");
-            }
-
-            let service = match action {
-                SerializableDeviceAction::TurnOn => "turn_on",
-                SerializableDeviceAction::TurnOff => "turn_off",
-                SerializableDeviceAction::Toggle => "toggle",
-            };
-            let lights = db::devices::list_active_lights(&config.db).await?;
-            if lights.is_empty() {
-                anyhow::bail!("в базе нет активных светильников light.*");
-            }
-
-            for light in &lights {
-                config
-                    .ha_client
-                    .call_service("light", service, &light.entity_id)
-                    .await
-                    .with_context(|| format!("не удалось отправить команду {}", light.entity_id))?;
-            }
-
-            db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "device",
-                    entity_type: "light",
-                    entity_id: Some("bulk"),
-                    action: service,
-                    status: "ok",
-                    message: Some(&parsed.target_label),
-                },
-                &config.db,
-            )
-            .await?;
-
-            Ok(CommandExecution::Done {
-                message: format!(
-                    "Команда отправлена: {} · {} устройств",
-                    parsed.target_label,
-                    lights.len()
-                ),
-            })
-        }
-        CommandIntent::MultiDeviceAction { device_ids, action } => {
-            if device_ids.is_empty() {
-                anyhow::bail!("список устройств пуст");
-            }
-
-            let mut applied = 0usize;
-            let mut errors = Vec::new();
-            for device_id in device_ids {
-                let device = db::devices::get_device_by_id(device_id, &config.db)
-                    .await?
-                    .context("устройство не найдено")?;
-                let allowed =
-                    db::access::can_control_device(user_id, is_admin, device_id, &config.db)
-                        .await?;
-                if !allowed {
-                    anyhow::bail!("недостаточно прав для управления {}", device.entity_id);
-                }
-
-                let result = crate::core::devices::handle_device_interaction(
-                    config,
-                    device_id,
-                    action.to_device_action(),
-                )
-                .await?;
-                let label = device.alias.as_deref().unwrap_or(&device.entity_id);
-                match processed_device_result(result, label) {
-                    Ok(()) => applied += 1,
-                    Err(error) => errors.push(error.to_string()),
-                }
-            }
-
-            if !errors.is_empty() {
-                anyhow::bail!(
-                    "не все устройства выполнены: {}. Успешно: {}",
-                    errors.join("; "),
-                    applied
-                );
-            }
-
-            Ok(CommandExecution::Done {
-                message: format!(
-                    "Команда отправлена: {} · {} устройств",
-                    parsed.target_label, applied
-                ),
-            })
-        }
-        CommandIntent::DeviceAction { device_id, action } => {
-            let device = db::devices::get_device_by_id(device_id, &config.db)
+        intent @ (CommandIntent::AllLightsAction { .. }
+        | CommandIntent::MultiDeviceAction { .. }
+        | CommandIntent::DeviceAction { .. }) => {
+            let result = execute_device_intent(user_id, is_admin, &intent, config).await?;
+            let lang = db::get_user_language(user_id, &config.db)
                 .await?
-                .context("устройство не найдено")?;
-            let allowed =
-                db::access::can_control_device(user_id, is_admin, device_id, &config.db).await?;
-            if !allowed {
-                anyhow::bail!("недостаточно прав для управления устройством");
-            }
-
-            let result = crate::core::devices::handle_device_interaction(
-                config,
-                device_id,
-                action.to_device_action(),
-            )
-            .await?;
-            let command_result = processed_device_result(
-                result,
-                device.alias.as_deref().unwrap_or(&device.entity_id),
-            );
-            let status = if command_result.is_ok() {
-                "ok"
-            } else {
-                "error"
-            };
-            db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "device",
-                    entity_type: "device",
-                    entity_id: Some(&device.entity_id),
-                    action: "command",
-                    status,
-                    message: Some(&parsed.target_label),
-                },
-                &config.db,
-            )
-            .await?;
-
-            command_result?;
-
+                .unwrap_or(config.default_language);
             Ok(CommandExecution::Done {
-                message: format!("Команда отправлена: {}", parsed.target_label),
+                message: result.display(user_id, lang, config).await?,
             })
         }
         CommandIntent::CameraSnapshot { camera_id } => {
@@ -572,25 +630,22 @@ async fn execute_intent_without_confirmation(
     }
 }
 
-fn processed_device_result(result: InteractionResult, label: &str) -> Result<()> {
-    match result {
-        InteractionResult::Processed => Ok(()),
-        InteractionResult::Error { error } => {
-            anyhow::bail!("{}: {}", label, error)
-        }
-        InteractionResult::RequiresDetail | InteractionResult::RequiresInput(_) => {
-            anyhow::bail!(
-                "{}: действие недоступно из текстовой/голосовой команды",
-                label
-            )
-        }
-    }
-}
-
 async fn requires_confirmation(intent: &CommandIntent, config: &Arc<AppConfig>) -> Result<bool> {
     match intent {
         CommandIntent::AllLightsAction { .. } => Ok(true),
-        CommandIntent::MultiDeviceAction { device_ids, .. } => Ok(device_ids.len() > 1),
+        CommandIntent::MultiDeviceAction { device_ids, .. } => {
+            if device_ids.len() > 1 {
+                return Ok(true);
+            }
+            for id in device_ids {
+                if let Some(device) = db::devices::get_device_by_id(*id, &config.db).await? {
+                    if db::devices::is_device_critical(&device.entity_id, &config.db).await? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
         CommandIntent::DeviceAction { device_id, .. } => {
             let device = db::devices::get_device_by_id(*device_id, &config.db)
                 .await?
@@ -614,29 +669,6 @@ async fn ensure_camera_access(
         Ok(())
     } else {
         anyhow::bail!("недостаточно прав для просмотра камеры")
-    }
-}
-
-async fn intent_label(intent: &CommandIntent, config: &Arc<AppConfig>) -> Result<String> {
-    match intent {
-        CommandIntent::AllLightsAction { .. } => Ok("весь свет".to_string()),
-        CommandIntent::MultiDeviceAction { device_ids, .. } => {
-            Ok(format!("{} устройств", device_ids.len()))
-        }
-        CommandIntent::DeviceAction { device_id, .. } => {
-            let device = db::devices::get_device_by_id(*device_id, &config.db)
-                .await?
-                .context("устройство не найдено")?;
-            Ok(device.alias.unwrap_or(device.entity_id))
-        }
-        CommandIntent::CameraSnapshot { camera_id }
-        | CommandIntent::CameraClip { camera_id, .. }
-        | CommandIntent::CameraArchive { camera_id } => {
-            let camera = db::cameras::get_camera(*camera_id, &config.db)
-                .await?
-                .context("камера не найдена")?;
-            Ok(camera.name)
-        }
     }
 }
 
@@ -720,6 +752,7 @@ async fn parse_multi_device_action(
 
     let mut device_ids = Vec::new();
     let mut labels = Vec::new();
+    let mut unresolved = Vec::new();
     for raw_name in parts.names {
         let name = clean_multi_device_name(raw_name, &room_tokens);
         if name.is_empty() {
@@ -758,14 +791,28 @@ async fn parse_multi_device_action(
                 anyhow::bail!("устройство `{}`{} не найдено", name, location);
             }
             _ => {
-                anyhow::bail!(
-                    "найдено несколько устройств для `{}`, уточните название",
-                    name
+                unresolved.push(
+                    matches
+                        .iter()
+                        .map(|candidate| candidate.device.id)
+                        .collect::<Vec<_>>(),
                 );
             }
         }
     }
 
+    if !unresolved.is_empty() {
+        let candidates = unresolved.remove(0);
+        return Err(ChoiceRequest {
+            action: ChoiceAction::Device {
+                action,
+                resolved: device_ids,
+                remaining: unresolved,
+            },
+            candidates,
+        }
+        .into());
+    }
     if device_ids.len() < 2 {
         return Ok(None);
     }
@@ -980,7 +1027,7 @@ async fn execute_ha_conversation(
             entity_id: None,
             action: "conversation",
             status: "ok",
-            message: Some(text),
+            message: None,
         },
         &config.db,
     )
@@ -1042,4 +1089,383 @@ mod voice_engine_tests {
         assert!(phrase_tokens_match("кухня", "включи на кухне люстру"));
         assert!(phrase_tokens_match("коридор", "свет в коридоре"));
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChoiceAction {
+    Device {
+        action: SerializableDeviceAction,
+        resolved: Vec<i64>,
+        remaining: Vec<Vec<i64>>,
+    },
+    Snapshot,
+    Clip {
+        seconds: u32,
+    },
+    Archive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChoiceContext {
+    pub action: ChoiceAction,
+    pub candidates: Vec<i64>,
+    pub text: String,
+    pub source: CommandSource,
+    pub engine: String,
+    pub back: crate::bot::router::Payload,
+}
+
+#[derive(Debug)]
+struct ChoiceRequest {
+    action: ChoiceAction,
+    candidates: Vec<i64>,
+}
+impl std::fmt::Display for ChoiceRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Choose a target / Уточните цель")
+    }
+}
+impl std::error::Error for ChoiceRequest {}
+
+async fn handle_parse_error(
+    error: anyhow::Error,
+    user: u64,
+    source: CommandSource,
+    text: &str,
+    engine: &str,
+    config: &Arc<AppConfig>,
+) -> Result<CommandExecution> {
+    let request = match error.downcast::<ChoiceRequest>() {
+        Ok(request) => request,
+        Err(error) => return Err(error),
+    };
+    let back = config
+        .sessions
+        .get(&user)
+        .and_then(|session| crate::bot::router::Payload::from_string(&session.current_context).ok())
+        .map(|p| p.for_refresh())
+        .unwrap_or(crate::bot::router::Payload::Home);
+    let context = ChoiceContext {
+        action: request.action,
+        candidates: request.candidates,
+        text: text.to_string(),
+        source,
+        engine: engine.to_string(),
+        back,
+    };
+    let choice_id =
+        db::command_choices::create(user, &serde_json::to_string(&context)?, &config.db).await?;
+    Ok(CommandExecution::NeedsChoice { choice_id })
+}
+
+async fn resolve_camera(
+    user: u64,
+    query: &str,
+    action: ChoiceAction,
+    config: &Arc<AppConfig>,
+) -> Result<db::cameras::Camera> {
+    let mut cameras = crate::bot::text_commands::camera_candidates(user, query, config).await?;
+    match cameras.len() {
+        0 => anyhow::bail!("Camera not found / Камера не найдена"),
+        1 => Ok(cameras.remove(0)),
+        _ => Err(ChoiceRequest {
+            action,
+            candidates: cameras.iter().map(|camera| camera.id).collect(),
+        }
+        .into()),
+    }
+}
+async fn resolve_device(
+    user: u64,
+    admin: bool,
+    query: &str,
+    action: SerializableDeviceAction,
+    config: &Arc<AppConfig>,
+) -> Result<crate::core::types::Device> {
+    let mut devices =
+        crate::bot::text_commands::device_candidates(user, admin, query, config).await?;
+    match devices.len() {
+        0 => anyhow::bail!("Device not found / Устройство не найдено"),
+        1 => Ok(devices.remove(0)),
+        _ => Err(ChoiceRequest {
+            action: ChoiceAction::Device {
+                action,
+                resolved: vec![],
+                remaining: vec![],
+            },
+            candidates: devices.iter().map(|device| device.id).collect(),
+        }
+        .into()),
+    }
+}
+
+pub async fn choose_target(
+    user: u64,
+    id: i64,
+    target: i64,
+    config: &Arc<AppConfig>,
+) -> Result<CommandExecution> {
+    let record = db::command_choices::get(id, user, &config.db)
+        .await?
+        .context("Choice unavailable / Выбор недоступен")?;
+    let mut context: ChoiceContext = serde_json::from_str(&record.context_json)?;
+    anyhow::ensure!(
+        context.candidates.contains(&target),
+        "Target unavailable / Цель недоступна"
+    );
+    anyhow::ensure!(db::command_choices::claim(id, user, &config.db).await?, "Choice expired or completed. Repeat the command / Выбор истёк или завершён. Повторите команду");
+    let admin = user == config.root_user;
+    if context.source == CommandSource::Voice {
+        anyhow::ensure!(
+            db::access::can_use_voice(user, admin, &config.db).await?,
+            "Voice access revoked / Голосовой доступ отозван"
+        );
+    }
+    let intent = match &mut context.action {
+        ChoiceAction::Device {
+            action,
+            resolved,
+            remaining,
+        } => {
+            anyhow::ensure!(
+                db::access::can_view_device(user, admin, target, &config.db).await?
+                    && db::access::can_control_device(user, admin, target, &config.db).await?,
+                "Access revoked / Доступ отозван"
+            );
+            if !resolved.contains(&target) {
+                resolved.push(target);
+            }
+            if !remaining.is_empty() {
+                context.candidates = remaining.remove(0);
+                // A second ambiguous part shares the initial deadline; choosing does not extend it.
+                let next = db::command_choices::create_until(
+                    user,
+                    &serde_json::to_string(&context)?,
+                    record.expires_at,
+                    &config.db,
+                )
+                .await?;
+                return Ok(CommandExecution::NeedsChoice { choice_id: next });
+            }
+            if resolved.len() == 1 {
+                CommandIntent::DeviceAction {
+                    device_id: target,
+                    action: *action,
+                }
+            } else {
+                CommandIntent::MultiDeviceAction {
+                    device_ids: resolved.clone(),
+                    action: *action,
+                }
+            }
+        }
+        ChoiceAction::Snapshot => CommandIntent::CameraSnapshot { camera_id: target },
+        ChoiceAction::Clip { seconds } => CommandIntent::CameraClip {
+            camera_id: target,
+            seconds: *seconds,
+        },
+        ChoiceAction::Archive => CommandIntent::CameraArchive { camera_id: target },
+    };
+    let label = match &intent {
+        CommandIntent::DeviceAction { device_id, .. } => {
+            db::devices::get_device_by_id(*device_id, &config.db)
+                .await?
+                .context("Device removed")?
+                .alias
+                .unwrap_or_else(|| format!("#{device_id}"))
+        }
+        CommandIntent::MultiDeviceAction { device_ids, .. } => {
+            format!("{} devices / устройств", device_ids.len())
+        }
+        _ => {
+            db::cameras::get_accessible_camera(user, admin, target, &config.db)
+                .await?
+                .context("Camera access revoked")?
+                .name
+        }
+    };
+    let correlation = id.to_string();
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(user),
+            kind: "command_choice",
+            entity_type: "command_choice",
+            entity_id: Some(&correlation),
+            action: "select",
+            status: "ok",
+            message: None,
+        },
+        &config.db,
+    )
+    .await;
+    execute_intent(
+        user,
+        admin,
+        context.source,
+        &context.text,
+        ParsedCommand {
+            intent,
+            target_label: label,
+        },
+        config,
+    )
+    .await
+}
+
+async fn execute_device_intent(
+    user: u64,
+    admin: bool,
+    intent: &CommandIntent,
+    config: &Arc<AppConfig>,
+) -> Result<ActionResult> {
+    let (ids, action) = match intent {
+        CommandIntent::DeviceAction { device_id, action } => (vec![*device_id], *action),
+        CommandIntent::MultiDeviceAction { device_ids, action } => (device_ids.clone(), *action),
+        CommandIntent::AllLightsAction { action } => {
+            anyhow::ensure!(
+                admin,
+                "Bulk lights require root / Массовое управление доступно root"
+            );
+            (
+                db::devices::list_active_lights(&config.db)
+                    .await?
+                    .into_iter()
+                    .map(|d| d.id)
+                    .collect(),
+                *action,
+            )
+        }
+        _ => anyhow::bail!("Unsupported confirmed command"),
+    };
+    anyhow::ensure!(!ids.is_empty(), "No targets / Нет устройств");
+    let mut targets = Vec::new();
+    for id in ids {
+        let result = async {
+            if !db::access::can_control_device(user, admin, id, &config.db).await? {
+                return Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Failed,
+                    Some("Access revoked / Доступ отозван"),
+                ));
+            }
+            if db::devices::get_device_by_id(id, &config.db)
+                .await?
+                .is_none()
+            {
+                return Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Failed,
+                    Some("Device removed / Устройство удалено"),
+                ));
+            }
+            match crate::core::devices::handle_device_interaction(
+                config,
+                id,
+                action.to_device_action(),
+            )
+            .await
+            {
+                Ok(InteractionResult::Processed) => Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Sent,
+                    None,
+                )),
+                Ok(InteractionResult::Error { .. }) => Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Unknown,
+                    Some("HA response unavailable / Нет подтверждения HA"),
+                )),
+                Ok(_) => Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Failed,
+                    Some("Unsupported action / Действие недоступно"),
+                )),
+                // handle_device_interaction only returns Err before dispatch (lookup/state read).
+                Err(_) => Ok(TargetResult::new(
+                    TargetKind::Device,
+                    id,
+                    Outcome::Failed,
+                    Some("Device state unavailable / Состояние недоступно"),
+                )),
+            }
+        }
+        .await;
+        targets.push(result.unwrap_or_else(|_: anyhow::Error| {
+            TargetResult::new(
+                TargetKind::Device,
+                id,
+                Outcome::Failed,
+                Some("Validation failed / Проверка не пройдена"),
+            )
+        }));
+    }
+    let result = ActionResult::new(targets);
+    let summary = result.summary(config.default_language);
+    let _ = db::activity_log::log(
+        db::activity_log::NewActivity {
+            user_id: Some(user),
+            kind: "device",
+            entity_type: "command",
+            entity_id: None,
+            action: "command",
+            status: match result.outcome {
+                Outcome::Sent => "ok",
+                Outcome::Partial => "partial",
+                _ => "error",
+            },
+            message: Some(&summary),
+        },
+        &config.db,
+    )
+    .await;
+    Ok(result)
+}
+
+async fn confirmation_description(
+    user: u64,
+    admin: bool,
+    parsed: &ParsedCommand,
+    config: &Arc<AppConfig>,
+) -> Result<String> {
+    let lang = db::get_user_language(user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let en = lang == crate::i18n::Language::En;
+    let (ids, action) = match &parsed.intent {
+        CommandIntent::DeviceAction { device_id, action } => (vec![*device_id], *action),
+        CommandIntent::MultiDeviceAction { device_ids, action } => (device_ids.clone(), *action),
+        _ => return Ok(parsed.target_label.clone()),
+    };
+    let verb = match (action, en) {
+        (SerializableDeviceAction::TurnOn, true) => "Turn on",
+        (SerializableDeviceAction::TurnOn, false) => "Включить",
+        (SerializableDeviceAction::TurnOff, true) => "Turn off",
+        (SerializableDeviceAction::TurnOff, false) => "Выключить",
+        (SerializableDeviceAction::Toggle, true) => "Toggle",
+        (SerializableDeviceAction::Toggle, false) => "Переключить",
+    };
+    let mut text = if en {
+        format!("{verb} · {} devices. Confirm sending?", ids.len())
+    } else {
+        format!("{verb} · {} устройств. Подтвердить отправку?", ids.len())
+    };
+    for id in ids {
+        if !db::access::can_view_device(user, admin, id, &config.db).await? {
+            continue;
+        }
+        if let Some(device) = db::devices::get_device_by_id(id, &config.db).await? {
+            if db::devices::is_device_critical(&device.entity_id, &config.db).await? {
+                text.push_str(&format!(
+                    "\n⚠ {}",
+                    device.alias.as_deref().unwrap_or(&device.entity_id)
+                ));
+            }
+        }
+    }
+    Ok(text)
 }

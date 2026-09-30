@@ -50,6 +50,8 @@ Telegram HA Bot - это Telegram-бот для управления Home Assist
 
 Дополнительные спецификации:
 
+- [Улучшение UI/UX без потери функций](docks/ui-ux-remediation/README.md) —
+  требования по результатам ревью, совместимость и критерии приёмки.
 - `docks/operational-improvements/README.md` - продовые улучшения камер,
   архива, runtime dashboard и уведомлений.
 

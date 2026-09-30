@@ -1,6 +1,6 @@
 use crate::bot::models::View;
 use crate::bot::router::{CameraPayload, Payload, RenderContext};
-use crate::i18n::t;
+use crate::i18n::{t, Language};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
@@ -257,6 +257,10 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         Payload::Camera(CameraPayload::RecordingArchive { camera: camera.id }).to_string(),
     )]);
 
+    rows.push(vec![InlineKeyboardButton::callback(
+        localized(ctx.lang, "Подробности", "Details"),
+        Payload::Camera(CameraPayload::CameraDetails { id: camera.id }).to_string(),
+    )]);
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Camera(CameraPayload::ListCameras),
@@ -282,13 +286,21 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         .unwrap_or_default();
 
     let mut text = format!(
-        "{}\n\nID: `{}`{}\n\n{}: {}с.",
+        "{}{}\n\n{}: {}с.",
         camera.name,
-        camera.id,
         recording_text,
         t(ctx.lang, "camera.detail.help"),
         camera.clip_seconds
     );
+    if let Some(room_id) = camera.room_id {
+        if let Some(room) = crate::db::rooms::get_room_by_id(room_id, &ctx.config.db).await? {
+            text.push_str(&format!(
+                "\n{}: {}",
+                localized(ctx.lang, "Комната", "Room"),
+                room.display_name()
+            ));
+        }
+    }
     let (image, preview_text) =
         camera_snapshot_preview(ctx.config.clone(), &camera, ctx.lang).await;
     text.push_str(&format!("\n\n{}", preview_text));
@@ -300,6 +312,60 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::CameraDetail { id: camera.id }),
         image,
+        ..Default::default()
+    })
+}
+
+pub async fn render_details(ctx: RenderContext, camera_id: i64) -> Result<View> {
+    let camera = crate::db::cameras::get_accessible_camera(
+        ctx.user_id,
+        ctx.is_admin,
+        camera_id,
+        &ctx.config.db,
+    )
+    .await?
+    .context("Camera not found or access denied")?;
+    let mut text = format!(
+        "{}\nID: {}\n{}: {} s",
+        camera.name,
+        camera.id,
+        t(ctx.lang, "camera.detail.help"),
+        camera.clip_seconds
+    );
+    if let Some(health) = crate::db::camera_health::get(camera_id, &ctx.config.db)
+        .await?
+        .filter(|_| ctx.is_admin)
+    {
+        text.push_str(&format!(
+            "\n\n{}: {}",
+            localized(ctx.lang, "Диагностика", "Diagnostics"),
+            health.health_state
+        ));
+        if let Some(last_check) = health.last_check_at {
+            text.push_str(&format!(
+                "\n{}: {}",
+                localized(ctx.lang, "Последняя проверка", "Last check"),
+                crate::bot::format::datetime(last_check)
+            ));
+        }
+        if let Some(error) = health.last_error {
+            text.push_str(&format!(
+                "\n{}: {}",
+                localized(ctx.lang, "Ошибка", "Error"),
+                error
+            ));
+        }
+    }
+    Ok(View {
+        header: Some(localized(ctx.lang, "Подробности камеры", "Camera details").into()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(vec![vec![super::common::back_button_lang(
+            ctx.lang,
+            Payload::Camera(CameraPayload::CameraDetail { id: camera_id }),
+        )]]),
+        payload: Payload::Camera(CameraPayload::CameraDetails { id: camera_id }),
+        lang: ctx.lang,
         ..Default::default()
     })
 }
@@ -344,6 +410,13 @@ pub async fn render_recording_archive_page(
     )
     .await?
     .context("Camera not found or access denied")?;
+    let rules = camera_archive_rules(camera_id, &ctx.config.db).await?;
+    let filter_missing = filter.strip_prefix("rule:").is_some_and(|id| {
+        id.parse::<i64>()
+            .ok()
+            .is_none_or(|id| !rules.iter().any(|rule| rule.id == id))
+    });
+    let filter = if filter_missing { "all" } else { filter };
     let archive_filter = parse_archive_filter(filter);
     let mut sessions = crate::db::camera_recording_sessions::list_camera_sessions_filtered(
         camera_id,
@@ -379,14 +452,7 @@ pub async fn render_recording_archive_page(
         &ctx.config.db,
     )
     .await?;
-    let rules = crate::db::camera_recording_rules::list_rules(&ctx.config.db)
-        .await?
-        .into_iter()
-        .filter(|rule| rule.camera_id == camera_id)
-        .collect::<Vec<_>>();
-    let mut rows = Vec::new();
-
-    rows.extend(archive_filter_rows(camera_id, filter, &rules));
+    let mut rows = archive_filter_rows(camera_id, filter, ctx.lang);
 
     for session in &sessions {
         rows.push(vec![InlineKeyboardButton::callback(
@@ -433,22 +499,29 @@ pub async fn render_recording_archive_page(
         Payload::Camera(CameraPayload::CameraDetail { id: camera_id }),
     ));
 
-    let text = if sessions.is_empty() {
-        format!(
-            "{} · {}\n\n{}",
-            camera.name,
-            t(ctx.lang, "camera.archive.header"),
-            t(ctx.lang, "camera.archive.empty")
-        )
-    } else {
-        format!(
-            "{} · {}\n\n{}: {}",
-            camera.name,
-            t(ctx.lang, "camera.archive.header"),
-            t(ctx.lang, "camera.archive.count"),
-            sessions.len()
-        )
-    };
+    let mut text = format!(
+        "{} · {}\n{}: {}\n\n{}: {}",
+        camera.name,
+        t(ctx.lang, "camera.archive.header"),
+        localized(ctx.lang, "Фильтр", "Filter"),
+        archive_filter_name(filter, &rules, ctx.lang),
+        localized(ctx.lang, "Показано", "Shown"),
+        sessions.len(),
+    );
+    if sessions.is_empty() {
+        text.push_str(&format!("\n{}", t(ctx.lang, "camera.archive.empty")));
+        rows.insert(
+            1,
+            vec![InlineKeyboardButton::callback(
+                localized(ctx.lang, "Показать все", "Show all"),
+                Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                    camera: camera_id,
+                    filter: "all".into(),
+                })
+                .to_string(),
+            )],
+        );
+    }
     let image = recording_archive_preview(ctx.config.clone(), &sessions).await;
 
     Ok(View {
@@ -456,6 +529,15 @@ pub async fn render_recording_archive_page(
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
+        alert: filter_missing.then(|| {
+            localized(
+                ctx.lang,
+                "Правило больше недоступно. Показаны все записи.",
+                "This rule is no longer available. Showing all recordings.",
+            )
+            .into()
+        }),
+        lang: ctx.lang,
         payload: current,
         image,
         ..Default::default()
@@ -480,64 +562,290 @@ fn parse_archive_filter(
     }
 }
 
+fn localized<'a>(lang: Language, ru: &'a str, en: &'a str) -> &'a str {
+    match lang {
+        Language::Ru => ru,
+        Language::En => en,
+    }
+}
+
 fn archive_filter_rows(
     camera_id: i64,
     active: &str,
-    rules: &[crate::db::camera_recording_rules::RecordingRule],
+    lang: Language,
 ) -> Vec<Vec<InlineKeyboardButton>> {
-    let filters = [
-        ("all", "Все"),
-        ("today", "Сегодня"),
-        ("week", "7 дней"),
-        ("ready", "Готовые"),
-        ("failed", "Ошибки"),
-        ("pinned", "📌"),
-    ];
-    let mut rows = filters
-        .chunks(3)
-        .map(|chunk| {
-            chunk
-                .iter()
-                .map(|(filter, label)| {
-                    let label = if *filter == active {
-                        format!("• {}", label)
-                    } else {
-                        (*label).to_string()
-                    };
-                    InlineKeyboardButton::callback(
-                        label,
-                        Payload::Camera(CameraPayload::RecordingArchiveFiltered {
-                            camera: camera_id,
-                            filter: (*filter).to_string(),
-                        })
-                        .to_string(),
-                    )
+    let mut row = ["today", "all"]
+        .into_iter()
+        .map(|filter| {
+            let label = archive_filter_name(filter, &[], lang);
+            InlineKeyboardButton::callback(
+                if filter == active {
+                    format!("• {label}")
+                } else {
+                    label
+                },
+                Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                    camera: camera_id,
+                    filter: filter.into(),
                 })
-                .collect::<Vec<_>>()
+                .to_string(),
+            )
         })
         .collect::<Vec<_>>();
+    row.push(InlineKeyboardButton::callback(
+        localized(lang, "Фильтры", "Filters"),
+        Payload::Camera(CameraPayload::RecordingArchiveFilters { camera: camera_id }).to_string(),
+    ));
+    vec![row]
+}
 
-    for chunk in rules.chunks(2) {
-        rows.push(
-            chunk
-                .iter()
-                .map(|rule| {
-                    let filter = format!("rule:{}", rule.id);
-                    let prefix = if filter == active { "• " } else { "" };
-                    InlineKeyboardButton::callback(
-                        format!("{}Правило: {}", prefix, archive_rule_label(&rule.name)),
-                        Payload::Camera(CameraPayload::RecordingArchiveFiltered {
-                            camera: camera_id,
-                            filter,
-                        })
-                        .to_string(),
-                    )
-                })
-                .collect(),
-        );
+fn archive_filter_name(
+    filter: &str,
+    rules: &[crate::db::camera_recording_rules::RecordingRule],
+    lang: Language,
+) -> String {
+    if let Some(rule) = filter
+        .strip_prefix("rule:")
+        .and_then(|id| id.parse::<i64>().ok())
+    {
+        return match rules.iter().find(|candidate| candidate.id == rule) {
+            Some(rule) => format!(
+                "{}: {} · #{}",
+                localized(lang, "Правило", "Rule"),
+                rule.name,
+                rule.id
+            ),
+            None => format!(
+                "{} #{}",
+                localized(lang, "Правило недоступно", "Unavailable rule"),
+                rule
+            ),
+        };
     }
+    match filter {
+        "today" => localized(lang, "Сегодня", "Today"),
+        "week" => localized(lang, "7 дней", "7 days"),
+        "ready" => localized(lang, "Готовые", "Ready"),
+        "failed" => localized(lang, "Ошибки", "Failed"),
+        "pinned" => localized(lang, "Закреплённые", "Pinned"),
+        _ => localized(lang, "Все", "All"),
+    }
+    .into()
+}
 
-    rows
+async fn camera_archive_rules(
+    camera_id: i64,
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<crate::db::camera_recording_rules::RecordingRule>> {
+    let mut rules = crate::db::camera_recording_rules::list_rules(pool)
+        .await?
+        .into_iter()
+        .filter(|rule| rule.camera_id == camera_id)
+        .collect::<Vec<_>>();
+    rules.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+    Ok(rules)
+}
+
+async fn saved_archive_payload(ctx: &RenderContext, camera_id: i64) -> Result<Payload> {
+    Ok(crate::db::settings::get_string(&format!("ui:archive:{}:{camera_id}", ctx.user_id), &ctx.config.db)
+        .await?.and_then(|value| Payload::from_string(&value).ok())
+        .filter(|payload| matches!(payload, Payload::Camera(CameraPayload::RecordingArchivePage { camera, .. }) if *camera == camera_id))
+        .unwrap_or(Payload::Camera(CameraPayload::RecordingArchivePage { camera: camera_id, filter: "all".into(), page: 0 })))
+}
+
+pub async fn render_recording_archive_filters(ctx: RenderContext, camera_id: i64) -> Result<View> {
+    let camera = crate::db::cameras::get_accessible_camera(
+        ctx.user_id,
+        ctx.is_admin,
+        camera_id,
+        &ctx.config.db,
+    )
+    .await?
+    .context("Camera not found or access denied")?;
+    let back = saved_archive_payload(&ctx, camera_id).await?;
+    let active = match &back {
+        Payload::Camera(CameraPayload::RecordingArchivePage { filter, .. }) => filter.as_str(),
+        _ => "all",
+    };
+    let rules = camera_archive_rules(camera_id, &ctx.config.db).await?;
+    let mut rows = ["all", "today", "week", "ready", "failed", "pinned"]
+        .into_iter()
+        .map(|filter| {
+            let name = archive_filter_name(filter, &[], ctx.lang);
+            vec![InlineKeyboardButton::callback(
+                if active == filter {
+                    format!("• {name}")
+                } else {
+                    name
+                },
+                Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                    camera: camera_id,
+                    filter: filter.into(),
+                })
+                .to_string(),
+            )]
+        })
+        .collect::<Vec<_>>();
+    rows.push(vec![InlineKeyboardButton::callback(
+        localized(ctx.lang, "По правилу", "By rule"),
+        Payload::Camera(CameraPayload::RecordingArchiveRules {
+            camera: camera_id,
+            page: 0,
+        })
+        .to_string(),
+    )]);
+    rows.push(vec![super::common::back_button_lang(
+        ctx.lang,
+        back.clone(),
+    )]);
+    Ok(View {
+        header: Some(localized(ctx.lang, "Фильтры архива", "Archive filters").into()),
+        text: format!(
+            "{}\n{}: {}",
+            camera.name,
+            localized(ctx.lang, "Текущий фильтр", "Current filter"),
+            archive_filter_name(active, &rules, ctx.lang)
+        ),
+        notifications: ctx.notifications,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingArchiveFilters { camera: camera_id }),
+        lang: ctx.lang,
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_archive_rules(
+    ctx: RenderContext,
+    camera_id: i64,
+    requested_page: u16,
+) -> Result<View> {
+    let camera = crate::db::cameras::get_accessible_camera(
+        ctx.user_id,
+        ctx.is_admin,
+        camera_id,
+        &ctx.config.db,
+    )
+    .await?
+    .context("Camera not found or access denied")?;
+    let rules = camera_archive_rules(camera_id, &ctx.config.db).await?;
+    let pages = rules.len().div_ceil(super::common::LIST_PAGE_SIZE).max(1);
+    let page = usize::from(requested_page).min(pages - 1);
+    let mut rows = Vec::new();
+    let mut text = format!(
+        "{}\n\n{}",
+        camera.name,
+        localized(
+            ctx.lang,
+            "Выберите правило. Полное название можно проверить перед применением.",
+            "Choose a rule. Review its full name before applying."
+        )
+    );
+    for rule in rules
+        .iter()
+        .skip(page * super::common::LIST_PAGE_SIZE)
+        .take(super::common::LIST_PAGE_SIZE)
+    {
+        text.push_str(&format!("\n#{} · {}", rule.id, rule.name));
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!("{} · #{}", archive_rule_label(&rule.name), rule.id),
+            Payload::Camera(CameraPayload::RecordingArchiveRule {
+                camera: camera_id,
+                rule: rule.id,
+                page: page as u16,
+            })
+            .to_string(),
+        )]);
+    }
+    if rules.is_empty() {
+        text.push_str(&format!(
+            "\n{}",
+            localized(ctx.lang, "Нет доступных правил", "No available rules")
+        ));
+    }
+    let pager = super::common::page_row(page, pages, |page| {
+        Payload::Camera(CameraPayload::RecordingArchiveRules {
+            camera: camera_id,
+            page,
+        })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
+    rows.push(vec![super::common::back_button_lang(
+        ctx.lang,
+        Payload::Camera(CameraPayload::RecordingArchiveFilters { camera: camera_id }),
+    )]);
+    Ok(View {
+        header: Some(localized(ctx.lang, "Фильтр по правилу", "Filter by rule").into()),
+        notifications: ctx.notifications,
+        text,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Camera(CameraPayload::RecordingArchiveRules {
+            camera: camera_id,
+            page: page as u16,
+        }),
+        lang: ctx.lang,
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_archive_rule(
+    ctx: RenderContext,
+    camera_id: i64,
+    rule_id: i64,
+    page: u16,
+) -> Result<View> {
+    let camera = crate::db::cameras::get_accessible_camera(
+        ctx.user_id,
+        ctx.is_admin,
+        camera_id,
+        &ctx.config.db,
+    )
+    .await?
+    .context("Camera not found or access denied")?;
+    let rule = crate::db::camera_recording_rules::get_rule(rule_id, &ctx.config.db)
+        .await?
+        .filter(|rule| rule.camera_id == camera_id);
+    let Some(rule) = rule else {
+        let message = localized(
+            ctx.lang,
+            "Правило больше недоступно",
+            "This rule is no longer available",
+        )
+        .to_string();
+        let mut view = render_recording_archive_rules(ctx, camera_id, page).await?;
+        view.alert = Some(message);
+        return Ok(view);
+    };
+    Ok(View {
+        header: Some(localized(ctx.lang, "Фильтр по правилу", "Filter by rule").into()),
+        notifications: ctx.notifications,
+        text: format!("{}\n\n{}\n#{}", camera.name, rule.name, rule.id),
+        kb: InlineKeyboardMarkup::new(vec![
+            vec![InlineKeyboardButton::callback(
+                localized(ctx.lang, "Применить фильтр", "Apply filter"),
+                Payload::Camera(CameraPayload::RecordingArchiveFiltered {
+                    camera: camera_id,
+                    filter: format!("rule:{rule_id}"),
+                })
+                .to_string(),
+            )],
+            vec![super::common::back_button_lang(
+                ctx.lang,
+                Payload::Camera(CameraPayload::RecordingArchiveRules {
+                    camera: camera_id,
+                    page,
+                }),
+            )],
+        ]),
+        payload: Payload::Camera(CameraPayload::RecordingArchiveRule {
+            camera: camera_id,
+            rule: rule_id,
+            page,
+        }),
+        lang: ctx.lang,
+        ..Default::default()
+    })
 }
 
 fn archive_rule_label(name: &str) -> String {

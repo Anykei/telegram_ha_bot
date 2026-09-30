@@ -43,6 +43,10 @@ enum EditViewResult {
 pub enum Command {
     #[command(description = "Показать главное меню")]
     Start,
+    #[command(description = "Помощь / Help")]
+    Help,
+    #[command(description = "Отменить ввод / Cancel input")]
+    Cancel,
 }
 
 /// Точка входа для команд. Соответствует Google Standard по очистке ресурсов.
@@ -60,7 +64,37 @@ pub async fn handle_command(
     log::info!("Processing command {:?} for user {}", cmd, user_id);
 
     match cmd {
+        Command::Help => {
+            let view = router(Payload::Help, user_id, config.clone()).await?;
+            let message_id = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message_id) = message_id {
+                update_view(&bot, chat_id, message_id, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
+        Command::Cancel => {
+            let state = dialogue.get().await?.unwrap_or_default();
+            let payload = cancel_input_payload(&state, user_id, &config).await?;
+            db::command_choices::cancel_all(user_id, &config.db).await?;
+            dialogue.exit().await?;
+            let mut view = router(payload, user_id, config.clone()).await?;
+            view.next_state = None;
+            let message_id = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message_id) = message_id {
+                update_view(&bot, chat_id, message_id, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
         Command::Start => {
+            db::command_choices::cancel_all(user_id, &config.db).await?;
             // Сбрасываем диалог и удаляем старое меню
             dialogue.exit().await?;
             if let Some(session) = config.sessions.get(&user_id) {
@@ -79,52 +113,7 @@ pub async fn handle_command(
 }
 
 pub async fn handle_idle_text(bot: Bot, msg: Message, config: Arc<AppConfig>) -> Result<()> {
-    let Some(user) = msg.from.as_ref() else {
-        return Ok(());
-    };
-    let user_id = user.id.0;
-    let chat_id = msg.chat.id;
-    let text = msg.text().unwrap_or("").trim();
-
-    if text.is_empty() {
-        let _ = bot.delete_message(chat_id, msg.id).await;
-        return Ok(());
-    }
-
-    match handle_text_command(&bot, chat_id, user_id, text, config.clone()).await {
-        Ok(true) => {
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-        Ok(false) => {
-            log::info!(
-                "Ignored junk message from user {}: {:?}",
-                msg.chat.id,
-                msg.text()
-            );
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-        Err(error) => {
-            let error = error.to_string();
-            let _ = db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "text_command",
-                    entity_type: "command",
-                    entity_id: None,
-                    action: "parse",
-                    status: "error",
-                    message: Some(&error),
-                },
-                &config.db,
-            )
-            .await;
-            bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                .await?;
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-    }
-
-    Ok(())
+    handle_text_command_message(bot, msg, config).await
 }
 
 pub async fn handle_text_command_message(
@@ -135,50 +124,72 @@ pub async fn handle_text_command_message(
     let Some(user) = msg.from.as_ref() else {
         return Ok(());
     };
-    let user_id = user.id.0;
-    let chat_id = msg.chat.id;
     let text = msg.text().unwrap_or("").trim();
-
     if text.is_empty() {
-        let _ = bot.delete_message(chat_id, msg.id).await;
         return Ok(());
     }
-
-    match handle_text_command(&bot, chat_id, user_id, text, config.clone()).await {
+    config.cancel_view_update(user.id.0);
+    match handle_text_command(&bot, msg.chat.id, user.id.0, text, config.clone()).await {
         Ok(true) => {
-            let _ = bot.delete_message(chat_id, msg.id).await;
+            let _ = bot.delete_message(msg.chat.id, msg.id).await;
         }
-        Ok(false) => {
-            let sent = bot
-                .send_message(
-                    chat_id,
-                    "Команда не распознана. Примеры: свет коридор вкл, включи свет в коридоре, снимок вход.",
-                )
-                .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
+        Ok(false) => send_command_help(&bot, msg.chat.id, user.id.0, &config, None).await?,
         Err(error) => {
-            let error = error.to_string();
-            let _ = db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "text_command",
-                    entity_type: "command",
-                    entity_id: None,
-                    action: "parse",
-                    status: "error",
-                    message: Some(&error),
-                },
-                &config.db,
-            )
-            .await;
-            bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                .await?;
-            let _ = bot.delete_message(chat_id, msg.id).await;
+            // User input and transport details can contain credentials; do not persist them.
+            let message = if error.to_string().contains("not found")
+                || error.to_string().contains("не найден")
+            {
+                Some("Target not found. Choose a device / Цель не найдена. Выберите устройство.")
+            } else {
+                Some("Command could not be completed. Check states / Не удалось выполнить команду. Проверьте состояния.")
+            };
+            send_command_help(&bot, msg.chat.id, user.id.0, &config, message).await?;
         }
     }
+    Ok(())
+}
 
+async fn send_command_help(
+    bot: &Bot,
+    chat: ChatId,
+    user: u64,
+    config: &Arc<AppConfig>,
+    notice: Option<&str>,
+) -> Result<()> {
+    let lang = db::get_user_language(user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let en = lang == crate::i18n::Language::En;
+    let text = notice.unwrap_or(if en {
+        "I did not understand the command. For example: turn on kitchen light or snapshot entrance."
+    } else {
+        "Не понял команду. Например: включи свет в кухне или снимок вход"
+    });
+    let text = text
+        .split_once(" / ")
+        .map(|(english, russian)| if en { english } else { russian })
+        .unwrap_or(text);
+    let kb = InlineKeyboardMarkup::new(vec![
+        vec![InlineKeyboardButton::callback(
+            if en {
+                "Choose a device"
+            } else {
+                "Выбрать устройство"
+            },
+            Payload::Control(crate::bot::router::ControlPayload::ListRooms).to_string(),
+        )],
+        vec![
+            InlineKeyboardButton::callback(
+                if en { "Help" } else { "Помощь" },
+                Payload::Help.to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                if en { "Main menu" } else { "В меню" },
+                Payload::Home.to_string(),
+            ),
+        ],
+    ]);
+    bot.send_message(chat, text).reply_markup(kb).await?;
     Ok(())
 }
 
@@ -187,6 +198,9 @@ pub(crate) fn looks_like_text_command(text: &str) -> bool {
     normalized.starts_with("снимок ")
         || normalized.starts_with("видео ")
         || normalized.starts_with("архив ")
+        || normalized.starts_with("snapshot ")
+        || normalized.starts_with("video ")
+        || normalized.starts_with("archive ")
         || crate::bot::text_commands::parse_device_text_command(&normalized).is_some()
 }
 
@@ -209,11 +223,16 @@ fn spawn_voice_command(
     chat_id: ChatId,
     config: Arc<AppConfig>,
 ) {
+    let token = config.begin_view_update(user_id);
     tokio::spawn(async move {
-        let result = handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone()).await;
+        let result =
+            handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone(), &token).await;
         if let Err(error) = result {
-            handle_voice_command_error(&bot, chat_id, user_id, error, &config).await;
+            if !token.is_cancelled() {
+                handle_voice_command_error(&bot, chat_id, user_id, error, &config).await;
+            }
         }
+        config.finish_view_update(user_id, &token);
     });
 }
 
@@ -224,7 +243,8 @@ async fn handle_voice_command_error(
     error: anyhow::Error,
     config: &Arc<AppConfig>,
 ) {
-    let error = error.to_string();
+    let _ = error;
+    let error = "Voice command failed / Не удалось обработать голосовую команду".to_string();
     let _ = db::activity_log::log(
         db::activity_log::NewActivity {
             user_id: Some(user_id),
@@ -238,10 +258,19 @@ async fn handle_voice_command_error(
         &config.db,
     )
     .await;
+    let lang = db::get_user_language(user_id, &config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(config.default_language);
     let _ = bot
         .send_message(
             chat_id,
-            format!("Не удалось выполнить голосовую команду: {}", error),
+            if lang == crate::i18n::Language::En {
+                "Could not process the voice command. Please try again."
+            } else {
+                "Не удалось обработать голосовую команду. Повторите ввод."
+            },
         )
         .await;
 }
@@ -252,6 +281,7 @@ async fn handle_voice_message_inner(
     user_id: u64,
     chat_id: ChatId,
     config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     if !config.voice_enabled {
         anyhow::bail!("голосовые команды выключены");
@@ -297,13 +327,23 @@ async fn handle_voice_message_inner(
     bot.download_file(&file.path, &mut dst).await?;
     drop(dst);
 
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
     let progress = bot
         .send_message(
             chat_id,
-            format!(
-                "⏳ Распознаю голосовую команду... таймаут {}с",
-                config.voice_stt_timeout_s
-            ),
+            if lang == crate::i18n::Language::En {
+                format!(
+                    "⏳ Recognizing voice command… timeout {}s",
+                    config.voice_stt_timeout_s
+                )
+            } else {
+                format!(
+                    "⏳ Распознаю голосовую команду… таймаут {}с",
+                    config.voice_stt_timeout_s
+                )
+            },
         )
         .await?;
     crate::bot::utils::spawn_delayed_delete(
@@ -348,6 +388,23 @@ async fn handle_voice_message_inner(
         )
         .await?;
 
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        let lang = db::get_user_language(user_id, &config.db)
+            .await?
+            .unwrap_or(config.default_language);
+        let _ = bot
+            .edit_message_text(
+                chat_id,
+                progress.id,
+                if lang == crate::i18n::Language::En {
+                    "Processing…"
+                } else {
+                    "Обрабатываю…"
+                },
+            )
+            .await;
         if matches!(
             response_format,
             crate::options::VoiceResponseFormat::Voice | crate::options::VoiceResponseFormat::Both
@@ -357,7 +414,18 @@ async fn handle_voice_message_inner(
 
         if config.voice_show_recognized_text {
             let sent = bot
-                .send_message(chat_id, format!("Распознано: {}", recognized))
+                .send_message(
+                    chat_id,
+                    format!(
+                        "{}: {}",
+                        if lang == crate::i18n::Language::En {
+                            "Recognized"
+                        } else {
+                            "Распознано"
+                        },
+                        recognized
+                    ),
+                )
                 .await?;
             crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
         }
@@ -371,14 +439,19 @@ async fn handle_voice_message_inner(
         .await?;
 
         if matches!(execution, CommandExecution::NotACommand) {
-            anyhow::bail!("команда не распознана: {}", recognized);
+            send_command_help(bot, chat_id, user_id, &config, None).await?;
+            return Ok(());
         }
 
-        apply_command_execution(bot, chat_id, user_id, execution, config.clone()).await?;
+        if !token.is_cancelled() {
+            let _ = bot.delete_message(chat_id, progress.id).await;
+            apply_command_execution(bot, chat_id, user_id, execution, config.clone()).await?;
+        }
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
+    let _ = bot.delete_message(chat_id, progress.id).await;
     let _ = tokio::fs::remove_file(&path).await;
     result
 }
@@ -430,17 +503,14 @@ async fn apply_command_execution(
             pending_id,
             message,
         } => {
-            let kb = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback(
-                    "✅ Подтвердить",
-                    Payload::Command(CommandPayload::Confirm { id: pending_id }).to_string(),
-                ),
-                InlineKeyboardButton::callback(
-                    "✖️ Отмена",
-                    Payload::Command(CommandPayload::Cancel { id: pending_id }).to_string(),
-                ),
-            ]]);
-            bot.send_message(chat_id, message).reply_markup(kb).await?;
+            let mut view = router(
+                Payload::Command(CommandPayload::Result { id: pending_id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            view.text = message;
+            send_new_view(bot, chat_id, user_id, view, config).await?;
         }
         CommandExecution::OpenCameraArchive { camera_id } => {
             let view = router(
@@ -464,6 +534,27 @@ async fn apply_command_execution(
         }
         CommandExecution::SendCameraClip { camera_id, seconds } => {
             spawn_camera_clip(bot.clone(), chat_id, user_id, camera_id, seconds, config);
+        }
+        CommandExecution::NeedsChoice { choice_id } => {
+            let view = router(
+                Payload::Command(CommandPayload::Choice {
+                    id: choice_id,
+                    page: 0,
+                }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            send_new_view(bot, chat_id, user_id, view, config).await?;
+        }
+        CommandExecution::SavedResult { pending_id } => {
+            let view = router(
+                Payload::Command(CommandPayload::Result { id: pending_id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            send_new_view(bot, chat_id, user_id, view, config).await?;
         }
         CommandExecution::NotACommand => {}
     }
@@ -627,34 +718,114 @@ pub async fn handle_callback(
     }
 
     if let Payload::Command(command_payload) = payload {
-        handle_command_callback(
-            &bot,
-            msg.chat().id,
-            msg.id(),
-            user_id,
-            command_payload,
-            config,
-        )
-        .await?;
+        let token = config.begin_view_update(user_id);
+        let chat_id = msg.chat().id;
+        let message_id = msg.id();
+        tokio::spawn(async move {
+            let result = handle_command_callback(
+                &bot,
+                chat_id,
+                message_id,
+                user_id,
+                command_payload,
+                config.clone(),
+                &token,
+            )
+            .await;
+            if result.is_err() && !token.is_cancelled() {
+                let _ = send_command_help(&bot, chat_id, user_id, &config, Some("Command unavailable. Check states / Команда недоступна. Проверьте состояния.")).await;
+            }
+            config.finish_view_update(user_id, &token);
+        });
         return Ok(());
     }
 
+    // Once accepted, a write finishes independently of navigation. Only its
+    // obsolete screen is cancelled; cancelling the HA future could lose a receipt.
+    let accepted_write = matches!(
+        &payload,
+        Payload::Control(
+            crate::bot::router::ControlPayload::ConfirmAction { .. }
+                | crate::bot::router::ControlPayload::ExecuteActionGroup { .. }
+                | crate::bot::router::ControlPayload::ExecuteHaNativeAction { .. }
+        ) | Payload::Admin(
+            AdminPayload::ExecuteActionGroup { .. } | AdminPayload::ExecuteHaNativeAction { .. }
+        )
+    ) || matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd));
+    if accepted_write {
+        dialogue.exit().await?;
+        let token = config.begin_view_update(user_id);
+        let chat = msg.chat().id;
+        let message = msg.id();
+        tokio::spawn(async move {
+            let result = async {
+                let payload = super::confirmations::prepare_legacy_callback(
+                    payload,
+                    user_id,
+                    chat.0,
+                    message.0,
+                    config.clone(),
+                )
+                .await?;
+                router(payload, user_id, config.clone()).await
+            }
+            .await;
+            match result {
+                Ok(view) => {
+                    if let Err(error) = update_view_cancellable(
+                        &bot,
+                        chat,
+                        message,
+                        user_id,
+                        view,
+                        config.clone(),
+                        Some(&token),
+                    )
+                    .await
+                    {
+                        log::warn!("Accepted action result delivery failed for {user_id}: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Accepted action failed for {user_id}: {error}");
+                    if !token.is_cancelled() {
+                        let _ = bot
+                            .send_message(chat, crate::i18n::t(lang, "control.load_failed"))
+                            .await;
+                    }
+                }
+            }
+            config.finish_view_update(user_id, &token);
+        });
+        return Ok(());
+    }
     let payload = handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config)?;
-
-    // 3. Роутинг
-    let view = router(payload, user_id, config.clone()).await?;
-
-    // 4. Оркестрация UI и State
-    apply_view(
-        &bot,
-        &config,
-        &dialogue,
-        msg.chat().id,
-        msg.id(),
-        user_id,
-        view,
-    )
-    .await
+    let token = config.begin_view_update(user_id);
+    let chat_id = msg.chat().id;
+    let message_id = msg.id();
+    tokio::spawn(async move {
+        let result = async {
+            let view = router(payload, user_id, config.clone()).await?;
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            apply_view(
+                &bot, &config, &dialogue, chat_id, message_id, user_id, view, &token,
+            )
+            .await
+        }
+        .await;
+        config.finish_view_update(user_id, &token);
+        if let Err(error) = result {
+            log::warn!("UI callback failed for {user_id}: {error}");
+            if !token.is_cancelled() {
+                let _ = bot
+                    .send_message(chat_id, crate::i18n::t(lang, "control.load_failed"))
+                    .await;
+            }
+        }
+    });
+    Ok(())
 }
 
 async fn handle_command_callback(
@@ -664,34 +835,65 @@ async fn handle_command_callback(
     user_id: u64,
     payload: CommandPayload,
     config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     match payload {
         CommandPayload::Confirm { id } => {
             let execution = crate::core::commands::confirm_pending(
                 user_id,
-                config.root_user == user_id,
+                user_id == config.root_user,
                 id,
                 &config,
             )
-            .await;
-
-            let _ = bot.delete_message(chat_id, message_id).await;
-
-            match execution {
-                Ok(execution) => {
-                    apply_command_execution(bot, chat_id, user_id, execution, config).await?;
-                }
-                Err(error) => {
-                    bot.send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                        .await?;
-                }
+            .await?;
+            if token.is_cancelled() {
+                return Ok(());
             }
+            let _ = bot.delete_message(chat_id, message_id).await;
+            apply_command_execution(bot, chat_id, user_id, execution, config).await?;
         }
         CommandPayload::Cancel { id } => {
-            let _ = crate::core::commands::cancel_pending(user_id, id, &config).await;
-            let _ = bot.delete_message(chat_id, message_id).await;
-            let sent = bot.send_message(chat_id, "Команда отменена").await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 5);
+            crate::core::commands::cancel_pending(user_id, id, &config).await?;
+            let view = router(
+                Payload::Command(CommandPayload::Result { id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
+        }
+        CommandPayload::Choose { id, target } => {
+            match crate::core::commands::choose_target(user_id, id, target, &config).await {
+                Ok(execution) => {
+                    if !token.is_cancelled() {
+                        apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+                    }
+                }
+                Err(_) if !token.is_cancelled() => {
+                    send_command_help(bot, chat_id, user_id, &config, Some("Choice unavailable or expired. Repeat the command / Выбор недоступен или истёк. Повторите команду.")).await?;
+                }
+                Err(_) => {}
+            }
+        }
+        CommandPayload::CancelChoice { id } => {
+            let back = db::command_choices::get(id, user_id, &config.db)
+                .await?
+                .and_then(|r| {
+                    serde_json::from_str::<crate::core::commands::ChoiceContext>(&r.context_json)
+                        .ok()
+                })
+                .map(|c| c.back)
+                .unwrap_or(Payload::Home);
+            db::command_choices::cancel(id, user_id, &config.db).await?;
+            let view = router(back.for_refresh(), user_id, config.clone()).await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
+        }
+        read @ (CommandPayload::Choice { .. } | CommandPayload::Result { .. }) => {
+            let view = router(Payload::Command(read), user_id, config.clone()).await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
         }
     }
 
@@ -1801,6 +2003,7 @@ async fn refresh_current_view_inner(
 }
 
 /// Атомарно применяет изменения стейта и обновляет сообщение.
+#[allow(clippy::too_many_arguments)]
 async fn apply_view(
     bot: &Bot,
     config: &Arc<AppConfig>,
@@ -1809,6 +2012,7 @@ async fn apply_view(
     message_id: MessageId,
     user_id: u64,
     view: View,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     if let Some(new_state) = view.next_state.clone() {
         dialogue.update(new_state).await?;
@@ -1816,7 +2020,16 @@ async fn apply_view(
         dialogue.exit().await?;
     }
 
-    update_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+    update_view_cancellable(
+        bot,
+        chat_id,
+        message_id,
+        user_id,
+        view,
+        config.clone(),
+        Some(token),
+    )
+    .await
 }
 
 pub async fn update_view(
@@ -2018,7 +2231,7 @@ async fn edit_existing_view(
 ) -> std::result::Result<EditViewResult, RequestError> {
     let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
-    let edit_mode = if view.text_page.is_some() {
+    let edit_mode = if view.text_page.is_some() && view.image.is_none() {
         UiMessageMode::Text
     } else {
         view_mode(&view.get_plain_text())
@@ -2189,7 +2402,7 @@ async fn send_new_view(
         .map(|_| ())
 }
 
-async fn send_new_view_inner(
+pub(crate) async fn send_new_view_inner(
     bot: &Bot,
     chat_id: ChatId,
     user_id: u64,
@@ -2205,7 +2418,9 @@ async fn send_new_view_inner(
     let text = view.get_text();
     let payload_str = view.payload.to_string();
 
-    if view.text_page.is_some() || view_mode(&view.get_plain_text()) == UiMessageMode::Text {
+    if (view.text_page.is_some() && view.image.is_none())
+        || view_mode(&view.get_plain_text()) == UiMessageMode::Text
+    {
         log::debug!(
             "New UI view for user {} payload {} uses text mode: {} chars exceed Telegram photo caption limit {}",
             user_id,
@@ -2275,6 +2490,124 @@ fn should_send_view_as_text(text: &str) -> bool {
 }
 
 // --- ОБРАБОТЧИКИ ДИАЛОГОВ ---
+
+pub(crate) async fn cancel_input_payload(
+    state: &State,
+    user: u64,
+    config: &AppConfig,
+) -> Result<Payload> {
+    use crate::bot::router::{ControlPayload, SettingsPayload};
+    Ok(match state {
+        State::EditUserAlias { user_id } => {
+            Payload::Admin(AdminPayload::UserProfile { id: *user_id })
+        }
+        State::ScheduleDraftTime { id, .. } => {
+            Payload::Schedule(super::schedule_drafts::SchedulePayload::Review { id: *id })
+        }
+        State::PersonalQuietHours => Payload::Personal(super::personal::PersonalPayload::Settings),
+        State::ExactTemperature { room_id, device_id }
+        | State::WaitingForGraphInterval { room_id, device_id } => {
+            Payload::Control(ControlPayload::DeviceControl {
+                room: *room_id,
+                device: *device_id,
+            })
+        }
+        State::WaitingForName { room_id, device_id }
+        | State::WaitingForStateAlias {
+            room_id, device_id, ..
+        } => {
+            let back = SettingsPayload::DeviceDetail {
+                room: *room_id,
+                device: *device_id,
+            };
+            if matches!(
+                current_input_payload(config, user).await?,
+                Some(Payload::AdminSettings(_))
+            ) {
+                Payload::AdminSettings(back)
+            } else {
+                settings_payload_for_current_session(config, Some(user), back)
+            }
+        }
+        State::AddActionScheduleTime { target, .. }
+        | State::EditActionScheduleTime { target, .. } => {
+            Payload::Admin(AdminPayload::ActionSchedules { target: *target })
+        }
+        State::EditRecordingRule { room_id, rule_id }
+        | State::EditRecordingRuleNumber {
+            room_id, rule_id, ..
+        }
+        | State::EditRecordingRuleActiveTime { room_id, rule_id }
+        | State::EditRecordingRuleConditionValue {
+            room_id, rule_id, ..
+        }
+        | State::AddRecordingRuleGroupForEdit { room_id, rule_id } => {
+            Payload::Admin(AdminPayload::RecordingRuleDetail {
+                room: *room_id,
+                rule: *rule_id,
+            })
+        }
+        State::RecordingRuleWizardSourceValue { .. }
+        | State::RecordingRuleWizardActiveTimeValue
+        | State::RecordingRuleWizardConditionValue
+        | State::AddRecordingRuleGroupForWizard => {
+            let current_id = match current_input_payload(config, user).await? {
+                Some(Payload::Admin(
+                    AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+                )) => Some(id),
+                _ => config.sessions.get(&user).and_then(|session| {
+                    session
+                        .recording_rule_wizard
+                        .as_ref()
+                        .and_then(|wizard| wizard.draft_id)
+                }),
+            };
+            let draft = match current_id {
+                Some(id) => db::ui_drafts::load(id, user, "recording_rule", &config.db).await?,
+                None => db::ui_drafts::latest(user, "recording_rule", &config.db).await?,
+            };
+            draft
+                .map(|draft| Payload::Admin(AdminPayload::WizardResume { id: draft.id }))
+                .unwrap_or(Payload::Home)
+        }
+        State::AddRecordingRule { room_id } => {
+            match recording_text_draft(config, user, *room_id).await {
+                Ok(Some(wizard)) => wizard
+                    .draft_id
+                    .map(|id| Payload::Admin(AdminPayload::WizardResume { id }))
+                    .unwrap_or(Payload::Home),
+                _ => Payload::Admin(AdminPayload::RecordingRules { room: *room_id }),
+            }
+        }
+        State::AddCamera { room_id } => {
+            Payload::Admin(AdminPayload::RoomCameras { room: *room_id })
+        }
+        State::RenameActionGroup { group_id } => {
+            Payload::Admin(AdminPayload::ActionGroupDetail { group: *group_id })
+        }
+        State::RenameHaNativeTarget { target_id } => {
+            Payload::Admin(AdminPayload::HaNativeActionDetail { action: *target_id })
+        }
+        State::Idle => match current_input_payload(config, user).await? {
+            Some(Payload::Command(
+                CommandPayload::Choice { id, .. }
+                | CommandPayload::Choose { id, .. }
+                | CommandPayload::CancelChoice { id },
+            )) => db::command_choices::get(id, user, &config.db)
+                .await?
+                .and_then(|record| {
+                    serde_json::from_str::<crate::core::commands::ChoiceContext>(
+                        &record.context_json,
+                    )
+                    .ok()
+                })
+                .map(|context| context.back.for_refresh())
+                .unwrap_or(Payload::Home),
+            _ => Payload::Home,
+        },
+        _ => Payload::Home,
+    })
+}
 
 pub async fn handle_custom_interval(
     bot: Bot,
@@ -2372,7 +2705,7 @@ pub async fn handle_state_alias_input(
 }
 
 fn settings_payload_for_current_session(
-    config: &Arc<AppConfig>,
+    config: &AppConfig,
     user_id: Option<u64>,
     payload: crate::bot::router::SettingsPayload,
 ) -> Payload {
@@ -2392,6 +2725,56 @@ fn settings_payload_for_current_session(
     } else {
         Payload::Settings(payload)
     }
+}
+
+pub async fn handle_user_alias_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    user_id: u64,
+) -> Result<()> {
+    if msg.from.as_ref().map(|user| user.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
+    }
+    if user_id != config.root_user && !crate::db::user_exists(user_id, &config.db).await {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(crate::bot::router::AdminPayload::ListUsers)),
+        )
+        .await;
+    }
+    let lang = crate::db::get_user_language(config.root_user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let input = msg.text().unwrap_or("").trim();
+    if input.is_empty() || input.chars().count() > 80 {
+        bot.send_message(
+            msg.chat.id,
+            if lang == crate::i18n::Language::Ru {
+                "Введите псевдоним длиной от 1 до 80 символов или - для сброса."
+            } else {
+                "Enter an alias between 1 and 80 characters, or - to reset."
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    crate::db::user_display::set_alias(user_id, (input != "-").then_some(input), &config.db)
+        .await?;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::UserProfile { id: user_id },
+        )),
+    )
+    .await
 }
 
 pub async fn handle_add_user_input(
@@ -2506,6 +2889,92 @@ pub async fn handle_add_camera_input(
     }
 }
 
+async fn current_input_payload(config: &AppConfig, owner: u64) -> Result<Option<Payload>> {
+    let mut payload = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| Payload::from_string(&session.current_context).ok());
+    if let Some(Payload::TextPage { screen, .. }) = payload {
+        payload = db::ui_text_pages::context(screen, owner, &config.db)
+            .await?
+            .and_then(|context| serde_json::from_str::<serde_json::Value>(&context).ok())
+            .and_then(|context| {
+                context
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|source| Payload::from_string(source).ok())
+            });
+    }
+    Ok(payload)
+}
+
+pub(crate) async fn recording_text_draft(
+    config: &AppConfig,
+    owner: u64,
+    room: i64,
+) -> Result<Option<crate::bot::recording_rule_wizard::RecordingRuleWizard>> {
+    let context = current_input_payload(config, owner).await?;
+    let current = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| session.recording_rule_wizard.clone());
+    // The independent legacy form must not accidentally edit an unrelated saved draft.
+    if matches!(
+        context,
+        Some(Payload::Admin(AdminPayload::PromptAddRecordingRule { .. }))
+    ) {
+        return Ok(None);
+    }
+    let context_id = match context {
+        Some(Payload::Admin(
+            AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+        )) => Some(id),
+        _ => None,
+    };
+    let from_wizard =
+        context_id.is_some() || current.as_ref().is_some_and(|wizard| wizard.editing_text);
+    if !from_wizard {
+        return Ok(None);
+    }
+    let id = context_id.or_else(|| current.as_ref().and_then(|wizard| wizard.draft_id));
+    let wizard = if id.is_some() {
+        crate::bot::recording_rule_wizard::restore_draft(config, owner, id).await?
+    } else {
+        current
+    };
+    let wizard = wizard
+        .filter(|wizard| {
+            wizard.editing_text && wizard.room_id == room && wizard.committed_rule_id.is_none()
+        })
+        .context("Recording draft is expired or no longer accepting text")?;
+    if let Some(mut session) = config.sessions.get_mut(&owner) {
+        session.recording_rule_wizard = Some(wizard.clone());
+    }
+    Ok(Some(wizard))
+}
+
+async fn restore_recording_wizard_input(config: &AppConfig, owner: u64) -> Result<()> {
+    let current = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| session.recording_rule_wizard.clone());
+    let context = current_input_payload(config, owner).await?;
+    let id = match context {
+        Some(Payload::Admin(
+            AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+        )) => Some(id),
+        _ => current.as_ref().and_then(|wizard| wizard.draft_id),
+    };
+    if current.is_some() && id.is_none() {
+        return Ok(());
+    }
+    let saved = crate::bot::recording_rule_wizard::restore_draft(config, owner, id).await?;
+    if let Some(mut session) = config.sessions.get_mut(&owner) {
+        session.recording_rule_wizard = saved;
+    }
+    Ok(())
+}
+
 pub async fn handle_add_recording_rule_input(
     bot: Bot,
     msg: Message,
@@ -2517,6 +2986,20 @@ pub async fn handle_add_recording_rule_input(
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
 
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let editing_wizard = match recording_text_draft(&config, user_id, room_id).await {
+        Ok(wizard) => wizard,
+        Err(_) => return finish_stale_wizard_input(&bot, &dialogue, &msg).await,
+    };
+    if editing_wizard.is_some() {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+                wizard.raw_text = Some(msg.text().unwrap_or("").to_owned());
+            }
+        }
+        crate::bot::recording_rule_wizard::persist_draft(&config, user_id).await?;
+    }
+
     match parse_recording_rule_input(
         msg.text().unwrap_or(""),
         config.camera_recording_max_tail_seconds,
@@ -2525,6 +3008,16 @@ pub async fn handle_add_recording_rule_input(
         Ok(input) => {
             let cameras = crate::db::cameras::list_room_cameras(room_id, &config.db).await?;
             if !cameras.iter().any(|camera| camera.id == input.camera_id) {
+                if editing_wizard.is_some() {
+                    return keep_dialogue_with_error(
+                        &bot,
+                        &dialogue,
+                        &msg,
+                        State::AddRecordingRule { room_id },
+                        "Строка 2: камера не принадлежит выбранной комнате.".into(),
+                    )
+                    .await;
+                }
                 let err_msg = bot
                     .send_message(
                         msg.chat.id,
@@ -2535,6 +3028,57 @@ pub async fn handle_add_recording_rule_input(
                 return finalize_dialogue(bot, dialogue, msg, config, None).await;
             }
 
+            if let Some(mut wizard) = editing_wizard {
+                // Parse first; assign the complete legacy block only after all checks pass.
+                // Fields absent from that block (groups/window/pre-roll) remain unchanged.
+                let conditions = input
+                    .conditions
+                    .iter()
+                    .map(
+                        |condition| crate::bot::recording_rule_wizard::WizardCondition {
+                            entity_id: condition.entity_id.clone(),
+                            operator: condition.operator,
+                            from_state: condition.from_state.clone(),
+                            to_state: condition.to_state.clone(),
+                            value: condition.value.clone(),
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                let source_id: Option<i64> =
+                    sqlx::query_scalar("SELECT id FROM devices WHERE entity_id=? AND archived=0")
+                        .bind(&conditions[0].entity_id)
+                        .fetch_optional(&config.db)
+                        .await?;
+                if wizard.source_device_id.is_none() {
+                    wizard.source_device_id = source_id;
+                }
+                if wizard.source_mode.is_none() {
+                    wizard.source_mode =
+                        Some(crate::bot::recording_rule_wizard::WizardTriggerMode::AnyChange);
+                }
+                // Use the revision after retaining the user's raw text.
+                if let Some(current) = config
+                    .sessions
+                    .get(&user_id)
+                    .and_then(|session| session.recording_rule_wizard.clone())
+                {
+                    wizard.revision = current.revision;
+                }
+                apply_recording_rule_input_to_wizard(&mut wizard, input, conditions);
+                if let Some(mut session) = config.sessions.get_mut(&user_id) {
+                    session.recording_rule_wizard = Some(wizard);
+                }
+                crate::bot::recording_rule_wizard::persist_draft(&config, user_id).await?;
+                return finalize_dialogue(
+                    bot,
+                    dialogue,
+                    msg,
+                    config,
+                    Some(Payload::Admin(AdminPayload::WizardConfirmGroups)),
+                )
+                .await;
+            }
+
             let pre_roll_enabled = crate::db::settings::get_i64(
                 crate::db::settings::CAMERA_PRE_ROLL_ENABLED,
                 &config.db,
@@ -2543,7 +3087,20 @@ pub async fn handle_add_recording_rule_input(
             .unwrap_or(0)
                 != 0;
 
-            let rule_id = crate::db::camera_recording_rules::create_rule(
+            let conditions = input
+                .conditions
+                .iter()
+                .map(
+                    |condition| crate::db::camera_recording_rules::NewRecordingConditionDraft {
+                        entity_id: &condition.entity_id,
+                        operator: condition.operator,
+                        from_state: condition.from_state.as_deref(),
+                        to_state: condition.to_state.as_deref(),
+                        value: condition.value.as_deref(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            crate::db::camera_recording_rules::create_rule_with_conditions_and_groups(
                 crate::db::camera_recording_rules::NewRecordingRule {
                     name: &input.name,
                     camera_id: input.camera_id,
@@ -2555,24 +3112,11 @@ pub async fn handle_add_recording_rule_input(
                     pre_roll_enabled,
                     pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
                 },
+                &conditions,
+                &[],
                 &config.db,
             )
             .await?;
-
-            for condition in &input.conditions {
-                crate::db::camera_recording_rules::add_condition(
-                    crate::db::camera_recording_rules::NewRecordingCondition {
-                        rule_id,
-                        entity_id: &condition.entity_id,
-                        operator: condition.operator,
-                        from_state: condition.from_state.as_deref(),
-                        to_state: condition.to_state.as_deref(),
-                        value: condition.value.as_deref(),
-                    },
-                    &config.db,
-                )
-                .await?;
-            }
 
             finalize_dialogue(
                 bot,
@@ -2586,6 +3130,16 @@ pub async fn handle_add_recording_rule_input(
             .await
         }
         Err(text) => {
+            if editing_wizard.is_some() {
+                return keep_dialogue_with_error(
+                    &bot,
+                    &dialogue,
+                    &msg,
+                    State::AddRecordingRule { room_id },
+                    text,
+                )
+                .await;
+            }
             let err_msg = bot.send_message(msg.chat.id, text).await?;
             crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 10);
             finalize_dialogue(bot, dialogue, msg, config, None).await
@@ -2653,6 +3207,8 @@ pub async fn handle_add_recording_rule_group_for_wizard_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
 
     let user_id = msg.from.as_ref().context("User context missing")?.id.0;
     let has_wizard = config
@@ -2702,6 +3258,8 @@ pub async fn handle_add_recording_rule_group_for_wizard_input(
         &config.db,
     )
     .await;
+
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -3076,53 +3634,32 @@ pub async fn handle_add_action_schedule_time_input(
         }
     };
 
-    match crate::db::action_groups::create_action_schedule(
+    let data = db::schedule_drafts::ScheduleDraft {
         target,
         command,
-        time_minute,
-        crate::db::action_groups::ALL_DAYS_MASK,
+        time_minute: Some(time_minute),
+        days_mask: 127,
+        enabled: false,
+        existing: None,
+    };
+    let draft = db::ui_drafts::create(
+        config.root_user,
+        db::schedule_drafts::KIND,
+        &serde_json::to_string(&data)?,
+        config.session_ttl_hours,
         &config.db,
     )
+    .await?;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Schedule(
+            super::schedule_drafts::SchedulePayload::Review { id: draft.id },
+        )),
+    )
     .await
-    {
-        Ok(schedule_id) => {
-            let schedule_id_text = schedule_id.to_string();
-            let _ = crate::db::activity_log::log(
-                crate::db::activity_log::NewActivity {
-                    user_id: msg.from.as_ref().map(|user| user.id.0),
-                    kind: "action_group",
-                    entity_type: "action_schedule",
-                    entity_id: Some(&schedule_id_text),
-                    action: "action_group.schedule_create",
-                    status: "ok",
-                    message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
-                },
-                &config.db,
-            )
-            .await;
-            finalize_dialogue(
-                bot,
-                dialogue,
-                msg,
-                config,
-                Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
-                    target,
-                    schedule: schedule_id,
-                })),
-            )
-            .await
-        }
-        Err(error) => {
-            keep_dialogue_with_error(
-                &bot,
-                &dialogue,
-                &msg,
-                State::AddActionScheduleTime { target, command },
-                error.to_string(),
-            )
-            .await
-        }
-    }
 }
 
 pub async fn handle_edit_action_schedule_time_input(
@@ -3136,7 +3673,7 @@ pub async fn handle_edit_action_schedule_time_input(
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
 
-    let time_minute = match crate::db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
+    let time_minute = match db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
         Ok(value) => value,
         Err(error) => {
             keep_dialogue_with_error(
@@ -3153,62 +3690,25 @@ pub async fn handle_edit_action_schedule_time_input(
             return Ok(());
         }
     };
-
-    let schedule_matches = crate::db::action_groups::get_action_schedule(schedule_id, &config.db)
-        .await?
-        .map(|schedule| schedule.target_ref())
-        .transpose()?
-        .is_some_and(|schedule_target| schedule_target == target);
-    if !schedule_matches {
-        let user_id = msg.from.as_ref().map(|user| user.id.0);
-        let lang = match user_id {
-            Some(user_id) => crate::db::get_user_language(user_id, &config.db)
-                .await?
-                .unwrap_or(config.default_language),
-            None => config.default_language,
-        };
-        let notice = bot
-            .send_message(
-                msg.chat.id,
-                crate::i18n::t(lang, "action_groups.schedule_not_found"),
-            )
-            .await?;
-        crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, notice.id, 8);
-        return finalize_dialogue(
-            bot,
-            dialogue,
-            msg,
-            config,
-            Some(Payload::Admin(AdminPayload::ActionSchedules { target })),
-        )
-        .await;
-    }
-
-    crate::db::action_groups::update_action_schedule_time(schedule_id, time_minute, &config.db)
-        .await?;
-    let schedule_id_text = schedule_id.to_string();
-    let _ = crate::db::activity_log::log(
-        crate::db::activity_log::NewActivity {
-            user_id: msg.from.as_ref().map(|user| user.id.0),
-            kind: "action_group",
-            entity_type: "action_schedule",
-            entity_id: Some(&schedule_id_text),
-            action: "action_group.schedule_time_update",
-            status: "ok",
-            message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
-        },
+    let mut data =
+        db::schedule_drafts::ScheduleDraft::from_existing(schedule_id, target, &config.db).await?;
+    data.time_minute = Some(time_minute);
+    let draft = db::ui_drafts::create(
+        config.root_user,
+        db::schedule_drafts::KIND,
+        &serde_json::to_string(&data)?,
+        config.session_ttl_hours,
         &config.db,
     )
-    .await;
+    .await?;
     finalize_dialogue(
         bot,
         dialogue,
         msg,
         config,
-        Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
-            target,
-            schedule: schedule_id,
-        })),
+        Some(Payload::Schedule(
+            super::schedule_drafts::SchedulePayload::Review { id: draft.id },
+        )),
     )
     .await
 }
@@ -3223,6 +3723,14 @@ pub async fn handle_recording_rule_wizard_source_value_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let value =
         match crate::bot::recording_rule_wizard::source_threshold_value(msg.text().unwrap_or("")) {
@@ -3257,6 +3765,13 @@ pub async fn handle_recording_rule_wizard_source_value_input(
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
 
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
+
     finalize_dialogue(
         bot,
         dialogue,
@@ -3278,6 +3793,14 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let active_time =
         match crate::db::camera_recording_rules::parse_active_time_window(msg.text().unwrap_or(""))
@@ -3300,7 +3823,10 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     let updated = {
         if let Some(mut session) = config.sessions.get_mut(&user_id) {
             if let Some(wizard) = session.recording_rule_wizard.as_mut() {
-                wizard.active_time = active_time;
+                wizard.active_time = crate::db::camera_recording_rules::RecordingRuleActiveTime {
+                    days_mask: wizard.active_time.days_mask,
+                    ..active_time
+                };
                 true
             } else {
                 false
@@ -3312,6 +3838,13 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     if !updated {
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
+
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -3332,6 +3865,14 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let user_id = msg.from.as_ref().context("User context missing")?.id.0;
     let pending = config
@@ -3395,6 +3936,13 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
     if !updated {
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
+
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -3959,6 +4507,27 @@ struct RecordingConditionInput {
     value: Option<String>,
 }
 
+fn apply_recording_rule_input_to_wizard(
+    wizard: &mut crate::bot::recording_rule_wizard::RecordingRuleWizard,
+    input: RecordingRuleInput,
+    conditions: Vec<crate::bot::recording_rule_wizard::WizardCondition>,
+) {
+    wizard.name_touched |= wizard.name.as_deref() != Some(input.name.as_str());
+    wizard.name = Some(input.name);
+    wizard.camera_id = Some(input.camera_id);
+    wizard.logic_touched |= wizard.condition_logic != input.logic;
+    wizard.condition_logic = input.logic;
+    wizard.custom_conditions = Some(conditions);
+    wizard.tail_seconds = Some(input.tail_seconds);
+    wizard.max_segment_seconds = Some(input.max_segment_seconds);
+    wizard.cooldown_touched |= wizard.cooldown_s != Some(input.cooldown_s);
+    wizard.cooldown_s = Some(input.cooldown_s);
+    wizard.retention_days = Some(input.retention_days);
+    wizard.raw_text = None;
+    wizard.editing_text = false;
+    wizard.step = Payload::Admin(AdminPayload::WizardConfirmGroups).to_string();
+}
+
 fn parse_recording_rule_input(
     text: &str,
     max_tail_seconds: u32,
@@ -3988,8 +4557,11 @@ fn parse_recording_rule_input(
     };
 
     let mut conditions = Vec::new();
-    for line in &lines[3..numbers_start] {
-        conditions.push(parse_recording_condition(line)?);
+    for (index, line) in lines[3..numbers_start].iter().enumerate() {
+        conditions.push(
+            parse_recording_condition(line)
+                .map_err(|error| format!("Строка {}: {}", index + 4, error))?,
+        );
     }
 
     if conditions.is_empty() {
@@ -4027,6 +4599,7 @@ fn extract_recording_rule_block(text: &str) -> String {
         if trimmed.contains("Текст правила")
             || trimmed.contains("Отправьте исправленный блок")
             || trimmed.contains("Скопируйте блок")
+            || trimmed.contains("Текст правила: скопируйте блок")
         {
             use_tail = true;
             lines.clear();
@@ -4326,6 +4899,63 @@ mod tests {
         assert!(looks_like_text_command("включи свет в коридоре"));
         assert!(looks_like_text_command("снимок вход"));
         assert!(!looks_like_text_command("привет"));
+    }
+
+    #[test]
+    fn recording_draft_text_roundtrip_preserves_fields_absent_from_legacy_format() {
+        use crate::bot::recording_rule_wizard::{
+            build_advanced_rule_text_with_logic, build_source_conditions, RecordingRuleWizard,
+            WizardTriggerMode,
+        };
+        use crate::db::camera_recording_rules::{ConditionLogic, RecordingRuleActiveTime};
+        let mut wizard = RecordingRuleWizard::new(1);
+        wizard.name = Some("Door".into());
+        wizard.camera_id = Some(3);
+        wizard.source_device_id = Some(4);
+        wizard.source_mode = Some(WizardTriggerMode::AnyChange);
+        wizard.cooldown_s = Some(30);
+        wizard.active_time = RecordingRuleActiveTime::window(1320, 420, 31).unwrap();
+        wizard.group_ids = vec![2, 9];
+        wizard.pre_roll_enabled = Some(true);
+        wizard.pre_roll_seconds = 23;
+        let conditions = build_source_conditions(
+            "binary_sensor.door",
+            WizardTriggerMode::AnyChange,
+            None,
+            false,
+        )
+        .unwrap();
+        let text = build_advanced_rule_text_with_logic(
+            "Door",
+            3,
+            ConditionLogic::Any,
+            &conditions,
+            120,
+            240,
+            30,
+            90,
+        );
+        let input = parse_recording_rule_input(&text, 300, 300).unwrap();
+        apply_recording_rule_input_to_wizard(&mut wizard, input, conditions);
+        assert_eq!(
+            wizard.active_time,
+            RecordingRuleActiveTime::window(1320, 420, 31).unwrap()
+        );
+        assert_eq!(wizard.group_ids, vec![2, 9]);
+        assert_eq!(wizard.pre_roll_enabled, Some(true));
+        assert_eq!(wizard.pre_roll_seconds, 23);
+        assert!(!wizard.name_touched);
+        assert!(!wizard.cooldown_touched);
+        assert_eq!(wizard.custom_conditions.as_ref().unwrap().len(), 1);
+        assert_eq!(wizard.tail_seconds, Some(120));
+        assert_eq!(wizard.max_segment_seconds, Some(240));
+        assert!(parse_recording_rule_input(
+            "Bad\n3\nany\nsensor.a;bogus;;;4\n60\n240\n10\n30",
+            300,
+            300
+        )
+        .unwrap_err()
+        .contains("Строка 4"));
     }
 
     #[test]

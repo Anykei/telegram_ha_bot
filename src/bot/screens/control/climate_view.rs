@@ -120,6 +120,21 @@ fn render_view(
     } else {
         text.push_str(&format!("\n\n{}", t(lang, "control.view_only")));
     }
+    if can_control
+        && entity
+            .attributes
+            .temperature
+            .is_some_and(|v| entity.temperature_target_is_valid(v))
+    {
+        rows.push(vec![InlineKeyboardButton::callback(
+            crate::bot::personal::words(lang, "Задать температуру", "Set temperature"),
+            Payload::TemperatureInput {
+                room: room_id,
+                device: dev.id,
+            }
+            .to_string(),
+        )]);
+    }
     let payload = Payload::Control(ControlPayload::DeviceControl {
         room: room_id,
         device: dev.id,

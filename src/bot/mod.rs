@@ -1,10 +1,13 @@
+pub(crate) mod command_choices;
 pub(crate) mod confirmations;
 pub(crate) mod format;
 pub(crate) mod handlers;
 pub(crate) mod models;
 pub(crate) mod notification;
+pub(crate) mod personal;
 pub(crate) mod recording_rule_wizard;
 pub(crate) mod router;
+pub(crate) mod schedule_drafts;
 mod screens;
 pub(crate) mod text_commands;
 pub(crate) mod text_pages;
@@ -44,13 +47,21 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
 
         let user_id = user.id.0;
 
-        // Root пользователь имеет безусловный доступ.
-        if config.root_user == user_id {
-            return true;
+        let allowed = config.root_user == user_id || db::user_exists(user_id, &config.db).await;
+        if allowed {
+            if let Err(error) = db::user_display::capture(
+                user_id,
+                &user.first_name,
+                user.last_name.as_deref(),
+                user.username.as_deref(),
+                &config.db,
+            )
+            .await
+            {
+                log::warn!("Could not save Telegram display metadata: {}", error);
+            }
         }
-
-        // Проверка наличия пользователя в белом списке БД.
-        db::user_exists(user_id, &config.db).await
+        allowed
     });
 
     // 2. Ветка команд: обрабатывает системные команды (начинающиеся с /).
@@ -72,8 +83,25 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
 
     // 4. Ветка Диалогов: обрабатывает текстовый ввод в зависимости от состояния.
     let message_dialogues = Update::filter_message()
-        // Игнорируем команды, чтобы они не перехватывались диалогом.
-        .filter(|msg: Message| msg.text().is_none_or(|t| !t.starts_with('/')))
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::ScheduleDraftTime { id, revision } => Some((id, revision)),
+                _ => None,
+            })
+            .endpoint(schedule_drafts::handle_time),
+        )
+        .branch(
+            dptree::filter(|state: State| {
+                matches!(
+                    state,
+                    State::PersonalQuietHours | State::ExactTemperature { .. }
+                )
+            })
+            .endpoint(personal::handle_input),
+        )
+        // Известные команды уже обработаны выше. Неизвестная команда в Idle
+        // получает подсказку, но не становится значением активной формы.
+        .filter(|msg: Message, state: State| accepts_dialogue_text(&state, msg.text()))
         .branch(
             dptree::filter_map(|state: State| match state {
                 State::WaitingForStateAlias {
@@ -91,6 +119,13 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 _ => None,
             })
             .endpoint(handlers::handle_custom_interval),
+        )
+        .branch(
+            dptree::filter_map(|state: State| match state {
+                State::EditUserAlias { user_id } => Some(user_id),
+                _ => None,
+            })
+            .endpoint(handlers::handle_user_alias_input),
         )
         .branch(
             dptree::filter(|state: State| matches!(state, State::AddUser { .. }))
@@ -257,27 +292,30 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         .branch(voice_handler)
         .branch(text_command_handler)
         .branch(message_dialogues)
-        .endpoint(|update: Update, state: State| async move {
+        .endpoint(|update: Update| async move {
             let user_id = update.from().map(|u| u.id.0).unwrap_or(0);
 
             let update_type = match &update.kind {
-                UpdateKind::Message(m) => m.text().unwrap_or("[no text]"),
-                UpdateKind::CallbackQuery(q) => q.data.as_deref().unwrap_or("[no data]"),
+                UpdateKind::Message(_) => "Message",
+                UpdateKind::CallbackQuery(_) => "CallbackQuery",
                 UpdateKind::EditedMessage(_) => "EditedMessage",
                 UpdateKind::InlineQuery(_) => "InlineQuery",
                 _ => "Other",
             };
 
             log::warn!(
-                "⚠️ Unhandled Update: ID={:?}, User={}, Type={}, State={:?}",
+                "⚠️ Unhandled Update: ID={:?}, User={}, Type={}",
                 update.id,
                 user_id,
-                update_type,
-                state
+                update_type
             );
 
             Ok::<(), anyhow::Error>(())
         })
+}
+
+fn accepts_dialogue_text(state: &State, text: Option<&str>) -> bool {
+    matches!(state, State::Idle) || text.is_none_or(|text| !text.starts_with('/'))
 }
 
 fn recording_rule_room_from_current_context(msg: &Message, config: &Arc<AppConfig>) -> Option<i64> {
@@ -302,6 +340,20 @@ fn looks_like_recording_rule_input(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_slash_commands_reach_idle_feedback_without_entering_active_forms() {
+        assert!(accepts_dialogue_text(&State::Idle, Some("/unknown")));
+        assert!(accepts_dialogue_text(
+            &State::Idle,
+            Some("/unknown@house_bot")
+        ));
+
+        let form = State::EditUserAlias { user_id: 42 };
+        assert!(!accepts_dialogue_text(&form, Some("/unknown")));
+        assert!(accepts_dialogue_text(&form, Some("Kitchen owner")));
+        assert!(accepts_dialogue_text(&State::Idle, Some("непонятный ввод")));
+    }
 
     #[test]
     fn recording_rule_input_detector_accepts_rule_form() {

@@ -21,10 +21,6 @@ pub async fn in_dev_menu(ctx: RenderContext, back: Payload) -> Result<View> {
     })
 }
 
-pub fn back_button(to: Payload) -> InlineKeyboardButton {
-    back_button_lang(crate::i18n::Language::Ru, to)
-}
-
 pub fn back_button_lang(lang: crate::i18n::Language, to: Payload) -> InlineKeyboardButton {
     InlineKeyboardButton::callback(t(lang, "common.back"), to.to_string())
 }

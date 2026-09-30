@@ -252,11 +252,22 @@ pub async fn create_rule_with_conditions_and_groups(
     group_ids: &[i64],
     pool: &SqlitePool,
 ) -> Result<i64> {
+    let mut tx = pool.begin().await?;
+    let id = insert_rule_bundle(rule, conditions, group_ids, &mut tx).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+async fn insert_rule_bundle(
+    rule: NewRecordingRule<'_>,
+    conditions: &[NewRecordingConditionDraft<'_>],
+    group_ids: &[i64],
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<i64> {
     if conditions.is_empty() {
         return Err(anyhow!("Recording rule must have at least one condition"));
     }
 
-    let mut tx = pool.begin().await?;
     let result = sqlx::query(
         r#"
         INSERT INTO camera_recording_rules (
@@ -275,7 +286,7 @@ pub async fn create_rule_with_conditions_and_groups(
     .bind(rule.retention_days)
     .bind(if rule.pre_roll_enabled { 1 } else { 0 })
     .bind(rule.pre_roll_seconds.clamp(0, MAX_PRE_ROLL_SECONDS))
-    .execute(&mut *tx)
+    .execute(&mut *connection)
     .await?;
     let rule_id = result.last_insert_rowid();
 
@@ -294,7 +305,7 @@ pub async fn create_rule_with_conditions_and_groups(
         .bind(condition.from_state.map(str::trim))
         .bind(condition.to_state.map(str::trim))
         .bind(condition.value.map(str::trim))
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await?;
     }
 
@@ -311,7 +322,7 @@ pub async fn create_rule_with_conditions_and_groups(
         .bind(rule_id)
         .bind(group_id)
         .bind(group_id)
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -319,6 +330,88 @@ pub async fn create_rule_with_conditions_and_groups(
         }
     }
 
+    Ok(rule_id)
+}
+
+/// Claim the draft and save every part of a rule in the same SQLite transaction.
+/// Retrying a successfully committed draft returns its original rule ID.
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_rule_draft(
+    draft_id: i64,
+    owner: u64,
+    revision: i64,
+    room_id: i64,
+    rule: NewRecordingRule<'_>,
+    conditions: &[NewRecordingConditionDraft<'_>],
+    group_ids: &[i64],
+    active_time: RecordingRuleActiveTime,
+    pool: &SqlitePool,
+) -> Result<i64> {
+    if !active_time_is_valid(active_time) {
+        return Err(anyhow!("Invalid active time"));
+    }
+    let mut tx = pool.begin().await?;
+    let now = Utc::now().timestamp();
+    // Take the SQLite write lock before reading the idempotency result.
+    sqlx::query("UPDATE ui_drafts SET revision=revision WHERE id=? AND owner_id=?")
+        .bind(draft_id)
+        .bind(owner as i64)
+        .execute(&mut *tx)
+        .await?;
+    let saved: Option<(String, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT status,revision,committed_target_id FROM ui_drafts WHERE id=? AND owner_id=? AND kind='recording_rule' AND expires_at>?"
+    ).bind(draft_id).bind(owner as i64).bind(now).fetch_optional(&mut *tx).await?;
+    let Some((status, current_revision, target)) = saved else {
+        return Err(anyhow!("Draft expired"));
+    };
+    if status == "saved" {
+        return target.ok_or_else(|| anyhow!("Saved draft has no result"));
+    }
+    if !matches!(status.as_str(), "editing" | "review") || current_revision != revision {
+        return Err(anyhow!("Draft changed; reopen its current version"));
+    }
+    let camera_valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM cameras WHERE id=? AND room_id=? AND enabled!=0)",
+    )
+    .bind(rule.camera_id)
+    .bind(room_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !camera_valid {
+        return Err(anyhow!("Camera is unavailable in the selected room"));
+    }
+    for condition in conditions {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM devices WHERE entity_id=? AND archived=0)",
+        )
+        .bind(condition.entity_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Err(anyhow!(
+                "Condition source is unavailable: {}",
+                condition.entity_id
+            ));
+        }
+        if matches!(
+            condition.operator,
+            ConditionOperator::Above | ConditionOperator::Below
+        ) && !condition
+            .value
+            .and_then(|v| v.parse::<f64>().ok())
+            .is_some_and(f64::is_finite)
+        {
+            return Err(anyhow!("Condition requires a finite numeric threshold"));
+        }
+    }
+    let rule_id = insert_rule_bundle(rule, conditions, group_ids, &mut tx).await?;
+    sqlx::query("UPDATE camera_recording_rules SET active_time_enabled=?,active_from_minute=?,active_to_minute=?,active_days_mask=? WHERE id=?")
+        .bind(active_time.enabled).bind(active_time.from_minute).bind(active_time.to_minute).bind(active_time.days_mask).bind(rule_id)
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE ui_drafts SET status='saved',committed_target_id=?,revision=revision+1,updated_at=? WHERE id=?")
+        .bind(rule_id).bind(now).bind(draft_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO activity_log(user_id,kind,entity_type,entity_id,action,status) VALUES(?,'ui_draft','draft',?,'draft.commit','ok')")
+        .bind(owner as i64).bind(draft_id.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(rule_id)
 }
@@ -1093,5 +1186,107 @@ mod tests {
 
         assert!(!active_time_is_valid(active));
         assert!(!active_time_matches_at(active, local_at(2026, 6, 1, 12, 0)));
+    }
+}
+
+#[cfg(test)]
+mod draft_transaction_tests {
+    use super::*;
+
+    async fn fixture() -> Result<(SqlitePool, i64)> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        sqlx::query("INSERT INTO rooms(id,area) VALUES(1,'entry')")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO devices(room_id,entity_id) VALUES(1,'binary_sensor.door')")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'entry','Entry',1,'rtsp://example.invalid')").execute(&pool).await?;
+        sqlx::query("INSERT INTO camera_recording_rule_groups(id,name) VALUES(1,'Security')")
+            .execute(&pool)
+            .await?;
+        let draft = crate::db::ui_drafts::create(7, "recording_rule", "{}", 24, &pool).await?;
+        Ok((pool, draft.id))
+    }
+
+    fn rule() -> NewRecordingRule<'static> {
+        NewRecordingRule {
+            name: "Door",
+            camera_id: 1,
+            condition_logic: ConditionLogic::Any,
+            tail_seconds: 120,
+            max_segment_seconds: 300,
+            cooldown_s: 90,
+            retention_days: 45,
+            pre_roll_enabled: true,
+            pre_roll_seconds: 15,
+        }
+    }
+    fn conditions() -> [NewRecordingConditionDraft<'static>; 1] {
+        [NewRecordingConditionDraft {
+            entity_id: "binary_sensor.door",
+            operator: ConditionOperator::ChangedTo,
+            from_state: None,
+            to_state: Some("on"),
+            value: None,
+        }]
+    }
+
+    #[tokio::test]
+    async fn repeated_submit_commits_one_complete_rule() -> Result<()> {
+        let (pool, id) = fixture().await?;
+        let active = RecordingRuleActiveTime::window(1320, 420, 31)?;
+        let first =
+            commit_rule_draft(id, 7, 0, 1, rule(), &conditions(), &[1], active, &pool).await?;
+        let second =
+            commit_rule_draft(id, 7, 0, 1, rule(), &conditions(), &[1], active, &pool).await?;
+        assert_eq!(first, second);
+        assert_eq!(list_rules(&pool).await?.len(), 1);
+        let rule = get_rule(first, &pool).await?.unwrap();
+        assert_eq!(rule.active_time(), active);
+        assert_eq!(rule.cooldown_s, 90);
+        assert_eq!(list_conditions(first, &pool).await?.len(), 1);
+        assert_eq!(
+            crate::db::camera_recording_rule_groups::list_rule_group_ids(first, &pool).await?,
+            vec![1]
+        );
+        assert!(
+            commit_rule_draft(id, 8, 0, 1, self::rule(), &conditions(), &[], active, &pool)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failure_after_rule_insert_rolls_back_everything_and_allows_retry() -> Result<()> {
+        let (pool, id) = fixture().await?;
+        sqlx::query("CREATE TRIGGER fail_window BEFORE UPDATE OF active_time_enabled ON camera_recording_rules BEGIN SELECT RAISE(ABORT,'injected failure'); END").execute(&pool).await?;
+        let active = RecordingRuleActiveTime::window(1320, 420, 31)?;
+        assert!(
+            commit_rule_draft(id, 7, 0, 1, rule(), &conditions(), &[1], active, &pool)
+                .await
+                .is_err()
+        );
+        assert!(list_rules(&pool).await?.is_empty());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM camera_recording_rule_conditions")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(count, 0);
+        let draft = crate::db::ui_drafts::load(id, 7, "recording_rule", &pool)
+            .await?
+            .unwrap();
+        assert_eq!(draft.status, "editing");
+        assert_eq!(draft.revision, 0);
+        sqlx::query("DROP TRIGGER fail_window")
+            .execute(&pool)
+            .await?;
+        commit_rule_draft(id, 7, 0, 1, rule(), &conditions(), &[1], active, &pool).await?;
+        Ok(())
     }
 }
