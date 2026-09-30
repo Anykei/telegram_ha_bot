@@ -359,8 +359,8 @@ pub async fn commit_rule_draft(
         .execute(&mut *tx)
         .await?;
     let saved: Option<(String, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT status,revision,committed_target_id FROM ui_drafts WHERE id=? AND owner_id=? AND kind='recording_rule' AND expires_at>?"
-    ).bind(draft_id).bind(owner as i64).bind(now).fetch_optional(&mut *tx).await?;
+        "SELECT status,revision,committed_target_id FROM ui_drafts WHERE id=? AND owner_id=? AND kind='recording_rule' AND expires_at>CAST(strftime('%s','now') AS INTEGER)"
+    ).bind(draft_id).bind(owner as i64).fetch_optional(&mut *tx).await?;
     let Some((status, current_revision, target)) = saved else {
         return Err(anyhow!("Draft expired"));
     };

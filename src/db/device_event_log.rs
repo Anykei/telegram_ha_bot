@@ -46,7 +46,13 @@ impl EventLogger {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows)
+        let mut visible = Vec::new();
+        for row in rows {
+            if crate::db::access::can_notify_entity(user_id, &row.entity_id, pool).await? {
+                visible.push(row);
+            }
+        }
+        Ok(visible)
     }
 
     pub async fn purge_old_events(minutes: u64, pool: &SqlitePool) -> Result<u64> {

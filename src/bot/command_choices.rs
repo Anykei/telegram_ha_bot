@@ -44,6 +44,7 @@ pub async fn render(ctx: &RenderContext, id: i64, page: u32) -> Result<View> {
                 else {
                     continue;
                 };
+                ctx.track_device(device.id, &device.entity_id);
                 let room =
                     db::devices::get_room_id_by_entity(&device.entity_id, &ctx.config.db).await?;
                 (device.alias.unwrap_or(device.entity_id), room)
@@ -58,12 +59,16 @@ pub async fn render(ctx: &RenderContext, id: i64, page: u32) -> Result<View> {
                 else {
                     continue;
                 };
+                ctx.track_camera(camera.id);
                 (camera.name, camera.room_id)
             };
             let room = if let Some(room) = room {
                 db::rooms::get_room_by_id(room, &ctx.config.db)
                     .await?
-                    .map(|r| r.display_name().to_owned())
+                    .map(|r| {
+                        ctx.track_room(r.id);
+                        r.display_name().to_owned()
+                    })
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -135,7 +140,13 @@ pub async fn render(ctx: &RenderContext, id: i64, page: u32) -> Result<View> {
 }
 
 pub async fn result(ctx: &RenderContext, id: i64) -> Result<View> {
-    let text = crate::core::commands::pending_result_text(ctx.user_id, id, &ctx.config).await?;
+    let text = crate::core::commands::pending_result_text_tracked(
+        ctx.user_id,
+        id,
+        &ctx.config,
+        |source| ctx.track_source(source),
+    )
+    .await?;
     let mut rows = Vec::new();
     if let Some(pending) =
         db::pending_commands::get_pending(id, ctx.user_id, &ctx.config.db).await?
@@ -158,9 +169,13 @@ pub async fn result(ctx: &RenderContext, id: i64) -> Result<View> {
                 if target.kind != crate::core::action_results::TargetKind::Device {
                     continue;
                 }
-                let Some(name) =
-                    crate::core::action_results::target_label(&target, ctx.user_id, &ctx.config)
-                        .await?
+                let Some(name) = crate::core::action_results::target_label_tracked(
+                    &target,
+                    ctx.user_id,
+                    &ctx.config,
+                    |source| ctx.track_source(source),
+                )
+                .await?
                 else {
                     continue;
                 };
@@ -168,6 +183,7 @@ pub async fn result(ctx: &RenderContext, id: i64) -> Result<View> {
                 else {
                     continue;
                 };
+                ctx.track_device(device.id, &device.entity_id);
                 let Some(room) =
                     db::devices::get_room_id_by_entity(&device.entity_id, &ctx.config.db).await?
                 else {

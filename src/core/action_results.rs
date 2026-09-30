@@ -1,5 +1,5 @@
 //! Persisted send outcomes. A missing response never proves that HA did nothing.
-use crate::{db, i18n::Language, models::AppConfig};
+use crate::{core::types::DisplaySource, db, i18n::Language, models::AppConfig};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -119,12 +119,22 @@ impl ActionResult {
 
     /// Resolve names against today's ACL; never reveal names captured before revocation.
     pub async fn display(&self, user: u64, lang: Language, config: &AppConfig) -> Result<String> {
+        self.display_tracked(user, lang, config, |_| {}).await
+    }
+
+    pub async fn display_tracked(
+        &self,
+        user: u64,
+        lang: Language,
+        config: &AppConfig,
+        mut track: impl FnMut(DisplaySource),
+    ) -> Result<String> {
         let mut text = self.summary(lang);
         for target in &self.targets {
             if target.outcome == Outcome::Sent {
                 continue;
             }
-            let label = target_label(target, user, config)
+            let label = target_label_tracked(target, user, config, &mut track)
                 .await?
                 .unwrap_or_else(|| {
                     if lang == Language::En {
@@ -163,6 +173,15 @@ pub async fn target_label(
     user: u64,
     config: &AppConfig,
 ) -> Result<Option<String>> {
+    target_label_tracked(target, user, config, |_| {}).await
+}
+
+pub async fn target_label_tracked(
+    target: &TargetResult,
+    user: u64,
+    config: &AppConfig,
+    mut track: impl FnMut(DisplaySource),
+) -> Result<Option<String>> {
     let admin = user == config.root_user;
     match target.kind {
         TargetKind::Device => {
@@ -171,13 +190,27 @@ pub async fn target_label(
             }
             Ok(db::devices::get_device_by_id(target.id, &config.db)
                 .await?
-                .map(|d| d.alias.unwrap_or(d.entity_id)))
+                .map(|d| {
+                    track(DisplaySource::Device {
+                        id: d.id,
+                        entity_id: d.entity_id.clone(),
+                    });
+                    d.alias.unwrap_or(d.entity_id)
+                }))
         }
         TargetKind::HaNative => Ok(
             db::action_groups::get_ha_native_target(target.id, &config.db)
                 .await?
-                .filter(|t| !t.is_archived() && (admin || t.is_visible_to_all_users()))
-                .map(|t| t.display_name().to_string()),
+                .filter(|t| {
+                    !t.is_archived() && (admin || (t.is_enabled() && t.is_visible_to_all_users()))
+                })
+                .map(|t| {
+                    track(DisplaySource::HaNative {
+                        id: t.id,
+                        entity_id: t.entity_id.clone(),
+                    });
+                    t.display_name().to_string()
+                }),
         ),
     }
 }

@@ -161,8 +161,7 @@ mod tests {
             assert!(!can_open_room(10, false, 1, &pool).await?);
 
             for can_control in [false, true] {
-                access::set_device_access(10, "light.granted", true, can_control, true, &pool)
-                    .await?;
+                access::set_device_access(10, "light.granted", true, can_control, &pool).await?;
                 let rooms = get_rooms_for_user(10, false, &pool).await?;
                 assert_eq!(rooms.len(), 1);
                 assert_eq!(rooms[0].id, 1);
@@ -185,7 +184,7 @@ mod tests {
                     .await?
                     .is_none());
             }
-            access::set_device_access(10, "light.granted", false, false, false, &pool).await?;
+            access::set_device_access(10, "light.granted", false, false, &pool).await?;
             assert!(get_rooms_for_user(10, false, &pool).await?.is_empty());
             assert!(!can_open_room(10, false, 1, &pool).await?);
         }
@@ -195,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn navigation_respects_archival_global_hiding_and_existing_room_grants() -> Result<()> {
         let pool = navigation_pool("guest").await?;
-        access::set_device_access(10, "light.granted", true, true, true, &pool).await?;
+        access::set_device_access(10, "light.granted", true, true, &pool).await?;
         for (statement, undo) in [
             (
                 "UPDATE devices SET archived = 1 WHERE id = 1",
@@ -209,7 +208,7 @@ mod tests {
             sqlx::query(undo).execute(&pool).await?;
             assert!(can_open_room(10, false, 1, &pool).await?);
         }
-        access::set_device_access(10, "light.granted", false, false, false, &pool).await?;
+        access::set_device_access(10, "light.granted", false, false, &pool).await?;
         access::set_room_access(10, 1, true, false, &pool).await?;
         assert_eq!(get_rooms_for_user(10, false, &pool).await?.len(), 1);
         assert!(can_open_room(10, false, 1, &pool).await?);

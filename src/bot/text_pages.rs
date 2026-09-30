@@ -18,6 +18,8 @@ pub struct TextPage {
 
 #[derive(Serialize, Deserialize)]
 struct PageContext {
+    #[serde(default)]
+    receipt_resources: Option<Vec<crate::core::types::DisplaySource>>,
     source: String,
     // Command receipts cannot be recreated by rerunning a read-only screen.
     // Keep them for their owner, without caching device state or keyboard actions.
@@ -28,7 +30,7 @@ struct PageContext {
     suppress_input: bool,
 }
 
-async fn source_payload(view: &View, user: u64, config: &AppConfig) -> Result<Payload> {
+pub(crate) async fn source_payload(view: &View, user: u64, config: &AppConfig) -> Result<Payload> {
     if let Some(page) = view.text_page {
         let saved = db::ui_text_pages::context(page.screen, user, &config.db)
             .await?
@@ -175,6 +177,11 @@ pub async fn prepare(view: &mut View, user: u64, config: &AppConfig) -> Result<(
         "Nested text page context"
     );
     let context = PageContext {
+        receipt_resources: Some(if view.notice.is_some() || view.alert.is_some() {
+            view.displayed_resources.clone()
+        } else {
+            Vec::new()
+        }),
         source: source.to_string(),
         notice: view.notice.clone(),
         alert: view.alert.clone(),
@@ -220,13 +227,18 @@ pub async fn render(screen: i64, page: u16, user: u64, config: Arc<AppConfig>) -
         if saved.suppress_input {
             view.next_state = None;
         }
-        view.notice = saved.notice.or(view.notice);
-        view.alert = match (saved.alert, view.alert) {
-            (Some(previous), Some(current)) if previous != current => {
-                Some(format!("{current}\n\n{previous}"))
-            }
-            (previous, current) => previous.or(current),
-        };
+        // Legacy cached receipts have no record of the devices they disclosed.
+        // Keep the freshly rendered screen, without restoring unguarded text.
+        if let Some(resources) = saved.receipt_resources {
+            view.displayed_resources.extend(resources);
+            view.notice = saved.notice.or(view.notice);
+            view.alert = match (saved.alert, view.alert) {
+                (Some(previous), Some(current)) if previous != current => {
+                    Some(format!("{current}\n\n{previous}"))
+                }
+                (previous, current) => previous.or(current),
+            };
+        }
     }
     select_page(&mut view, screen, page);
     Ok(view)
@@ -265,6 +277,8 @@ mod tests {
             text: "Данные о состоянии\n".repeat(1000),
             compact: true,
             notifications: vec![crate::core::HeaderItem {
+                source: None,
+                additional_sources: Vec::new(),
                 icon: "🔴".into(),
                 label: "Камера".into(),
                 value: "Идёт запись".into(),

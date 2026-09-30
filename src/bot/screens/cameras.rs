@@ -29,6 +29,7 @@ pub async fn render_list_page(ctx: RenderContext, requested: Option<u16>) -> Res
         .skip(page * common::LIST_PAGE_SIZE)
         .take(common::LIST_PAGE_SIZE)
     {
+        ctx.track_camera(camera.id);
         let label = if ctx.is_admin {
             format!("📹 #{} {}", camera.id, camera.name)
         } else {
@@ -87,6 +88,9 @@ pub async fn render_recording_group_modes_page(
         &ctx.config.db,
     )
     .await?;
+    for group in &groups {
+        ctx.track_recording_group(group.id);
+    }
     let (page, pages) = common::list_page(
         &ctx,
         &Payload::Camera(CameraPayload::RecordingGroupModes),
@@ -149,6 +153,7 @@ pub async fn render_recording_group_mode_detail(ctx: RenderContext, group_id: i6
         return Ok(view);
     }
 
+    ctx.track_recording_group(group.id);
     let cameras = crate::db::camera_recording_rule_groups::list_group_cameras_visible_to_user(
         ctx.user_id,
         ctx.is_admin,
@@ -156,6 +161,9 @@ pub async fn render_recording_group_mode_detail(ctx: RenderContext, group_id: i6
         &ctx.config.db,
     )
     .await?;
+    for camera in &cameras {
+        ctx.track_camera(camera.camera_id);
+    }
     let cameras_text = if cameras.is_empty() {
         "нет камер".to_string()
     } else {
@@ -210,6 +218,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
 
     let mut rows = vec![vec![InlineKeyboardButton::callback(
         t(ctx.lang, "camera.snapshot"),
@@ -294,6 +303,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
     );
     if let Some(room_id) = camera.room_id {
         if let Some(room) = crate::db::rooms::get_room_by_id(room_id, &ctx.config.db).await? {
+            ctx.track_room(room.id);
             text.push_str(&format!(
                 "\n{}: {}",
                 localized(ctx.lang, "Комната", "Room"),
@@ -325,6 +335,7 @@ pub async fn render_details(ctx: RenderContext, camera_id: i64) -> Result<View> 
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let mut text = format!(
         "{}\nID: {}\n{}: {} s",
         camera.name,
@@ -410,6 +421,7 @@ pub async fn render_recording_archive_page(
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let rules = camera_archive_rules(camera_id, &ctx.config.db).await?;
     let filter_missing = filter.strip_prefix("rule:").is_some_and(|id| {
         id.parse::<i64>()
@@ -662,6 +674,7 @@ pub async fn render_recording_archive_filters(ctx: RenderContext, camera_id: i64
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let back = saved_archive_payload(&ctx, camera_id).await?;
     let active = match &back {
         Payload::Camera(CameraPayload::RecordingArchivePage { filter, .. }) => filter.as_str(),
@@ -727,6 +740,7 @@ pub async fn render_recording_archive_rules(
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let rules = camera_archive_rules(camera_id, &ctx.config.db).await?;
     let pages = rules.len().div_ceil(super::common::LIST_PAGE_SIZE).max(1);
     let page = usize::from(requested_page).min(pages - 1);
@@ -803,6 +817,7 @@ pub async fn render_recording_archive_rule(
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let rule = crate::db::camera_recording_rules::get_rule(rule_id, &ctx.config.db)
         .await?
         .filter(|rule| rule.camera_id == camera_id);
@@ -873,6 +888,7 @@ pub async fn render_recording_session(
     )
     .await?
     .context("Camera not found or access denied")?;
+    ctx.track_camera(camera.id);
     let session = crate::db::camera_recording_sessions::get_session(session_id, &ctx.config.db)
         .await?
         .context("Recording session not found")?;
@@ -887,7 +903,7 @@ pub async fn render_recording_session(
     let ready_segments = sendable_segments.len();
     let total_duration: i64 = segments.iter().map(|segment| segment.duration_s).sum();
     let completed = session.completed_at.unwrap_or_else(Utc::now);
-    let partial = session.status == "failed" && ready_segments > 0;
+    let partial = (session.status == "failed" || session.error.is_some()) && ready_segments > 0;
     let sending_all = ctx
         .config
         .is_recording_send_in_progress(ctx.user_id, session_id);
@@ -930,14 +946,16 @@ pub async fn render_recording_session(
             })
             .to_string(),
         )]);
-        rows.push(vec![InlineKeyboardButton::callback(
-            t(ctx.lang, "camera.delete"),
-            Payload::Camera(CameraPayload::ConfirmDeleteRecording {
-                camera: camera_id,
-                session: session_id,
-            })
-            .to_string(),
-        )]);
+        if !matches!(session.status.as_str(), "queued" | "recording") {
+            rows.push(vec![InlineKeyboardButton::callback(
+                t(ctx.lang, "camera.delete"),
+                Payload::Camera(CameraPayload::ConfirmDeleteRecording {
+                    camera: camera_id,
+                    session: session_id,
+                })
+                .to_string(),
+            )]);
+        }
     }
     if ctx.is_admin && (session.status == "recording" || session.status == "queued") {
         rows.push(vec![InlineKeyboardButton::callback(
@@ -1043,28 +1061,26 @@ fn recording_pre_roll_text(
         return String::new();
     }
 
-    if let Some(warning) = session.pre_roll_warning.as_deref() {
-        return format!(
-            "\nPre-roll: частично/недоступен, {}",
-            shorten_recording_error(warning)
-        );
-    }
-
+    let mut text = format!(
+        "\nPre-roll: сохранено {} с из {} с",
+        session.pre_roll_actual_seconds, session.pre_roll_seconds
+    );
     if let Some(from) = session.pre_roll_from {
-        let partial = if session.pre_roll_partial != 0 {
-            ", частично"
-        } else {
-            ""
-        };
-        return format!(
-            "\nPre-roll: {} с с {}{}",
-            session.pre_roll_seconds,
-            crate::bot::format::datetime(from),
-            partial
-        );
+        text.push_str(&format!(" с {}", crate::bot::format::datetime(from)));
     }
-
-    "\nPre-roll: ожидает буфер".to_string()
+    if matches!(session.status.as_str(), "queued" | "recording")
+        && session.pre_roll_attempted_seconds < session.pre_roll_seconds
+    {
+        text.push_str(", подготовка");
+    } else if let Some(warning) = session.pre_roll_warning.as_deref() {
+        text.push_str(&format!(
+            ", частично/недоступен: {}",
+            shorten_recording_error(warning)
+        ));
+    } else if session.pre_roll_partial != 0 {
+        text.push_str(", частично");
+    }
+    text
 }
 
 pub(crate) async fn camera_snapshot_preview(

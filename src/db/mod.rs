@@ -17,11 +17,12 @@ pub(crate) mod personal;
 pub(crate) mod rooms;
 pub(crate) mod schedule_drafts;
 pub(crate) mod settings;
+pub(crate) mod state_alias_contexts;
 pub(crate) mod subscriptions;
 pub(crate) mod ui_confirmations;
 pub(crate) mod ui_drafts;
 pub(crate) mod ui_text_pages;
-mod user;
+pub(crate) mod user;
 pub(crate) mod user_display;
 pub(crate) mod user_notification_schedule;
 

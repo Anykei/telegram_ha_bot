@@ -97,11 +97,13 @@ impl FavoriteAction {
                 if !db::access::can_view_device(ctx.user_id, ctx.is_admin, device, pool).await? {
                     return Ok(None);
                 }
-                let row: Option<(String, String, String)> = sqlx::query_as("SELECT COALESCE(NULLIF(d.alias, ''), NULLIF(d.ha_name, ''), d.entity_id), COALESCE(NULLIF(r.alias, ''), r.area), d.entity_id FROM devices d JOIN rooms r ON r.id = d.room_id WHERE d.id = ? AND d.archived = 0")
+                let row: Option<(String, String, String, i64)> = sqlx::query_as("SELECT COALESCE(NULLIF(d.alias, ''), NULLIF(d.ha_name, ''), d.entity_id), COALESCE(NULLIF(r.alias, ''), r.area), d.entity_id, r.id FROM devices d JOIN rooms r ON r.id = d.room_id WHERE d.id = ? AND d.archived = 0")
                     .bind(device).fetch_optional(pool).await?;
-                let Some((name, room, entity)) = row else {
+                let Some((name, room, entity, room_id)) = row else {
                     return Ok(None);
                 };
+                ctx.track_device(device, &entity);
+                ctx.track_room(room_id);
                 let action = match self {
                     Self::DeviceOn { .. } | Self::DeviceOff { .. } => {
                         if !matches!(entity.split('.').next(), Some("light" | "switch"))
@@ -130,9 +132,13 @@ impl FavoriteAction {
                     .await?
                 {
                     Some(camera) => {
+                        ctx.track_camera(camera.id);
                         let room = db::rooms::get_room_by_id(camera.room_id.unwrap_or(0), pool)
                             .await?
-                            .map(|r| r.display_name().to_owned())
+                            .map(|r| {
+                                ctx.track_room(r.id);
+                                r.display_name().to_owned()
+                            })
                             .unwrap_or_default();
                         let action = if matches!(self, Self::Snapshot { .. }) {
                             words(ctx.lang, "Снимок", "Snapshot")
@@ -147,8 +153,9 @@ impl FavoriteAction {
             Self::GroupOn { id } | Self::GroupOff { id } => {
                 db::action_groups::get_action_group(id, pool)
                     .await?
-                    .filter(|g| ctx.is_admin || g.is_visible_to_all_users())
+                    .filter(|g| ctx.is_admin || (g.is_enabled() && g.is_visible_to_all_users()))
                     .map(|g| {
+                        ctx.track_group(g.id);
                         format!(
                             "{} · {} #{id}",
                             g.name,
@@ -162,8 +169,12 @@ impl FavoriteAction {
             }
             Self::Native { id } => db::action_groups::get_ha_native_target(id, pool)
                 .await?
-                .filter(|g| !g.is_archived() && (ctx.is_admin || g.is_visible_to_all_users()))
+                .filter(|g| {
+                    !g.is_archived()
+                        && (ctx.is_admin || (g.is_enabled() && g.is_visible_to_all_users()))
+                })
                 .map(|g| {
+                    ctx.track_native(g.id, &g.entity_id);
                     format!(
                         "{} · {} #{id}",
                         g.display_name(),
@@ -251,6 +262,7 @@ pub async fn favorite_buttons(
         {
             if let Some(device_row) = db::devices::get_device_by_id(*device, &ctx.config.db).await?
             {
+                ctx.track_device(device_row.id, &device_row.entity_id);
                 device_entities.insert(*device, device_row.entity_id);
             }
         }
@@ -308,7 +320,13 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     }
     let mut notice = None;
     let mut alert = None;
-    match &request {
+    {
+        let _lifecycle = ctx.config.admission_lifecycle.lock().await;
+        anyhow::ensure!(
+            db::user_exists(ctx.user_id, pool).await,
+            "User admission revoked"
+        );
+        match &request {
         PersonalPayload::Language { english } => db::set_user_language(ctx.user_id, if *english { Language::En } else { Language::Ru }, pool).await?,
         PersonalPayload::Quiet { enabled } => db::personal::set_quiet(ctx.user_id, *enabled, pool).await?,
         PersonalPayload::SetSubscription { device, enabled } => {
@@ -324,6 +342,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         PersonalPayload::RemoveFavorite { id, .. } => db::personal::remove_favorite(ctx.user_id, *id, pool).await?,
         PersonalPayload::FirstFavorite { id, .. } => db::personal::move_favorite_first(ctx.user_id, *id, pool).await?,
         _ => {},
+    }
     }
     let request = request.for_refresh();
     let mut ctx = ctx;
@@ -407,6 +426,8 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 )
                 .await?
                 {
+                    ctx.track_device(device.id, &device.entity_id);
+                    ctx.track_room(room.id);
                     devices.push((
                         device.id,
                         format!(
@@ -456,6 +477,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
             let dev = db::devices::get_device_by_id(*device, &ctx.config.db)
                 .await?
                 .context("Device unavailable")?;
+            ctx.track_device(dev.id, &dev.entity_id);
             let subscribed = db::subscriptions::is_subscribed(
                 ctx.user_id as i64,
                 &dev.entity_id,
@@ -632,17 +654,13 @@ pub async fn help(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Result<View> {
-    if !db::access::can_control_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db).await? {
-        return Ok(base(
-            &ctx,
-            words(ctx.lang, "Управление недоступно", "Control unavailable").into(),
-            Payload::Home,
-            vec![],
-        ));
+    if !device_access_is_current(&ctx, device, true).await? {
+        return Ok(unavailable_device(&ctx));
     }
     let dev = db::devices::get_device_by_id(device, &ctx.config.db)
         .await?
         .context("Device unavailable")?;
+    ctx.track_device(dev.id, &dev.entity_id);
     let room = db::devices::get_room_id_by_entity(&dev.entity_id, &ctx.config.db)
         .await?
         .unwrap_or(room);
@@ -654,6 +672,9 @@ pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Re
         .into_iter()
         .next()
         .context("HA unavailable")?;
+    if !device_access_is_current(&ctx, device, true).await? {
+        return Ok(unavailable_device(&ctx));
+    }
     anyhow::ensure!(
         dev.entity_id.starts_with("climate.")
             && entity
@@ -666,7 +687,10 @@ pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Re
         super::screens::control::climate_view::render(ctx.clone(), room, dev, entity).await?;
     let room_name = db::rooms::get_room_by_id(room, &ctx.config.db)
         .await?
-        .map(|r| r.display_name().to_owned())
+        .map(|r| {
+            ctx.track_room(r.id);
+            r.display_name().to_owned()
+        })
         .unwrap_or_default();
     view.text = format!(
         "{room_name}\n{}\n\n{}",
@@ -690,17 +714,13 @@ pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Re
 }
 
 pub async fn device_details(ctx: RenderContext, room: i64, device: i64) -> Result<View> {
-    if !db::access::can_view_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db).await? {
-        return Ok(base(
-            &ctx,
-            words(ctx.lang, "Устройство недоступно", "Device unavailable").into(),
-            Payload::Home,
-            vec![],
-        ));
+    if !device_access_is_current(&ctx, device, false).await? {
+        return Ok(unavailable_device(&ctx));
     }
     let dev = db::devices::get_device_by_id(device, &ctx.config.db)
         .await?
         .context("Device unavailable")?;
+    ctx.track_device(dev.id, &dev.entity_id);
     let room = db::devices::get_room_id_by_entity(&dev.entity_id, &ctx.config.db)
         .await?
         .unwrap_or(room);
@@ -711,6 +731,9 @@ pub async fn device_details(ctx: RenderContext, room: i64, device: i64) -> Resul
         .await
         .ok()
         .and_then(|s| s.into_iter().next());
+    if !device_access_is_current(&ctx, device, false).await? {
+        return Ok(unavailable_device(&ctx));
+    }
     let text = format!(
         "{}\nEntity ID: {}\n{}",
         dev.alias.as_deref().unwrap_or(&dev.entity_id),
@@ -730,6 +753,26 @@ pub async fn device_details(ctx: RenderContext, room: i64, device: i64) -> Resul
             Payload::Control(ControlPayload::DeviceControl { room, device }).to_string(),
         )]],
     ))
+}
+
+async fn device_access_is_current(ctx: &RenderContext, device: i64, control: bool) -> Result<bool> {
+    let access =
+        db::access::get_effective_device_access(ctx.user_id, ctx.is_admin, device, &ctx.config.db)
+            .await?;
+    Ok(access.can_view
+        && (!control || access.can_control)
+        && db::admission_is_current(ctx.user_id, &ctx.admission_generation, &ctx.config.db).await?)
+}
+
+fn unavailable_device(ctx: &RenderContext) -> View {
+    let mut view = base(
+        ctx,
+        words(ctx.lang, "Устройство недоступно", "Device unavailable").into(),
+        Payload::Home,
+        vec![],
+    );
+    view.notifications.clear();
+    view
 }
 
 pub fn parse_temperature(text: &str) -> Result<f32> {
@@ -788,12 +831,16 @@ pub async fn handle_input(
         let queued = if critical {
             None
         } else {
-            match config.climate_controls.enqueue(
-                config.clone(),
-                user,
-                device_id,
-                crate::core::climate_control::TemperatureCommand::Set(value),
-            ) {
+            match config
+                .climate_controls
+                .enqueue(
+                    config.clone(),
+                    user,
+                    device_id,
+                    crate::core::climate_control::TemperatureCommand::Set(value),
+                )
+                .await
+            {
                 Ok(reply) => Some(reply),
                 Err(_) => {
                     bot.send_message(msg.chat.id, t(lang, "climate.busy"))
@@ -803,7 +850,7 @@ pub async fn handle_input(
             }
         };
         let token = config.begin_view_update(user);
-        tokio::spawn(async move {
+        crate::db::user::spawn_with_admission(async move {
             let result: Result<()> = async {
                 let outcome = match queued { Some(reply) => Some(reply.await.context("Climate worker stopped")?), None => None };
                 let payload = if outcome.is_some() {
@@ -847,10 +894,14 @@ pub async fn handle_input(
     if !matches!(state, State::PersonalQuietHours) {
         return Ok(());
     }
-    if db::personal::set_quiet_interval(user, msg.text().unwrap_or(""), &config.db)
-        .await
-        .is_err()
-    {
+    let saved = {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        if !db::user_exists(user, &config.db).await {
+            return Ok(());
+        }
+        db::personal::set_quiet_interval(user, msg.text().unwrap_or(""), &config.db).await
+    };
+    if saved.is_err() {
         bot.send_message(
             msg.chat.id,
             words(

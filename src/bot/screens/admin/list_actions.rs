@@ -4812,6 +4812,19 @@ pub async fn render_user_room_devices(
                 .to_string(),
             ),
         ]);
+        rows.push(vec![InlineKeyboardButton::callback(
+            crate::bot::personal::words(
+                ctx.lang,
+                "↩ Наследовать права комнаты/профиля",
+                "↩ Inherit room/profile access",
+            ),
+            Payload::Admin(AdminPayload::InheritUserDeviceAccess {
+                id: user_id,
+                room: room_id,
+                device: device.id,
+            })
+            .to_string(),
+        )]);
     }
 
     rows.push(vec![crate::bot::screens::common::back_button_lang(
@@ -4963,7 +4976,7 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
     .await?
     .unwrap_or(0);
 
-    let text = format!(
+    let mut text = format!(
         "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных UI-сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}\n\nCamera jobs: live {} / local {} / timeouts {}+{}\nPre-roll: buffers {} / ready {} / packets {} / RAM {}\nRecording: active {} / failed 1h {}\nStorage: {} / quota {} / pinned {}",
         ha_status,
         last_heartbeat,
@@ -4992,6 +5005,57 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         crate::bot::format::quota(quota_mb),
         crate::bot::format::bytes(pinned_size as u64),
     );
+
+    let (pending_files, pending_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM recording_files WHERE delete_pending = 1",
+    ).fetch_one(&ctx.config.db).await?;
+    let schedule_counts: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*) FROM action_schedule_runs GROUP BY status ORDER BY status",
+    )
+    .fetch_all(&ctx.config.db)
+    .await?;
+    let (pipeline_label, pending_label, schedules_label) = match ctx.lang {
+        crate::i18n::Language::Ru => (
+            "Очереди: HA / UI / уведомления",
+            "Ожидают удаления",
+            "Запуски расписаний",
+        ),
+        crate::i18n::Language::En => (
+            "Queues: HA / UI / notifications",
+            "Pending deletion",
+            "Schedule runs",
+        ),
+    };
+    let label = |ru: &'static str, en: &'static str| crate::bot::personal::words(ctx.lang, ru, en);
+    text.push_str(&format!(
+        "\n{}: {} / 2",
+        label("Сохранение архивного pre-roll", "Archive pre-roll writes"),
+        camera_jobs.active_archive_pre_roll_jobs,
+    ));
+    text.push_str(&format!(
+        "\n{}: {} / {}; {}: {}; {}: {}\n{}: {} / {} / {}\n{}: {}; {}: {}\n{}: {}; {}: {}; {}: {}\n{}: {}\n{}: {} ({})\n{}: {}",
+        label("Захваты архива", "Archive capture"), camera_jobs.active_recording_jobs, camera_jobs.recording_job_limit,
+        label("Потоки медиа", "Native media threads"), camera_jobs.active_native_threads,
+        label("Ошибки медиа", "Media failures"), camera_jobs.failed_native_jobs,
+        pipeline_label, runtime_status.ha_events_queued, runtime_status.ui_refresh_queued, runtime_status.notifications_queued,
+        label("Обработано HA", "HA processed"), runtime_status.ha_events_processed,
+        label("Ошибки правил", "Rule failures"), runtime_status.ha_rule_failures,
+        label("Уведомления в работе", "Active notifications"), runtime_status.notifications_active,
+        label("Ошибки доставки", "Delivery failures"), runtime_status.notifications_failed,
+        label("Переполнение уведомлений", "Notification overflow"), runtime_status.notification_overflow,
+        label("Переполнение UI", "UI overflow"), runtime_status.ui_refresh_overflow,
+        pending_label, pending_files, crate::bot::format::bytes(pending_bytes as u64),
+        schedules_label, schedule_counts.iter().map(|(status,count)| format!("{status} {count}")).collect::<Vec<_>>().join(", "),
+    ));
+
+    text.push_str(&format!(
+        "\n{}: {} / {}; {}: {}",
+        label("Очередь записи", "Recording queue"),
+        ctx.config.camera_recording_tx.max_capacity() - ctx.config.camera_recording_tx.capacity(),
+        ctx.config.camera_recording_tx.max_capacity(),
+        label("Переполнение", "Overflow"),
+        crate::core::camera_recording_matcher::recording_queue_overflow(),
+    ));
 
     let kb = InlineKeyboardMarkup::new(vec![
         vec![

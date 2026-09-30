@@ -28,6 +28,7 @@ pub async fn render_page(
         .await?
         .context("Room not found")?;
 
+    ctx.track_room(room.id);
     let room_display = room.display_name();
 
     if mode == RoomViewMode::Control {
@@ -45,6 +46,11 @@ pub async fn render_page(
         RoomViewMode::Settings => "⚙️ Настройки",
     };
 
+    // Keep the original contributors: a fresh ACL-filtered query at delivery
+    // would omit revoked devices while their old values remain in the keyboard.
+    for device in &db_devices {
+        ctx.track_device(device.id, &device.entity_id);
+    }
     let entity_ids: Vec<String> = db_devices.iter().map(|d| d.entity_id.clone()).collect();
     let ha_result = ctx.config.ha_client.fetch_states_by_ids(&entity_ids).await;
     let failed = ha_result.is_err();

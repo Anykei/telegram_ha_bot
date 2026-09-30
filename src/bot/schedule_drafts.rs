@@ -267,12 +267,18 @@ async fn review(ctx: RenderContext, id: i64, input: bool) -> Result<View> {
     let title = match data.target {
         ActionTargetRef::BotGroup(id) => db::action_groups::get_action_group(id, &ctx.config.db)
             .await?
-            .map(|t| t.name),
+            .map(|t| {
+                ctx.track_group(t.id);
+                t.name
+            }),
         ActionTargetRef::HaNative(id) => {
             db::action_groups::get_ha_native_target(id, &ctx.config.db)
                 .await?
                 .filter(|t| !t.is_archived())
-                .map(|t| t.display_name().to_owned())
+                .map(|t| {
+                    ctx.track_native(t.id, &t.entity_id);
+                    t.display_name().to_owned()
+                })
         }
     }
     .unwrap_or_else(|| {
@@ -485,7 +491,11 @@ pub async fn handle_time(
             }
         };
         let ctx = RenderContext {
+            displayed_resources: Default::default(),
             user_id: user,
+            admission_generation: db::user::admission_generation(user, &config.db)
+                .await?
+                .context("User admission revoked")?,
             is_admin: true,
             config: config.clone(),
             notifications: vec![],

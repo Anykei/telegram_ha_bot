@@ -8,6 +8,10 @@ use teloxide::types::InlineKeyboardMarkup;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct View {
+    #[serde(default)]
+    pub displayed_resources: Vec<crate::core::types::DisplaySource>,
+    #[serde(default)]
+    pub admission_generation: Option<String>,
     pub header: Option<String>,
     pub notifications: Vec<HeaderItem>,
     pub text: String,
@@ -241,12 +245,16 @@ mod tests {
         };
         view.notifications = vec![
             HeaderItem {
+                source: None,
+                additional_sources: Vec::new(),
                 icon: "✅".into(),
                 label: t(Language::Ru, "system.label").into(),
                 value: t(Language::Ru, "system.ok").into(),
                 last_update: chrono::Utc::now(),
             },
             HeaderItem {
+                source: None,
+                additional_sources: Vec::new(),
                 icon: "🔴".into(),
                 label: "Дверь".into(),
                 value: "Открыто (2)".into(),

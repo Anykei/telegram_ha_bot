@@ -28,8 +28,12 @@ mod core;
 mod db;
 mod ha;
 mod i18n;
+#[cfg(test)]
+mod migration_tests;
 mod models;
 mod options;
+#[cfg(test)]
+mod test_support;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(12);
@@ -70,6 +74,9 @@ async fn main() -> Result<()> {
     )
     .await
     .context("Error initializing database pool.")?;
+    db::add_user(options.root_user, &db_pool)
+        .await
+        .context("Error initializing root admission")?;
 
     let ha_client: Arc<dyn ha::HomeAssistantClient> =
         Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
@@ -111,6 +118,9 @@ async fn main() -> Result<()> {
         voice_response_format: options.voice_response_format,
 
         sessions: DashMap::new(),
+        admission_lifecycle: tokio::sync::Mutex::new(()),
+        dialogue_generations: DashMap::new(),
+        active_dialogues: DashMap::new(),
         ui_locks: DashMap::new(),
         view_updates: DashMap::new(),
         climate_controls: Default::default(),
@@ -123,6 +133,7 @@ async fn main() -> Result<()> {
         camera_snapshot_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         camera_pre_roll_registry: Arc::new(core::camera_pre_roll::CameraPreRollRegistry::new()),
         runtime_status: tokio::sync::RwLock::new(RuntimeStatus::default()),
+        notification_delivery: Default::default(),
     });
 
     info!("Load Backup sessions from database...");
@@ -164,6 +175,15 @@ async fn main() -> Result<()> {
         app_config.state_aliases.insert(eid, state_map);
     }
 
+    let recording_storage_ready =
+        match core::camera_recording::initialize_recording_storage(&app_config).await {
+            Ok(()) => true,
+            Err(error) => {
+                error!("operation=recording stage=startup result=disabled reason={error}");
+                false
+            }
+        };
+
     let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
     let event_listener_handle = ha::spawn_event_listener(
         paths.ha_url.clone(),
@@ -183,18 +203,28 @@ async fn main() -> Result<()> {
         (dispatcher, bot)
     };
 
+    let notification_delivery_handle = core::notification_delivery::spawn_worker(
+        _bot.clone(),
+        app_config.clone(),
+        cancel_token.clone(),
+    );
     let notification_handle = core::spawn_notification_processor(
         rx,
         _bot.clone(),
         app_config.clone(),
         cancel_token.clone(),
     );
-    let recording_handle = core::camera_recording::spawn_recording_worker(
-        recording_rx,
-        _bot.clone(),
-        app_config.clone(),
-        cancel_token.clone(),
-    );
+    let recording_handle = if recording_storage_ready {
+        core::camera_recording::spawn_recording_worker(
+            recording_rx,
+            _bot.clone(),
+            app_config.clone(),
+            cancel_token.clone(),
+        )
+    } else {
+        drop(recording_rx);
+        tokio::spawn(async {})
+    };
     let camera_pre_roll_handle = core::camera_pre_roll::spawn_camera_pre_roll_worker(
         app_config.clone(),
         cancel_token.clone(),
@@ -210,7 +240,8 @@ async fn main() -> Result<()> {
     );
     let maintenance_handle =
         core::spawn_background_maintenance(_bot.clone(), app_config.clone(), cancel_token.clone());
-    spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
+    let shutdown_signal_handle =
+        spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
 
     let update_listener = Polling::builder(_bot.clone())
         .timeout(Duration::from_secs(30))
@@ -228,18 +259,63 @@ async fn main() -> Result<()> {
     }
 
     info!("Graceful Shutdown...");
+    if app_config
+        .runtime_status
+        .read()
+        .await
+        .shutdown_requested_at
+        .is_none()
+    {
+        mark_shutdown_status(&app_config, "dispatcher stopped").await;
+    }
     cancel_token.cancel();
+    core::cameras::cancel_native_jobs();
 
-    wait_for_background_tasks(vec![
+    let shutdown_started = tokio::time::Instant::now();
+    let climate_config = app_config.clone();
+    let climate_shutdown = tokio::spawn(async move {
+        if let Err(error) = climate_config.climate_controls.shutdown().await {
+            error!("operation=climate stage=shutdown result=failed reason={error}");
+        }
+    });
+    let admission_shutdown = tokio::spawn(async {
+        // If the outer 12-second waiter aborts this task, cancel the remaining
+        // UI/media sends; their guards and native owners are joined below.
+        struct AbortOnDrop;
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                db::abort_admission_tasks();
+            }
+        }
+        let _abort = AbortOnDrop;
+        db::wait_admission_tasks().await;
+    });
+    let handles = vec![
         ("ha_event_listener", event_listener_handle),
         ("notification_processor", notification_handle),
+        ("notification_delivery", notification_delivery_handle),
         ("camera_recording_worker", recording_handle),
         ("camera_pre_roll_worker", camera_pre_roll_handle),
         ("action_schedule_worker", action_schedule_handle),
         ("camera_health_worker", camera_health_handle),
         ("background_maintenance", maintenance_handle),
-    ])
-    .await;
+        ("shutdown_signal", shutdown_signal_handle),
+        ("climate_controls", climate_shutdown),
+        ("admission_tasks", admission_shutdown),
+    ];
+    let deadline =
+        shutdown_started + BACKGROUND_TASK_SHUTDOWN_TIMEOUT + BACKGROUND_TASK_ABORT_TIMEOUT;
+    let shutdown = async {
+        wait_for_background_tasks(handles).await;
+        db::wait_admission_tasks().await;
+        core::cameras::wait_native_jobs().await;
+    };
+    if tokio::time::timeout_at(deadline, shutdown).await.is_err() {
+        error!("operation=shutdown result=emergency_exit reason=workers_or_native_io_exceeded_15s");
+        // A non-interruptible native call cannot safely be killed as a thread.
+        // Leave durable ownership records for startup recovery; do not claim a clean DB close.
+        std::process::exit(1);
+    }
 
     app_config.db.close().await;
 
@@ -296,22 +372,28 @@ fn spawn_shutdown_signal_handler(
     cancel_token: CancellationToken,
     bot: teloxide::Bot,
     config: Arc<AppConfig>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let reason = wait_for_shutdown_signal().await;
+        let reason = tokio::select! {
+            reason = wait_for_shutdown_signal() => reason,
+            _ = cancel_token.cancelled() => return,
+        };
         info!("Received {}, preparing graceful shutdown", reason);
 
         mark_shutdown_status(&config, reason).await;
-        refresh_shutdown_status_headers(&bot, &config).await;
-
         cancel_token.cancel();
-    });
+        core::cameras::cancel_native_jobs();
+        refresh_shutdown_status_headers(&bot, &config).await;
+    })
 }
 
 async fn mark_shutdown_status(config: &Arc<AppConfig>, reason: &str) {
     let mut status = config.runtime_status.write().await;
     status.shutdown_requested_at = Some(Utc::now());
     status.shutdown_reason = Some(reason.to_string());
+    drop(status);
+    config.climate_controls.stop_accepting();
+    db::stop_admission_tasks();
 }
 
 async fn refresh_shutdown_status_headers(bot: &teloxide::Bot, config: &Arc<AppConfig>) {

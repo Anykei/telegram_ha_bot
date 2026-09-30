@@ -16,7 +16,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 
 #[derive(Clone)]
 pub struct RenderContext {
+    pub displayed_resources:
+        Arc<std::sync::Mutex<std::collections::BTreeSet<crate::core::types::DisplaySource>>>,
     pub user_id: u64,
+    pub admission_generation: String,
     pub config: Arc<AppConfig>,
     pub notifications: Vec<HeaderItem>,
     pub is_admin: bool,
@@ -124,6 +127,11 @@ pub enum State {
     },
     EditUserAlias {
         user_id: u64,
+    },
+    WaitingForNameDraft {
+        device_id: i64,
+        room_id: i64,
+        draft_id: i64,
     },
 }
 
@@ -446,6 +454,16 @@ pub enum SettingsPayload {
     RoomPage {
         room: i64,
         page: u16,
+    },
+    StateAliasEditContext {
+        room: i64,
+        device: i64,
+        context: i64,
+    },
+    StateAliasResetContext {
+        room: i64,
+        device: i64,
+        context: i64,
     },
 }
 
@@ -996,6 +1014,11 @@ pub enum AdminPayload {
         day: u8,
     },
     WizardTogglePreRoll,
+    InheritUserDeviceAccess {
+        id: u64,
+        room: i64,
+        device: i64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -1024,7 +1047,8 @@ impl SettingsPayload {
                 room: *room,
                 device: *device,
             },
-            Self::ResetStateAlias { room, device, .. } => Self::StateAliases {
+            Self::ResetStateAlias { room, device, .. }
+            | Self::StateAliasResetContext { room, device, .. } => Self::StateAliases {
                 room: *room,
                 device: *device,
             },
@@ -1034,6 +1058,57 @@ impl SettingsPayload {
 }
 
 impl RenderContext {
+    pub fn track_source(&self, source: crate::core::types::DisplaySource) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source);
+    }
+
+    pub fn track_device(&self, id: i64, entity_id: &str) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::core::types::DisplaySource::Device {
+                id,
+                entity_id: entity_id.to_owned(),
+            });
+    }
+
+    pub fn track_camera(&self, id: i64) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::core::types::DisplaySource::Camera { id });
+    }
+
+    pub fn track_room(&self, id: i64) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::core::types::DisplaySource::Room { id });
+    }
+
+    pub fn track_group(&self, id: i64) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::core::types::DisplaySource::ActionGroup { id });
+    }
+
+    pub fn track_recording_group(&self, id: i64) {
+        self.track_source(crate::core::types::DisplaySource::RecordingGroup { id });
+    }
+
+    pub fn track_native(&self, id: i64, entity_id: &str) {
+        self.displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::core::types::DisplaySource::HaNative {
+                id,
+                entity_id: entity_id.to_owned(),
+            });
+    }
     pub fn settings_payload(&self, payload: SettingsPayload) -> Payload {
         match self.settings_origin {
             SettingsOrigin::Home => Payload::Settings(payload),
@@ -1066,6 +1141,7 @@ fn legacy_admin_mutation(payload: &AdminPayload) -> bool {
             | AdminPayload::ResetUserAccess { .. }
             | AdminPayload::ToggleUserRoomAccess { .. }
             | AdminPayload::ToggleUserDeviceAccess { .. }
+            | AdminPayload::InheritUserDeviceAccess { .. }
             | AdminPayload::ToggleUserDeviceNotify { .. }
             | AdminPayload::DeleteUser { .. }
             | AdminPayload::ToggleRecordingRuleDetail { .. }
@@ -1318,8 +1394,16 @@ pub async fn router(
     user_id: u64,
     config: Arc<AppConfig>,
 ) -> anyhow::Result<View> {
+    if user_id == config.root_user {
+        db::add_user(user_id, &config.db).await?;
+    }
+    let generation = db::user::admission_generation(user_id, &config.db)
+        .await?
+        .context("User admission revoked")?;
     if let Payload::TextPage { screen, page } = payload {
-        return super::text_pages::render(screen, page, user_id, config).await;
+        let mut view = super::text_pages::render(screen, page, user_id, config).await?;
+        view.admission_generation = Some(generation);
+        return Ok(view);
     }
     let notifications = config.get_header_data(user_id).await;
     // let notifications = super::view::format_header(header_data);
@@ -1336,14 +1420,18 @@ pub async fn router(
         payload.to_string()
     );
 
+    let displayed_resources = Default::default();
     let ctx = RenderContext {
+        displayed_resources,
         user_id,
+        admission_generation: generation.clone(),
         config: config.clone(),
         notifications,
         is_admin,
         lang,
         settings_origin: SettingsOrigin::Home,
     };
+    let displayed_resources = ctx.displayed_resources.clone();
 
     if let Payload::Control(ControlPayload::QuickAction { room, device, cmd }) = &payload {
         if !can_run_device_action(&ctx, *device, cmd).await? {
@@ -1405,6 +1493,14 @@ pub async fn router(
             }
         },
     };
+    view.displayed_resources.extend(
+        displayed_resources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned(),
+    );
+    view.admission_generation = Some(generation);
     view.compact |= compact;
     let final_lang = db::get_user_language(user_id, &config.db)
         .await
@@ -1550,7 +1646,19 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
                 ctx.user_id,
                 error
             );
-            Ok(control_error_view(ctx, recovery, action_failed))
+            let lang = ctx.lang;
+            let mut view = control_error_view(ctx, recovery, action_failed);
+            if error.is::<crate::core::devices::CriticalConsentRequired>() {
+                view.alert = Some(
+                    super::personal::words(
+                        lang,
+                        "Команда не отправлена: устройство стало критическим. Откройте действие заново и подтвердите его.",
+                        "Command not sent: the device became critical. Reopen the action and confirm it.",
+                    )
+                    .into(),
+                );
+            }
+            Ok(view)
         }
     }
 }
@@ -1757,7 +1865,8 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                 let result = ctx
                     .config
                     .climate_controls
-                    .enqueue(ctx.config.clone(), ctx.user_id, device, command)?
+                    .enqueue(ctx.config.clone(), ctx.user_id, device, command)
+                    .await?
                     .await
                     .context("Climate command worker stopped")??;
                 let lang = ctx.lang;
@@ -1776,7 +1885,15 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
 
             let action = devices::DeviceAction::from(cmd.clone());
 
-            let result = devices::handle_device_interaction(&ctx.config, device, action).await?;
+            let result = devices::handle_device_interaction(
+                &ctx.config,
+                ctx.user_id,
+                &ctx.admission_generation,
+                device,
+                action,
+                None,
+            )
+            .await?;
 
             match result {
                 InteractionResult::Processed => {
@@ -1854,6 +1971,7 @@ pub(super) fn action_requires_control(cmd: &DeviceCmd) -> bool {
 
 fn access_denied_view(ctx: RenderContext, back_payload: Payload) -> View {
     View {
+        admission_generation: Some(ctx.admission_generation),
         notifications: ctx.notifications,
         text: t(ctx.lang, "access.denied.text").to_string(),
         alert: Some(t(ctx.lang, "access.denied.alert").to_string()),
@@ -1980,9 +2098,24 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
                     Payload::Camera(CameraPayload::RecordingGroupModes),
                 ));
             }
-            let enabled =
-                db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
-                    .await?;
+            let enabled = match db::camera_recording_rule_groups::toggle_group_enabled(
+                group,
+                ctx.user_id,
+                ctx.config.root_user,
+                &ctx.admission_generation,
+                &ctx.config.db,
+            )
+            .await
+            {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    log::warn!("operation=recording_group_toggle owner={} object={} stage=commit result=denied reason={}", ctx.user_id, group, error);
+                    return Ok(access_denied_view(
+                        ctx,
+                        Payload::Camera(CameraPayload::RecordingGroupModes),
+                    ));
+                }
+            };
             log_rule_group_activity(
                 &ctx,
                 group,
@@ -2084,11 +2217,30 @@ async fn router_camera(ctx: RenderContext, payload: CameraPayload) -> anyhow::Re
                 ));
             }
 
-            crate::core::camera_recording::delete_recording_session_files(&ctx.config, session)
-                .await?;
+            if matches!(recording_session.status.as_str(), "queued" | "recording") {
+                let lang = ctx.lang;
+                let mut view =
+                    super::screens::cameras::render_recording_session(ctx, camera, session).await?;
+                view.alert = Some(
+                    super::personal::words(
+                        lang,
+                        "Сначала остановите запись и дождитесь завершения",
+                        "Stop recording and wait for completion first",
+                    )
+                    .into(),
+                );
+                return Ok(view);
+            }
+            let deleted =
+                crate::core::camera_recording::delete_recording_session_files(&ctx.config, session)
+                    .await?;
             let lang = ctx.lang;
             let mut view = super::screens::cameras::render_recording_archive(ctx, camera).await?;
-            view.notice = Some(t(lang, "camera.recording.deleted_notice").to_string());
+            view.notice = Some(if deleted {
+                t(lang, "camera.recording.deleted_notice").to_string()
+            } else {
+                super::personal::words(lang, "Удаление запрошено", "Deletion requested").into()
+            });
             Ok(view)
         }
         CameraPayload::ToggleRecordingPin { camera, session } => {
@@ -2133,6 +2285,45 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
         return Ok(access_denied_view(ctx, Payload::Home));
     }
 
+    let payload = match payload {
+        SettingsPayload::StateAliasEditContext {
+            room,
+            device,
+            context,
+        }
+        | SettingsPayload::StateAliasResetContext {
+            room,
+            device,
+            context,
+        } => {
+            let Some(saved) =
+                db::state_alias_contexts::load(context, ctx.user_id, device, &ctx.config.db)
+                    .await?
+            else {
+                let back = ctx.settings_payload(SettingsPayload::StateAliases { room, device });
+                let mut view = access_denied_view(ctx, back);
+                view.alert = Some(
+                    "Форма устарела. Откройте настройки состояния снова. / Reopen state settings."
+                        .into(),
+                );
+                return Ok(view);
+            };
+            if matches!(payload, SettingsPayload::StateAliasEditContext { .. }) {
+                SettingsPayload::EditStateAlias {
+                    room,
+                    device,
+                    state: saved.state,
+                }
+            } else {
+                SettingsPayload::ResetStateAlias {
+                    room,
+                    device,
+                    state: saved.state,
+                }
+            }
+        }
+        other => other,
+    };
     match payload {
         SettingsPayload::RoomsPage { page } => {
             super::screens::rooms::render_page(ctx, RoomViewMode::Settings, Some(page)).await
@@ -2164,6 +2355,53 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             }
 
             Ok(super::screens::settings::device_settings::render(ctx, room, device).await?)
+        }
+        SettingsPayload::EditName { room, device } => {
+            let dev = db::devices::get_device_by_id(device, &ctx.config.db)
+                .await?
+                .context("Device not found")?;
+            let active: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ? AND archived = 0)",
+            )
+            .bind(device)
+            .fetch_one(&ctx.config.db)
+            .await?;
+            if !active {
+                return Ok(access_denied_view(ctx, Payload::Home));
+            }
+            let current = ctx.settings_payload(SettingsPayload::EditName { room, device });
+            let back = ctx.settings_payload(SettingsPayload::DeviceDetail { room, device });
+            let title = super::personal::words(ctx.lang, "Имя устройства", "Device name");
+            let prompt = format!(
+                "{}: {}\n{}",
+                super::personal::words(ctx.lang, "Текущее имя", "Current name"),
+                dev.alias.as_deref().unwrap_or(&dev.entity_id),
+                super::personal::words(
+                    ctx.lang,
+                    "Введите имя: 1–128 символов, одна строка.",
+                    "Enter a name: 1–128 characters, one line."
+                )
+            );
+            let draft = db::ui_drafts::create(
+                ctx.user_id,
+                "device_name",
+                &device.to_string(),
+                ctx.config.session_ttl_hours,
+                &ctx.config.db,
+            )
+            .await?;
+            Ok(super::screens::admin::list_actions::render_user_input(
+                ctx,
+                State::WaitingForNameDraft {
+                    device_id: device,
+                    room_id: room,
+                    draft_id: draft.id,
+                },
+                title,
+                &prompt,
+                current,
+                back,
+            ))
         }
         SettingsPayload::ToggleNotify { room, device } => {
             if !db::access::can_notify_entity_for_device_id(
@@ -2227,10 +2465,21 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
                 .context("Device not found")?;
             let current_alias =
                 db::devices::get_state_alias(&dev.entity_id, &state, &ctx.config.db).await?;
-            let current_payload = ctx.settings_payload(SettingsPayload::EditStateAlias {
+            let context = db::state_alias_contexts::register(
+                ctx.user_id,
+                &db::state_alias_contexts::StateAliasContext {
+                    device_id: device,
+                    entity_id: dev.entity_id.clone(),
+                    state: state.clone(),
+                    admission_generation: ctx.admission_generation.clone(),
+                },
+                &ctx.config.db,
+            )
+            .await?;
+            let current_payload = ctx.settings_payload(SettingsPayload::StateAliasEditContext {
                 room,
                 device,
-                state: state.clone(),
+                context,
             });
             let back_payload = ctx.settings_payload(SettingsPayload::StateAliases { room, device });
             Ok(super::screens::admin::list_actions::render_user_input(
@@ -2272,6 +2521,10 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
             view.notice = Some("Алиас состояния сброшен".to_string());
             Ok(view)
         }
+        SettingsPayload::StateAliasEditContext { .. }
+        | SettingsPayload::StateAliasResetContext { .. } => {
+            unreachable!("state alias context resolved above")
+        }
         SettingsPayload::ToggleStateInversion { room, device } => {
             if !ctx.is_admin {
                 let back = ctx.settings_payload(SettingsPayload::RoomDetail { room });
@@ -2304,10 +2557,6 @@ async fn router_settings(ctx: RenderContext, payload: SettingsPayload) -> anyhow
                 "Критичность устройства снята".to_string()
             });
             Ok(view)
-        }
-        _ => {
-            let back = ctx.settings_payload(SettingsPayload::ListRooms {});
-            Ok(super::screens::common::in_dev_menu(ctx, back).await?)
         }
     }
 }
@@ -3708,7 +3957,9 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
         ),
         AdminPayload::ToggleRecordingRuleGroup { group } => {
             let lang = ctx.lang;
-            match db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+            match db::camera_recording_rule_groups::toggle_group_enabled(
+                    group, ctx.user_id, ctx.config.root_user, &ctx.admission_generation, &ctx.config.db,
+                )
                 .await
             {
                 Ok(enabled) => {
@@ -3742,7 +3993,9 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
         }
         AdminPayload::ToggleRecordingRuleGroupForRoom { room, group } => {
             let lang = ctx.lang;
-            match db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+            match db::camera_recording_rule_groups::toggle_group_enabled(
+                    group, ctx.user_id, ctx.config.root_user, &ctx.admission_generation, &ctx.config.db,
+                )
                 .await
             {
                 Ok(enabled) => {
@@ -3777,7 +4030,9 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
         AdminPayload::ToggleRecordingRuleGroupDetail { group } => {
             let lang = ctx.lang;
             let enabled =
-                db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+                db::camera_recording_rule_groups::toggle_group_enabled(
+                    group, ctx.user_id, ctx.config.root_user, &ctx.admission_generation, &ctx.config.db,
+                )
                     .await?;
             log_rule_group_activity(
                 &ctx,
@@ -3801,7 +4056,9 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
         AdminPayload::ToggleRecordingRuleGroupDetailForRoom { room, group } => {
             let lang = ctx.lang;
             let enabled =
-                db::camera_recording_rule_groups::toggle_group_enabled(group, &ctx.config.db)
+                db::camera_recording_rule_groups::toggle_group_enabled(
+                    group, ctx.user_id, ctx.config.root_user, &ctx.admission_generation, &ctx.config.db,
+                )
                     .await?;
             log_rule_group_activity(
                 &ctx,
@@ -4306,6 +4563,13 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
                     .await?,
             )
         }
+        AdminPayload::InheritUserDeviceAccess { id, room, device } => {
+            if id != ctx.config.root_user {
+                let dev = db::devices::get_device_by_id(device, &ctx.config.db).await?.context("Device not found")?;
+                db::access::inherit_device_access(id, &dev.entity_id, &ctx.config.db).await?;
+            }
+            super::screens::admin::list_actions::render_user_room_devices(ctx, id, room).await
+        }
         AdminPayload::ToggleUserDeviceNotify { id, room, device } => {
             if id != ctx.config.root_user {
                 let dev = db::devices::get_device_by_id(device, &ctx.config.db)
@@ -4334,9 +4598,15 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
                 view.alert = Some("Root пользователя нельзя удалить".to_string());
                 view
             } else {
-                crate::db::delete_user(id, &ctx.config.db).await?;
-                ctx.config.sessions.remove(&id);
-                ctx.config.ui_locks.remove(&id);
+                {
+                    let _lifecycle = ctx.config.admission_lifecycle.lock().await;
+                    crate::db::delete_user(id, &ctx.config.db).await?;
+                    ctx.config.cancel_view_update(id);
+                    ctx.config.sessions.remove(&id);
+                    ctx.config.dialogue_generations.remove(&id);
+                    if let Some((_, dialogue)) = ctx.config.active_dialogues.remove(&id) { let _ = dialogue.exit().await; }
+                    // Keep the existing lock: in-flight jobs may still own its Arc.
+                }
                 let mut view = super::screens::admin::list_actions::render_users(ctx).await?;
                 view.notice = Some(format!("Пользователь {} удален", id));
                 view
@@ -4751,7 +5021,7 @@ fn update_wizard_compat_selection(
 
 #[cfg(test)]
 #[path = "control_tests.rs"]
-mod control_tests;
+pub(crate) mod control_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5170,6 +5440,16 @@ mod tests {
             },
             SettingsPayload::ToggleStateInversion { room: 1, device: 2 },
             SettingsPayload::ToggleCritical { room: 1, device: 2 },
+            SettingsPayload::StateAliasEditContext {
+                room: i64::MAX,
+                device: i64::MAX,
+                context: i64::MAX,
+            },
+            SettingsPayload::StateAliasResetContext {
+                room: i64::MAX,
+                device: i64::MAX,
+                context: i64::MAX,
+            },
         ]
     }
 
@@ -5710,6 +5990,12 @@ mod tests {
             SettingsPayload::EditName { .. } => "SettingsPayload::EditName",
             SettingsPayload::StateAliases { .. } => "SettingsPayload::StateAliases",
             SettingsPayload::EditStateAlias { .. } => "SettingsPayload::EditStateAlias",
+            SettingsPayload::StateAliasEditContext { .. } => {
+                "SettingsPayload::StateAliasEditContext"
+            }
+            SettingsPayload::StateAliasResetContext { .. } => {
+                "SettingsPayload::StateAliasResetContext"
+            }
             SettingsPayload::ResetStateAlias { .. } => "SettingsPayload::ResetStateAlias",
             SettingsPayload::ToggleStateInversion { .. } => "SettingsPayload::ToggleStateInversion",
             SettingsPayload::ToggleCritical { .. } => "SettingsPayload::ToggleCritical",
@@ -5800,6 +6086,7 @@ mod tests {
             AdminPayload::ToggleUserRoomAccess { .. } => "AdminPayload::ToggleUserRoomAccess",
             AdminPayload::UserRoomDevices { .. } => "AdminPayload::UserRoomDevices",
             AdminPayload::ToggleUserDeviceAccess { .. } => "AdminPayload::ToggleUserDeviceAccess",
+            AdminPayload::InheritUserDeviceAccess { .. } => "AdminPayload::InheritUserDeviceAccess",
             AdminPayload::ToggleUserDeviceNotify { .. } => "AdminPayload::ToggleUserDeviceNotify",
             AdminPayload::ConfirmDeleteUser { .. } => "AdminPayload::ConfirmDeleteUser",
             AdminPayload::DeleteUser { .. } => "AdminPayload::DeleteUser",
@@ -6105,6 +6392,9 @@ mod tests {
             voice_response_format: crate::options::VoiceResponseFormat::Text,
 
             sessions: DashMap::new(),
+            admission_lifecycle: tokio::sync::Mutex::new(()),
+            dialogue_generations: DashMap::new(),
+            active_dialogues: DashMap::new(),
             ui_locks: DashMap::new(),
             view_updates: DashMap::new(),
             climate_controls: Default::default(),
@@ -6119,6 +6409,7 @@ mod tests {
                 crate::core::camera_pre_roll::CameraPreRollRegistry::new(),
             ),
             runtime_status: tokio::sync::RwLock::new(crate::models::RuntimeStatus::default()),
+            notification_delivery: Default::default(),
         });
 
         let user_id = 219791289;

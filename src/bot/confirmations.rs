@@ -28,6 +28,12 @@ enum Action {
 #[derive(Serialize, Deserialize)]
 struct Proposal {
     action: Action,
+    #[serde(default)]
+    critical_targets: Vec<i64>,
+    #[serde(default)]
+    displayed_devices: Vec<(i64, String)>,
+    #[serde(default)]
+    displayed_rooms: Vec<i64>,
     description: String,
     back: Payload,
 }
@@ -57,6 +63,7 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
             let dev = db::devices::get_device_by_id(*device, &ctx.config.db)
                 .await?
                 .context("Device missing")?;
+            ctx.track_device(dev.id, &dev.entity_id);
             let entity = ctx
                 .config
                 .ha_client
@@ -142,6 +149,7 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
                 .unwrap_or(*room);
             let room = &actual_room;
             let room_row = db::rooms::get_room_by_id(*room, &ctx.config.db).await?;
+            ctx.track_room(*room);
             let devices = db::devices::get_devices_by_room_for_user(
                 ctx.user_id,
                 ctx.is_admin,
@@ -159,6 +167,9 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
                 .iter()
                 .map(|d| d.entity_id.clone())
                 .collect::<Vec<_>>();
+            for device in &visible {
+                ctx.track_device(device.id, &device.entity_id);
+            }
             let states = ctx.config.ha_client.fetch_states_by_ids(&ids).await?;
             let names = super::screens::control::labels::room_names(&visible, &states, ctx.lang);
             let name = names.get(device).cloned().unwrap_or_else(|| {
@@ -168,6 +179,13 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
                 .map(|r| r.display_name().to_string())
                 .unwrap_or_default();
             Proposal {
+                critical_targets: vec![*device],
+                displayed_rooms: vec![*room],
+                displayed_devices: visible
+                    .iter()
+                    .map(|item| (item.id, item.entity_id.clone()))
+                    .chain(std::iter::once((*device, dev.entity_id.clone())))
+                    .collect(),
                 action: Action::Device {
                     device: *device,
                     entity_id: dev.entity_id.clone(),
@@ -193,49 +211,42 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
             let group_row = db::action_groups::get_action_group(*group, &ctx.config.db)
                 .await?
                 .context("Group missing")?;
+            ctx.track_group(group_row.id);
             ensure!(
                 group_row.is_enabled() && (ctx.is_admin || group_row.is_visible_to_all_users()),
                 "Group unavailable"
             );
             let mut targets = Vec::new();
-            let mut critical = false;
+            let mut critical_targets = Vec::new();
             let mut critical_names = Vec::new();
-            for item in db::action_groups::list_action_group_items(*group, &ctx.config.db).await? {
-                if item.is_archived() || !matches!(item.device_domain.as_str(), "light" | "switch")
-                {
-                    continue;
+            let contributors = crate::core::action_groups::group_state_targets(
+                *group,
+                ctx.user_id,
+                ctx.is_admin,
+                &ctx.config,
+            )
+            .await?;
+            for item in &contributors {
+                ctx.track_device(item.device_id, &item.entity_id);
+                let is_critical =
+                    db::devices::is_device_critical(&item.entity_id, &ctx.config.db).await?;
+                if is_critical {
+                    critical_targets.push(item.device_id);
+                    let device = db::devices::get_device_by_id(item.device_id, &ctx.config.db)
+                        .await?
+                        .context("Device missing")?;
+                    ctx.track_device(device.id, &device.entity_id);
+                    critical_names.push(device.alias.unwrap_or(device.entity_id));
                 }
-                if db::access::can_control_device(
-                    ctx.user_id,
-                    ctx.is_admin,
-                    item.device_id,
-                    &ctx.config.db,
-                )
-                .await?
-                {
-                    let is_critical =
-                        db::devices::is_device_critical(&item.entity_id, &ctx.config.db).await?;
-                    critical |= is_critical;
-                    if is_critical {
-                        let device = db::devices::get_device_by_id(item.device_id, &ctx.config.db)
-                            .await?
-                            .context("Device missing")?;
-                        critical_names.push(device.alias.unwrap_or(device.entity_id));
-                    }
-                    targets.push(item.device_id);
-                }
+                targets.push(item.device_id);
             }
-            auto_execute = !critical;
+            auto_execute = critical_targets.is_empty();
             targets.sort_unstable();
+            critical_targets.sort_unstable();
             let command = if *command == ActionGroupCommand::Toggle {
-                crate::core::action_groups::aggregate_group_state(
-                    *group,
-                    ctx.user_id,
-                    ctx.is_admin,
-                    &ctx.config,
-                )
-                .await?
-                .dynamic_command()
+                crate::core::action_groups::aggregate_group_state(&contributors, &ctx.config)
+                    .await?
+                    .dynamic_command()
             } else {
                 *command
             };
@@ -248,6 +259,12 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
                 },
             );
             Proposal {
+                critical_targets,
+                displayed_rooms: Vec::new(),
+                displayed_devices: contributors
+                    .iter()
+                    .map(|item| (item.device_id, item.entity_id.clone()))
+                    .collect(),
                 description: format!(
                     "{}\n{} · {} {}\n{}",
                     group_row.name,
@@ -277,6 +294,7 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
             let target = db::action_groups::get_ha_native_target(*action, &ctx.config.db)
                 .await?
                 .context("Target missing")?;
+            ctx.track_native(target.id, &target.entity_id);
             ensure!(
                 !target.is_archived()
                     && target.is_enabled()
@@ -285,6 +303,9 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
             );
             auto_execute = true;
             Proposal {
+                critical_targets: Vec::new(),
+                displayed_rooms: Vec::new(),
+                displayed_devices: Vec::new(),
                 action: Action::Native { target: *action },
                 description: target.display_name().to_string(),
                 back: if matches!(payload, Payload::Admin(_)) {
@@ -375,8 +396,15 @@ pub async fn prepare_legacy_callback(
     if let Some((id, review)) = pending::callback_operation(user, &key, &config.db).await? {
         return Ok(operation_payload(id, review));
     }
+    if user == config.root_user {
+        db::add_user(user, &config.db).await?;
+    }
     let ctx = RenderContext {
+        displayed_resources: Default::default(),
         user_id: user,
+        admission_generation: db::user::admission_generation(user, &config.db)
+            .await?
+            .context("User admission revoked")?,
         is_admin: user == config.root_user,
         lang: db::get_user_language(user, &config.db)
             .await?
@@ -388,9 +416,6 @@ pub async fn prepare_legacy_callback(
     let Some((proposal, auto_execute)) = proposal(&ctx, &payload).await? else {
         return Ok(payload);
     };
-    if ctx.is_admin {
-        db::add_user(user, &config.db).await?;
-    }
     let (id, review) = pending::bind_callback(
         user,
         &key,
@@ -406,6 +431,28 @@ pub async fn handle(ctx: &RenderContext, id: i64, execute: bool, cancel: bool) -
     if cancel {
         pending::cancel(id, ctx.user_id, &ctx.config.db).await?;
     }
+    if execute {
+        if let Some(record) = pending::get(id, ctx.user_id, &ctx.config.db).await? {
+            if let Some(replacement) = record.replacement_id {
+                return render(ctx, replacement).await;
+            }
+            if record.status == "pending" && record.expires_at > chrono::Utc::now().timestamp() {
+                let mut proposal: Proposal = serde_json::from_str(&record.action_json)?;
+                if refresh_critical_review(ctx, &mut proposal).await? {
+                    if let Some(replacement) = pending::replace_for_review(
+                        id,
+                        ctx.user_id,
+                        &serde_json::to_string(&proposal)?,
+                        &ctx.config.db,
+                    )
+                    .await?
+                    {
+                        return render(ctx, replacement).await;
+                    }
+                }
+            }
+        }
+    }
     if execute && pending::claim(id, ctx.user_id, &ctx.config.db).await? {
         let record = pending::get(id, ctx.user_id, &ctx.config.db)
             .await?
@@ -420,21 +467,30 @@ pub async fn handle(ctx: &RenderContext, id: i64, execute: bool, cancel: bool) -
                 }
                 Action::Native { target } => vec![(TargetKind::HaNative, *target)],
             };
-            Ok::<_, anyhow::Error>(perform(ctx, proposal.action).await.unwrap_or_else(|_| {
-                ActionResult::new(
-                    targets
-                        .into_iter()
-                        .map(|(kind, id)| {
-                            TargetResult::new(
-                                kind,
-                                id,
-                                Outcome::Failed,
-                                Some("Validation failed / Проверка не пройдена"),
-                            )
-                        })
-                        .collect(),
+            Ok::<_, anyhow::Error>(
+                perform(
+                    ctx,
+                    proposal.action,
+                    &proposal.critical_targets,
+                    &proposal.displayed_devices,
                 )
-            }))
+                .await
+                .unwrap_or_else(|_| {
+                    ActionResult::new(
+                        targets
+                            .into_iter()
+                            .map(|(kind, id)| {
+                                TargetResult::new(
+                                    kind,
+                                    id,
+                                    Outcome::Failed,
+                                    Some("Validation failed / Проверка не пройдена"),
+                                )
+                            })
+                            .collect(),
+                    )
+                }),
+            )
         }
         .await;
         let result = result.unwrap_or_else(|_| {
@@ -470,7 +526,76 @@ pub async fn handle(ctx: &RenderContext, id: i64, execute: bool, cancel: bool) -
     render(ctx, id).await
 }
 
-async fn perform(ctx: &RenderContext, action: Action) -> Result<ActionResult> {
+/// A newly critical group target invalidates the old consent snapshot, even when
+/// that snapshot was issued as an auto-executing ordinary group button.
+async fn refresh_critical_review(ctx: &RenderContext, proposal: &mut Proposal) -> Result<bool> {
+    let Action::Group {
+        group,
+        command,
+        targets,
+    } = &proposal.action
+    else {
+        return Ok(false);
+    };
+    let mut critical = Vec::new();
+    let mut names = Vec::new();
+    let mut displayed_devices = Vec::new();
+    for id in targets {
+        ensure!(
+            db::access::can_control_device(ctx.user_id, ctx.is_admin, *id, &ctx.config.db).await?,
+            "Access revoked"
+        );
+        let device = db::devices::get_device_by_id(*id, &ctx.config.db)
+            .await?
+            .context("Device removed")?;
+        ctx.track_device(device.id, &device.entity_id);
+        displayed_devices.push((device.id, device.entity_id.clone()));
+        if db::devices::is_device_critical(&device.entity_id, &ctx.config.db).await? {
+            critical.push(*id);
+            names.push(device.alias.unwrap_or(device.entity_id));
+        }
+    }
+    critical.sort_unstable();
+    if critical
+        .iter()
+        .all(|id| proposal.critical_targets.contains(id))
+    {
+        return Ok(false);
+    }
+    let group = db::action_groups::get_action_group(*group, &ctx.config.db)
+        .await?
+        .context("Group removed")?;
+    ensure!(
+        group.is_enabled() && (ctx.is_admin || group.is_visible_to_all_users()),
+        "Group unavailable"
+    );
+    let verb = t(
+        ctx.lang,
+        if *command == ActionGroupCommand::TurnOn {
+            "control.turn_on"
+        } else {
+            "control.turn_off"
+        },
+    );
+    proposal.description = format!(
+        "{}\n{} · {} {}\n{}",
+        group.name,
+        verb,
+        targets.len(),
+        t(ctx.lang, "confirm.devices"),
+        names.join("\n")
+    );
+    proposal.critical_targets = critical;
+    proposal.displayed_devices = displayed_devices;
+    Ok(true)
+}
+
+async fn perform(
+    ctx: &RenderContext,
+    action: Action,
+    critical_targets: &[i64],
+    displayed_devices: &[(i64, String)],
+) -> Result<ActionResult> {
     match action {
         Action::Native { target } => Ok(crate::core::action_groups::execute_ha_native_target(
             target,
@@ -493,21 +618,34 @@ async fn perform(ctx: &RenderContext, action: Action) -> Result<ActionResult> {
                 .await?
                 .context("Device removed")?;
             ensure!(current.entity_id == entity_id, "Device changed");
+            let consent =
+                crate::core::devices::CriticalConsent::new(device, entity_id, cmd.clone().into());
             let outcome = if let DeviceCmd::SetTemp(target) = cmd {
                 match ctx
                     .config
                     .climate_controls
-                    .enqueue_confirmed(ctx.config.clone(), ctx.user_id, device, target)?
+                    .enqueue_confirmed(ctx.config.clone(), ctx.user_id, device, target, consent)
+                    .await?
                     .await
                 {
                     Ok(Ok(_)) => Outcome::Sent,
+                    Ok(Err(error))
+                        if error.is::<crate::core::devices::CriticalConsentRequired>()
+                            || error.is::<crate::core::devices::DeviceTargetChanged>() =>
+                    {
+                        Outcome::Failed
+                    }
                     _ => Outcome::Unknown,
                 }
             } else {
-                match crate::core::devices::handle_device_interaction(
+                match crate::core::devices::handle_device_interaction_with_consent(
                     &ctx.config,
+                    ctx.user_id,
+                    &ctx.admission_generation,
                     device,
                     cmd.into(),
+                    None,
+                    Some(&consent),
                 )
                 .await?
                 {
@@ -528,12 +666,25 @@ async fn perform(ctx: &RenderContext, action: Action) -> Result<ActionResult> {
             command,
             targets,
         } => {
+            let action = if command == ActionGroupCommand::TurnOn {
+                crate::core::devices::DeviceAction::TurnOn
+            } else {
+                crate::core::devices::DeviceAction::TurnOff
+            };
+            let consents = displayed_devices
+                .iter()
+                .filter(|(id, _)| critical_targets.contains(id))
+                .map(|(id, entity)| {
+                    crate::core::devices::CriticalConsent::new(*id, entity.clone(), action.clone())
+                })
+                .collect::<Vec<_>>();
             let result = crate::core::action_groups::execute_action_group_with_targets(
                 group,
                 command,
                 crate::core::action_groups::ActionActor::User(ctx.user_id),
                 ctx.config.clone(),
                 Some(&targets),
+                Some(&consents),
             )
             .await?;
             Ok(result.result)
@@ -555,17 +706,99 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
             ..Default::default()
         });
     };
-    let proposal: Proposal = serde_json::from_str(&record.action_json)?;
+    let mut proposal: Proposal = serde_json::from_str(&record.action_json)?;
     let allowed = proposal_visible(ctx, &proposal.action).await?;
     let active =
         allowed && record.status == "pending" && record.expires_at > chrono::Utc::now().timestamp();
+    if active {
+        for room in &proposal.displayed_rooms {
+            ctx.track_room(*room);
+        }
+        if proposal.displayed_rooms.is_empty() && matches!(proposal.action, Action::Device { .. }) {
+            if let Payload::Control(
+                ControlPayload::DeviceControl { room, .. } | ControlPayload::RoomDetail { room },
+            ) = &proposal.back
+            {
+                ctx.track_room(*room);
+            }
+        }
+        match &proposal.action {
+            Action::Group { group, .. } => ctx.track_group(*group),
+            Action::Native { target } => {
+                if let Some(current) =
+                    db::action_groups::get_ha_native_target(*target, &ctx.config.db).await?
+                {
+                    ctx.track_native(current.id, &current.entity_id);
+                    proposal.description = current.display_name().to_owned();
+                }
+            }
+            Action::Device { .. } => {}
+        }
+        for (device, entity) in &proposal.displayed_devices {
+            ctx.track_device(*device, entity);
+        }
+        // Old group proposals lack metadata provenance. Rebuild their labels
+        // from the same snapshot we track instead of displaying stale names.
+        if proposal.displayed_devices.is_empty() {
+            match &proposal.action {
+                Action::Device {
+                    device, entity_id, ..
+                } => ctx.track_device(*device, entity_id),
+                Action::Group {
+                    group,
+                    command,
+                    targets,
+                } => {
+                    let mut critical_names = Vec::new();
+                    for id in targets {
+                        if let Some(device) =
+                            db::devices::get_device_by_id(*id, &ctx.config.db).await?
+                        {
+                            ctx.track_device(device.id, &device.entity_id);
+                            if db::devices::is_device_critical(&device.entity_id, &ctx.config.db)
+                                .await?
+                            {
+                                critical_names.push(device.alias.unwrap_or(device.entity_id));
+                            }
+                        }
+                    }
+                    let group = db::action_groups::get_action_group(*group, &ctx.config.db)
+                        .await?
+                        .context("Group removed")?;
+                    let verb = t(
+                        ctx.lang,
+                        if *command == ActionGroupCommand::TurnOn {
+                            "control.turn_on"
+                        } else {
+                            "control.turn_off"
+                        },
+                    );
+                    proposal.description = format!(
+                        "{}\n{} · {} {}\n{}",
+                        group.name,
+                        verb,
+                        targets.len(),
+                        t(ctx.lang, "confirm.devices"),
+                        critical_names.join("\n")
+                    );
+                }
+                Action::Native { .. } => {}
+            }
+        }
+    }
     let mut rows = Vec::new();
     let saved = match record.result_json.as_deref() {
         Some(json) => Some(serde_json::from_str::<ActionResult>(json)?),
         None => None,
     };
     let saved_text = match &saved {
-        Some(result) => Some(result.display(ctx.user_id, ctx.lang, &ctx.config).await?),
+        Some(result) => Some(
+            result
+                .display_tracked(ctx.user_id, ctx.lang, &ctx.config, |source| {
+                    ctx.track_source(source)
+                })
+                .await?,
+        ),
         None => None,
     };
     let status = if active {
@@ -614,8 +847,13 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
                 }
                 continue;
             }
-            let Some(name) =
-                crate::core::action_results::target_label(target, ctx.user_id, &ctx.config).await?
+            let Some(name) = crate::core::action_results::target_label_tracked(
+                target,
+                ctx.user_id,
+                &ctx.config,
+                |source| ctx.track_source(source),
+            )
+            .await?
             else {
                 continue;
             };
@@ -623,6 +861,7 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
             else {
                 continue;
             };
+            ctx.track_device(device.id, &device.entity_id);
             let Some(room) =
                 db::devices::get_room_id_by_entity(&device.entity_id, &ctx.config.db).await?
             else {

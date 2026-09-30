@@ -36,19 +36,13 @@ struct CameraPreRollTargetRow {
 }
 
 pub async fn add_manual_camera(camera: NewCamera<'_>, pool: &SqlitePool) -> Result<i64> {
-    let key = format!(
-        "manual:{}:{}",
-        camera.room_id,
-        chrono::Utc::now().timestamp_millis()
-    );
-
     let result = sqlx::query(
         r#"
         INSERT INTO cameras (key, name, room_id, stream_url, snapshot_url, clip_seconds, enabled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        VALUES ('manual:' || ? || ':' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
         "#,
     )
-    .bind(key)
+    .bind(camera.room_id)
     .bind(camera.name.trim())
     .bind(camera.room_id)
     .bind(camera.stream_url.trim())
@@ -234,4 +228,42 @@ async fn can_view_camera(
     };
 
     crate::db::access::can_view_room(user_id, is_admin, room_id, pool).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_camera_creation_does_not_reuse_clock_based_keys() -> Result<()> {
+        let config = crate::test_support::config().await;
+        crate::db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        let results = futures_util::future::join_all((0..32).map(|_| {
+            add_manual_camera(
+                NewCamera {
+                    name: "Camera",
+                    room_id: 1,
+                    stream_url: "rtsp://unused.invalid",
+                    snapshot_url: None,
+                    clip_seconds: 10,
+                },
+                &config.db,
+            )
+        }))
+        .await;
+        let mut ids = std::collections::HashSet::new();
+        for result in results {
+            assert!(ids.insert(result?));
+        }
+        assert_eq!(ids.len(), 32);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(DISTINCT key) FROM cameras WHERE key LIKE 'manual:1:%'"
+            )
+            .fetch_one(&config.db)
+            .await?,
+            32
+        );
+        Ok(())
+    }
 }

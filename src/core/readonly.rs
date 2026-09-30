@@ -1,5 +1,6 @@
 //! Interpret a closed set of read operations; never dispatch HA intents/services.
 use crate::{
+    core::types::DisplaySource,
     db,
     ha::intent_recognition::{ReadState, ReadonlyHa, Recognition},
     i18n::{t, Language},
@@ -94,21 +95,42 @@ async fn allowed(
     root: bool,
     entity_id: &str,
     pool: &SqlitePool,
-) -> Result<Option<String>> {
+) -> Result<Option<(String, Option<DisplaySource>)>> {
     let row: Option<(i64, String)> = sqlx::query_as(
         "SELECT id, COALESCE(NULLIF(alias, ''), NULLIF(ha_name, ''), entity_id) FROM devices WHERE entity_id = ?")
         .bind(entity_id).fetch_optional(pool).await?;
     if let Some((id, name)) = row {
         if db::access::can_view_device(user_id, root, id, pool).await? {
-            return Ok(Some(name));
+            return Ok(Some((
+                name,
+                Some(DisplaySource::Device {
+                    id,
+                    entity_id: entity_id.to_owned(),
+                }),
+            )));
         }
     } else if root {
-        return Ok(Some(entity_id.to_owned()));
+        return Ok(Some((entity_id.to_owned(), None)));
     }
     Ok(None)
 }
 
-pub async fn answer(
+pub struct ReadonlyAnswer {
+    pub message: String,
+    pub displayed_resources: Vec<DisplaySource>,
+}
+
+impl From<String> for ReadonlyAnswer {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            displayed_resources: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn answer(
     ha: &dyn ReadonlyHa,
     user_id: u64,
     root: bool,
@@ -117,6 +139,22 @@ pub async fn answer(
     pool: &SqlitePool,
     timeout_s: u64,
 ) -> Result<String> {
+    Ok(
+        answer_tracked(ha, user_id, root, text, language, pool, timeout_s)
+            .await?
+            .message,
+    )
+}
+
+pub async fn answer_tracked(
+    ha: &dyn ReadonlyHa,
+    user_id: u64,
+    root: bool,
+    text: &str,
+    language: Language,
+    pool: &SqlitePool,
+    timeout_s: u64,
+) -> Result<ReadonlyAnswer> {
     match tokio::time::timeout(
         Duration::from_secs(timeout_s.max(1)),
         answer_inner(ha, user_id, root, text, language, pool),
@@ -136,7 +174,7 @@ async fn answer_inner(
     text: &str,
     language: Language,
     pool: &SqlitePool,
-) -> Result<String> {
+) -> Result<ReadonlyAnswer> {
     let mut recognized = ha.recognize(text, language.code()).await?;
     let op = operation(&recognized)?;
     if op == ReadOperation::Weather
@@ -150,7 +188,7 @@ async fn answer_inner(
         }
     }
     if recognized.targets.is_empty() {
-        return Ok(t(language, "readonly.no_targets").to_owned());
+        return Ok(t(language, "readonly.no_targets").to_owned().into());
     }
     let explicit = recognized.details.contains_key("name");
     let mut readable = Vec::new();
@@ -158,7 +196,7 @@ async fn answer_inner(
     for entity_id in recognized.targets.keys() {
         if allowed(user_id, root, entity_id, pool).await?.is_none() {
             if explicit {
-                return Ok(t(language, "readonly.no_access").to_owned());
+                return Ok(t(language, "readonly.no_access").to_owned().into());
             }
             restricted = true;
             continue;
@@ -200,19 +238,21 @@ async fn answer_inner(
             None
         };
     let mut visible = Vec::new();
+    let mut displayed_resources = Vec::new();
     // Check again after ALL network waits, before computing counts or formatting.
     for (id, state) in states {
-        if let Some(name) = allowed(user_id, root, &id, pool).await? {
+        if let Some((name, source)) = allowed(user_id, root, &id, pool).await? {
+            displayed_resources.extend(source);
             visible.push((name, state));
         } else {
             if explicit {
-                return Ok(t(language, "readonly.no_access").to_owned());
+                return Ok(t(language, "readonly.no_access").to_owned().into());
             }
             restricted = true;
         }
     }
     if visible.is_empty() {
-        return Ok(t(language, "readonly.no_access").to_owned());
+        return Ok(t(language, "readonly.no_access").to_owned().into());
     }
     let mut lines = Vec::new();
     if restricted {
@@ -275,7 +315,10 @@ async fn answer_inner(
         result.push_str(&line);
         result.push('\n');
     }
-    Ok(result.trim_end().to_owned())
+    Ok(ReadonlyAnswer {
+        message: result.trim_end().to_owned(),
+        displayed_resources,
+    })
 }
 
 fn known(state: &ReadState) -> bool {

@@ -397,7 +397,11 @@ fn compact_json(value: &Value) -> String {
     if text.len() <= MAX_LEN {
         text
     } else {
-        format!("{}...", &text[..MAX_LEN])
+        let mut end = MAX_LEN;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &text[..end])
     }
 }
 
@@ -425,6 +429,29 @@ fn is_retryable_assist_error(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_json_preserves_short_values_and_truncates_at_utf8_boundaries() {
+        for text in ["".to_string(), "a".repeat(397), "a".repeat(398)] {
+            let value = serde_json::json!(text);
+            assert_eq!(compact_json(&value), value.to_string());
+        }
+        for text in [
+            "a".repeat(399),
+            "я".repeat(300),
+            "🌍".repeat(110),
+            format!("{}🌍кириллица", "a".repeat(397)),
+        ] {
+            let value = serde_json::json!(text);
+            let compact = compact_json(&value);
+            let body = compact.strip_suffix("...").unwrap();
+            assert!(body.len() <= 400);
+            assert!(value.to_string().starts_with(body));
+            // Exercise the actual HA error formatting path, then another response.
+            assert_eq!(format_ws_result_error(&value), compact);
+            assert_eq!(format_ws_result_error(&serde_json::json!({})), "{}");
+        }
+    }
 
     #[test]
     fn retryable_assist_errors_are_network_only() {

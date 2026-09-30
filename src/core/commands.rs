@@ -1,5 +1,8 @@
 use crate::core::action_results::{ActionResult, Outcome, TargetKind, TargetResult};
-use crate::core::devices::{DeviceAction, InteractionResult};
+pub use crate::core::devices::DeviceTargetSnapshot as LightCommandTarget;
+use crate::core::devices::{
+    CriticalConsent, CriticalConsentRequired, DeviceAction, DeviceTargetChanged, InteractionResult,
+};
 use crate::db;
 use crate::models::AppConfig;
 use crate::options::VoiceCommandEngine;
@@ -32,6 +35,12 @@ pub enum CommandIntent {
         action: SerializableDeviceAction,
     },
     AllLightsAction {
+        action: SerializableDeviceAction,
+    },
+    ScopedLightsAction {
+        room_id: Option<i64>,
+        scope_label: String,
+        targets: Vec<LightCommandTarget>,
         action: SerializableDeviceAction,
     },
     MultiDeviceAction {
@@ -89,14 +98,31 @@ pub struct ParsedCommand {
 
 #[derive(Debug, Clone)]
 pub enum CommandExecution {
-    Done { message: String },
-    NeedsConfirmation { pending_id: i64, message: String },
-    OpenCameraArchive { camera_id: i64 },
-    SendCameraSnapshot { camera_id: i64 },
-    SendCameraClip { camera_id: i64, seconds: u32 },
+    Done {
+        message: String,
+        displayed_resources: Vec<crate::core::types::DisplaySource>,
+        admission_generation: String,
+    },
+    NeedsConfirmation {
+        pending_id: i64,
+    },
+    OpenCameraArchive {
+        camera_id: i64,
+    },
+    SendCameraSnapshot {
+        camera_id: i64,
+    },
+    SendCameraClip {
+        camera_id: i64,
+        seconds: u32,
+    },
     NotACommand,
-    NeedsChoice { choice_id: i64 },
-    SavedResult { pending_id: i64 },
+    NeedsChoice {
+        choice_id: i64,
+    },
+    SavedResult {
+        pending_id: i64,
+    },
 }
 
 pub async fn execute_text(
@@ -115,6 +141,9 @@ pub async fn execute_text(
     if user_id == config.root_user {
         db::add_user(user_id, &config.db).await?;
     }
+    let admission = db::user::admission_generation(user_id, &config.db)
+        .await?
+        .context("Access revoked / Доступ отозван")?;
     db::command_choices::cancel_all(user_id, &config.db).await?;
     let parsed = match parse_text(user_id, is_admin, text, config).await {
         Ok(Some(parsed)) => parsed,
@@ -133,6 +162,10 @@ pub async fn execute_text(
             return handle_parse_error(error, user_id, source, text, engine.as_str(), config).await;
         }
     };
+    anyhow::ensure!(
+        db::user::admission_is_current(user_id, &admission, &config.db).await?,
+        "Access revoked / Доступ отозван"
+    );
     execute_intent(user_id, is_admin, source, text, parsed, config).await
 }
 
@@ -153,6 +186,9 @@ pub async fn execute_voice_text(
     if user_id == config.root_user {
         db::add_user(user_id, &config.db).await?;
     }
+    let admission = db::user::admission_generation(user_id, &config.db)
+        .await?
+        .context("Access revoked / Доступ отозван")?;
     db::command_choices::cancel_all(user_id, &config.db).await?;
     match engine {
         VoiceCommandEngine::LocalParser => {
@@ -193,7 +229,7 @@ pub async fn execute_voice_text(
                 &config.ha_token,
                 config.voice_stt_timeout_s,
             )?;
-            let answer = crate::core::readonly::answer(
+            let answer = crate::core::readonly::answer_tracked(
                 &client,
                 user_id,
                 is_admin,
@@ -216,7 +252,11 @@ pub async fn execute_voice_text(
                 &config.db,
             )
             .await?;
-            Ok(CommandExecution::Done { message: answer })
+            Ok(CommandExecution::Done {
+                message: answer.message,
+                displayed_resources: answer.displayed_resources,
+                admission_generation: admission,
+            })
         }
         VoiceCommandEngine::HaConversationFull => {
             let parsed = match parse_bot_owned_text(user_id, text, config).await {
@@ -245,13 +285,15 @@ pub async fn execute_voice_text(
                 .await;
             }
 
-            match execute_ha_conversation(user_id, text, config).await {
+            match execute_ha_conversation(user_id, text, &admission, config).await {
                 Ok(execution) => Ok(execution),
                 Err(ha_error) if crate::core::action_results::definitely_not_sent(&ha_error) => {
                     execute_text(user_id, is_admin, CommandSource::Voice, text, config).await
                 }
                 Err(_) => Ok(CommandExecution::Done {
                     message: unknown_message(user_id, config).await?,
+                    displayed_resources: Vec::new(),
+                    admission_generation: admission,
                 }),
             }
         }
@@ -264,6 +306,9 @@ pub async fn confirm_pending(
     pending_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
+    let admission = db::user::admission_generation(user_id, &config.db)
+        .await?
+        .context("Access revoked / Доступ отозван")?;
     if !db::pending_commands::claim(pending_id, user_id, &config.db).await? {
         return Ok(CommandExecution::SavedResult { pending_id });
     }
@@ -271,7 +316,14 @@ pub async fn confirm_pending(
         .await?
         .context("Command missing")?;
     let result = match serde_json::from_str::<CommandIntent>(&pending.intent_json) {
-        Ok(intent) => execute_device_intent(user_id, is_admin, &intent, config).await,
+        Ok(intent) => {
+            let scopes = serde_json::from_str::<serde_json::Value>(&pending.intent_json)?
+                .get("critical_consents")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let consents: Vec<CriticalConsent> = serde_json::from_value(scopes)?;
+            execute_device_intent(user_id, is_admin, &intent, &admission, &consents, config).await
+        }
         Err(error) => Err(error.into()),
     };
     let result = result.unwrap_or_else(|_| {
@@ -310,7 +362,17 @@ pub async fn confirm_pending(
     Ok(CommandExecution::SavedResult { pending_id })
 }
 
+#[cfg(test)]
 pub async fn pending_result_text(user: u64, id: i64, config: &Arc<AppConfig>) -> Result<String> {
+    pending_result_text_tracked(user, id, config, |_| {}).await
+}
+
+pub async fn pending_result_text_tracked(
+    user: u64,
+    id: i64,
+    config: &Arc<AppConfig>,
+    mut track: impl FnMut(crate::core::types::DisplaySource),
+) -> Result<String> {
     let lang = db::get_user_language(user, &config.db)
         .await?
         .unwrap_or(config.default_language);
@@ -324,7 +386,7 @@ pub async fn pending_result_text(user: u64, id: i64, config: &Arc<AppConfig>) ->
     };
     if let Some(json) = pending.result_json {
         return serde_json::from_str::<ActionResult>(&json)?
-            .display(user, lang, config)
+            .display_tracked(user, lang, config, &mut track)
             .await;
     }
     if pending.status == "confirmed" {
@@ -332,7 +394,7 @@ pub async fn pending_result_text(user: u64, id: i64, config: &Arc<AppConfig>) ->
     }
     if pending.status == "pending" && pending.expires_at > Utc::now() {
         let intent: CommandIntent = serde_json::from_str(&pending.intent_json)?;
-        return confirmation_description(
+        return confirmation_description_tracked(
             user,
             user == config.root_user,
             &ParsedCommand {
@@ -340,6 +402,7 @@ pub async fn pending_result_text(user: u64, id: i64, config: &Arc<AppConfig>) ->
                 target_label: String::new(),
             },
             config,
+            &mut track,
         )
         .await;
     }
@@ -443,11 +506,8 @@ async fn parse_text(
         }));
     }
 
-    if let Some(action) = parse_all_lights_action(&normalized) {
-        return Ok(Some(ParsedCommand {
-            target_label: "весь свет".to_string(),
-            intent: CommandIntent::AllLightsAction { action },
-        }));
+    if let Some(parsed) = parse_scoped_lights(user_id, is_admin, &normalized, config).await? {
+        return Ok(Some(parsed));
     }
 
     if let Some((query, action)) = crate::bot::text_commands::parse_device_text_command(&normalized)
@@ -550,33 +610,23 @@ async fn execute_intent(
     parsed: ParsedCommand,
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
-    let was_mass = matches!(parsed.intent, CommandIntent::AllLightsAction { .. });
-    let mut parsed = parsed;
-    if let CommandIntent::AllLightsAction { action } = parsed.intent {
-        anyhow::ensure!(
-            is_admin,
-            "Bulk lights require root / Массовое управление доступно root"
-        );
-        let ids = db::devices::list_active_lights(&config.db)
-            .await?
-            .into_iter()
-            .map(|d| d.id)
-            .collect::<Vec<_>>();
-        anyhow::ensure!(
-            !ids.is_empty(),
-            "No active lights / Нет активных светильников"
-        );
-        parsed.intent = CommandIntent::MultiDeviceAction {
-            device_ids: ids,
-            action,
-        };
-    }
-    if (was_mass || requires_confirmation(&parsed.intent, config).await?)
-        && config.voice_confirm_dangerous
+    let was_mass = matches!(
+        parsed.intent,
+        CommandIntent::ScopedLightsAction { .. } | CommandIntent::AllLightsAction { .. }
+    );
+    let consents = capture_critical_consents(&parsed.intent, config).await?;
+    if was_mass
+        || !consents.is_empty()
+        || (requires_confirmation(&parsed.intent, config).await? && config.voice_confirm_dangerous)
     {
         let reason = "критичное действие".to_string();
         let expires_at = Utc::now() + Duration::seconds(config.voice_pending_ttl_s as i64);
-        let intent_json = serde_json::to_string(&parsed.intent)?;
+        let mut intent_json = serde_json::to_value(&parsed.intent)?;
+        intent_json
+            .as_object_mut()
+            .context("Invalid command intent")?
+            .insert("critical_consents".into(), serde_json::to_value(&consents)?);
+        let intent_json = serde_json::to_string(&intent_json)?;
         let pending_id = db::pending_commands::create(
             user_id,
             source.pending_source(),
@@ -588,10 +638,7 @@ async fn execute_intent(
         )
         .await?;
 
-        return Ok(CommandExecution::NeedsConfirmation {
-            pending_id,
-            message: confirmation_description(user_id, is_admin, &parsed, config).await?,
-        });
+        return Ok(CommandExecution::NeedsConfirmation { pending_id });
     }
 
     execute_intent_without_confirmation(user_id, is_admin, parsed, config).await
@@ -606,13 +653,26 @@ async fn execute_intent_without_confirmation(
     match parsed.intent {
         intent @ (CommandIntent::AllLightsAction { .. }
         | CommandIntent::MultiDeviceAction { .. }
+        | CommandIntent::ScopedLightsAction { .. }
         | CommandIntent::DeviceAction { .. }) => {
-            let result = execute_device_intent(user_id, is_admin, &intent, config).await?;
+            let admission = db::user::admission_generation(user_id, &config.db)
+                .await?
+                .context("Access revoked / Доступ отозван")?;
+            let result =
+                execute_device_intent(user_id, is_admin, &intent, &admission, &[], config).await?;
             let lang = db::get_user_language(user_id, &config.db)
                 .await?
                 .unwrap_or(config.default_language);
+            let mut displayed_resources = Vec::new();
+            let message = result
+                .display_tracked(user_id, lang, config, |source| {
+                    displayed_resources.push(source)
+                })
+                .await?;
             Ok(CommandExecution::Done {
-                message: result.display(user_id, lang, config).await?,
+                message,
+                displayed_resources,
+                admission_generation: admission,
             })
         }
         CommandIntent::CameraSnapshot { camera_id } => {
@@ -630,9 +690,42 @@ async fn execute_intent_without_confirmation(
     }
 }
 
+async fn capture_critical_consents(
+    intent: &CommandIntent,
+    config: &Arc<AppConfig>,
+) -> Result<Vec<CriticalConsent>> {
+    let (ids, action) = match intent {
+        CommandIntent::DeviceAction { device_id, action } => (vec![*device_id], *action),
+        CommandIntent::MultiDeviceAction { device_ids, action } => (device_ids.clone(), *action),
+        CommandIntent::ScopedLightsAction {
+            targets, action, ..
+        } => (
+            targets.iter().map(|target| target.device_id).collect(),
+            *action,
+        ),
+        _ => return Ok(Vec::new()),
+    };
+    let mut consents = Vec::new();
+    for id in ids {
+        let device = db::devices::get_device_by_id(id, &config.db)
+            .await?
+            .context("Device missing")?;
+        if db::devices::is_device_critical(&device.entity_id, &config.db).await? {
+            consents.push(CriticalConsent::new(
+                id,
+                device.entity_id,
+                action.to_device_action(),
+            ));
+        }
+    }
+    Ok(consents)
+}
+
 async fn requires_confirmation(intent: &CommandIntent, config: &Arc<AppConfig>) -> Result<bool> {
     match intent {
-        CommandIntent::AllLightsAction { .. } => Ok(true),
+        CommandIntent::AllLightsAction { .. } | CommandIntent::ScopedLightsAction { .. } => {
+            Ok(true)
+        }
         CommandIntent::MultiDeviceAction { device_ids, .. } => {
             if device_ids.len() > 1 {
                 return Ok(true);
@@ -672,13 +765,12 @@ async fn ensure_camera_access(
     }
 }
 
-fn parse_all_lights_action(text: &str) -> Option<SerializableDeviceAction> {
+fn lights_action_body(text: &str) -> Option<(&str, SerializableDeviceAction)> {
     let text = text
         .trim()
         .trim_end_matches(['.', '!', '?', ',', '…'])
         .trim();
-
-    let (rest, action) = [
+    [
         ("включи ", SerializableDeviceAction::TurnOn),
         ("включить ", SerializableDeviceAction::TurnOn),
         ("вкл ", SerializableDeviceAction::TurnOn),
@@ -689,35 +781,188 @@ fn parse_all_lights_action(text: &str) -> Option<SerializableDeviceAction> {
         ("turn off ", SerializableDeviceAction::TurnOff),
     ]
     .into_iter()
-    .find_map(|(prefix, action)| text.strip_prefix(prefix).map(|rest| (rest.trim(), action)))?;
+    .find_map(|(prefix, action)| text.strip_prefix(prefix).map(|rest| (rest.trim(), action)))
+}
 
-    let rest = rest
-        .replace("ё", "е")
-        .replace("во всех", "всех")
-        .replace("во всем", "всем");
-    let tokens = rest
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>();
+/// Global scope is an allow-list of complete phrases, never a keyword heuristic.
+fn parse_all_lights_action(text: &str) -> Option<SerializableDeviceAction> {
+    let (rest, action) = lights_action_body(text)?;
+    let phrase = command_tokens(rest).join(" ");
+    matches!(
+        phrase.as_str(),
+        "весь свет"
+            | "все света"
+            | "свет везде"
+            | "везде свет"
+            | "свет во всех комнатах"
+            | "весь свет во всех комнатах"
+            | "свет во всем доме"
+            | "весь свет во всем доме"
+            | "all lights"
+            | "all light"
+            | "lights everywhere"
+            | "light everywhere"
+            | "everywhere lights"
+            | "everywhere light"
+            | "lights in all rooms"
+            | "all lights in all rooms"
+            | "all lights in the house"
+            | "all lights in the whole house"
+    )
+    .then_some(action)
+}
 
-    let mentions_light = tokens
-        .iter()
-        .any(|token| matches!(*token, "свет" | "света" | "lights" | "light"));
-    let mentions_all = tokens.iter().any(|token| {
-        matches!(
-            *token,
-            "весь" | "все" | "всех" | "везде" | "all" | "everywhere"
-        )
-    });
-    let mentions_rooms = tokens
-        .iter()
-        .any(|token| matches!(*token, "комнатах" | "комнаты" | "комнат" | "rooms"));
-
-    if mentions_light && (mentions_all || mentions_rooms) {
-        Some(action)
+async fn parse_scoped_lights(
+    user: u64,
+    admin: bool,
+    text: &str,
+    config: &Arc<AppConfig>,
+) -> Result<Option<ParsedCommand>> {
+    let Some((body, action)) = lights_action_body(text) else {
+        return Ok(None);
+    };
+    let global = parse_all_lights_action(text).is_some();
+    let words = body.split_whitespace().collect::<Vec<_>>();
+    // A light-related word in a device name does not establish a bulk scope.
+    // Only a complete quantified noun phrase or an immediately following
+    // location preposition enters this parser. "Свет стола" / "Lights kitchen"
+    // and named devices qualified by their room stay with the device resolver.
+    let (quantified, scope) = if global {
+        (true, &[][..])
     } else {
-        None
+        let (quantified, remainder) = match words.as_slice() {
+            ["весь", "свет", rest @ ..]
+            | ["все", "света", rest @ ..]
+            | ["all", "light" | "lights", rest @ ..] => (true, rest),
+            ["свет" | "света", "в" | "во" | "на", rest @ ..]
+            | ["light" | "lights", "in", rest @ ..] => (false, rest),
+            ["свет" | "света" | "light" | "lights", "кроме" | "except" | "excluding", ..] =>
+            {
+                anyhow::bail!("Exclusions need clarification / Уточните область без исключения");
+            }
+            ["свет" | "света" | "light" | "lights", "везде" | "everywhere", ..]
+            | ["везде" | "everywhere", "свет" | "света" | "light" | "lights", ..] => {
+                anyhow::bail!(
+                    "Whole-home qualifiers need clarification / Уточните область всего дома"
+                );
+            }
+            _ => return Ok(None),
+        };
+        let remainder = if quantified {
+            match remainder {
+                ["в" | "во" | "на" | "in", scope @ ..] => scope,
+                _ => {
+                    anyhow::bail!("Specify one room or whole home / Уточните комнату или весь дом")
+                }
+            }
+        } else {
+            remainder
+        };
+        anyhow::ensure!(
+            !remainder.iter().any(|word| matches!(
+                *word,
+                "кроме" | "except" | "excluding" | "комнатах" | "комнаты" | "комнат" | "rooms"
+            )),
+            "Scope is ambiguous; clarify one room / Область неоднозначна; уточните одну комнату"
+        );
+        (quantified, remainder)
+    };
+    if !global && !quantified {
+        // Literal accessible aliases may themselves contain a location phrase.
+        // Preserve ordinary matching/choice semantics; explicit "all" and
+        // unsupported exclusions never use this escape from bulk validation.
+        if load_command_device_candidates(user, admin, config)
+            .await?
+            .iter()
+            .any(|candidate| {
+                candidate.device.alias.as_deref().is_some_and(|alias| {
+                    crate::bot::text_commands::normalize_command_text(alias)
+                        .split_whitespace()
+                        .eq(words.iter().copied())
+                })
+            })
+        {
+            return Ok(None);
+        }
     }
+    anyhow::ensure!(
+        admin,
+        "Bulk lights require root / Массовое управление доступно root"
+    );
+    let (room_id, scope_label) = if global {
+        (None, "Весь дом / Whole home".to_string())
+    } else {
+        // Strip only positional grammar markers. In particular, "living room"
+        // is a complete room name; do not discard arbitrary words from it.
+        let scope = scope.strip_prefix(&["the"]).unwrap_or(scope);
+        let scope = if scope.len() > 1 {
+            scope
+                .strip_prefix(&["room"])
+                .or_else(|| scope.strip_prefix(&["комнате"]))
+                .unwrap_or(scope)
+        } else {
+            scope
+        };
+        let location = command_tokens(&scope.join(" "));
+        anyhow::ensure!(
+            !location.is_empty(),
+            "Specify one room or whole home / Уточните комнату или весь дом"
+        );
+        let rooms: Vec<(i64, String, Option<String>)> =
+            sqlx::query_as("SELECT id, area, alias FROM rooms")
+                .fetch_all(&config.db)
+                .await?;
+        let matching = rooms
+            .into_iter()
+            .filter(|(_, area, alias)| {
+                [Some(area.as_str()), alias.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|name| {
+                        let room_tokens = command_tokens(name);
+                        room_tokens.len() == location.len()
+                            && room_tokens.iter().zip(&location).all(|(name, requested)| {
+                                name == requested
+                                    || command_token_stem(name) == command_token_stem(requested)
+                            })
+                    })
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(matching.len() == 1, "Room missing or ambiguous; clarify scope / Комната не найдена или неоднозначна; уточните область");
+        let (id, area, alias) = &matching[0];
+        (Some(*id), alias.clone().unwrap_or_else(|| area.clone()))
+    };
+    let mut targets = Vec::new();
+    for device in db::devices::list_active_lights(&config.db).await? {
+        let Some(current_room) =
+            db::devices::get_room_id_by_entity(&device.entity_id, &config.db).await?
+        else {
+            continue;
+        };
+        if room_id.is_some_and(|id| id != current_room)
+            || !db::access::can_control_device(user, admin, device.id, &config.db).await?
+        {
+            continue;
+        }
+        targets.push(LightCommandTarget {
+            device_id: device.id,
+            entity_id: device.entity_id,
+            room_id: current_room,
+        });
+    }
+    anyhow::ensure!(
+        !targets.is_empty(),
+        "No accessible active lights / Нет доступных активных светильников"
+    );
+    Ok(Some(ParsedCommand {
+        target_label: scope_label.clone(),
+        intent: CommandIntent::ScopedLightsAction {
+            room_id,
+            scope_label,
+            targets,
+            action,
+        },
+    }))
 }
 
 #[derive(Debug)]
@@ -1005,11 +1250,33 @@ fn command_token_stem(token: &str) -> String {
 async fn execute_ha_conversation(
     user_id: u64,
     text: &str,
+    admission: &str,
     config: &Arc<AppConfig>,
 ) -> Result<CommandExecution> {
     let language = db::get_user_language(user_id, &config.db)
         .await?
         .unwrap_or(config.default_language);
+    if config
+        .runtime_status
+        .read()
+        .await
+        .shutdown_requested_at
+        .is_some()
+        || db::user::admission_generation(user_id, &config.db)
+            .await?
+            .is_none()
+    {
+        return Ok(CommandExecution::Done {
+            message: if language == crate::i18n::Language::En {
+                "Command was not sent: application is stopping or access was revoked."
+            } else {
+                "Команда не отправлена: приложение останавливается или доступ отозван."
+            }
+            .into(),
+            displayed_resources: Vec::new(),
+            admission_generation: admission.to_owned(),
+        });
+    }
     let answer = crate::ha::conversation::process(
         &config.ha_url,
         &config.ha_token,
@@ -1035,6 +1302,8 @@ async fn execute_ha_conversation(
 
     Ok(CommandExecution::Done {
         message: format!("HA Assist: {}", answer),
+        displayed_resources: Vec::new(),
+        admission_generation: admission.to_owned(),
     })
 }
 
@@ -1316,22 +1585,25 @@ async fn execute_device_intent(
     user: u64,
     admin: bool,
     intent: &CommandIntent,
+    admission: &str,
+    consents: &[CriticalConsent],
     config: &Arc<AppConfig>,
 ) -> Result<ActionResult> {
     let (ids, action) = match intent {
         CommandIntent::DeviceAction { device_id, action } => (vec![*device_id], *action),
         CommandIntent::MultiDeviceAction { device_ids, action } => (device_ids.clone(), *action),
-        CommandIntent::AllLightsAction { action } => {
+        CommandIntent::AllLightsAction { .. } => {
+            anyhow::bail!("Legacy bulk command expired; repeat it to review targets / Повторите команду для проверки целей");
+        }
+        CommandIntent::ScopedLightsAction {
+            targets, action, ..
+        } => {
             anyhow::ensure!(
                 admin,
                 "Bulk lights require root / Массовое управление доступно root"
             );
             (
-                db::devices::list_active_lights(&config.db)
-                    .await?
-                    .into_iter()
-                    .map(|d| d.id)
-                    .collect(),
+                targets.iter().map(|target| target.device_id).collect(),
                 *action,
             )
         }
@@ -1341,6 +1613,42 @@ async fn execute_device_intent(
     let mut targets = Vec::new();
     for id in ids {
         let result = async {
+            anyhow::ensure!(
+                config
+                    .runtime_status
+                    .read()
+                    .await
+                    .shutdown_requested_at
+                    .is_none(),
+                "Application is stopping; command was not sent"
+            );
+            anyhow::ensure!(
+                db::user::admission_is_current(user, admission, &config.db).await?,
+                "Access revoked / Доступ отозван"
+            );
+            let expected_target =
+                if let CommandIntent::ScopedLightsAction {
+                    targets, room_id, ..
+                } = intent
+                {
+                    let expected = targets
+                        .iter()
+                        .find(|target| target.device_id == id)
+                        .context("Missing target")?;
+                    if room_id.is_some_and(|room| room != expected.room_id)
+                        || !expected.is_current(&config.db).await?
+                    {
+                        return Ok(TargetResult::new(
+                            TargetKind::Device,
+                            id,
+                            Outcome::Failed,
+                            Some("Target changed / Цель изменилась"),
+                        ));
+                    }
+                    Some(expected)
+                } else {
+                    None
+                };
             if !db::access::can_control_device(user, admin, id, &config.db).await? {
                 return Ok(TargetResult::new(
                     TargetKind::Device,
@@ -1349,21 +1657,23 @@ async fn execute_device_intent(
                     Some("Access revoked / Доступ отозван"),
                 ));
             }
-            if db::devices::get_device_by_id(id, &config.db)
-                .await?
-                .is_none()
-            {
+            let Some(_) = db::devices::get_device_by_id(id, &config.db).await? else {
                 return Ok(TargetResult::new(
                     TargetKind::Device,
                     id,
                     Outcome::Failed,
                     Some("Device removed / Устройство удалено"),
                 ));
-            }
-            match crate::core::devices::handle_device_interaction(
+            };
+            let consent = consents.iter().find(|scope| scope.targets_device(id));
+            match crate::core::devices::handle_device_interaction_with_consent(
                 config,
+                user,
+                admission,
                 id,
                 action.to_device_action(),
+                expected_target,
+                consent,
             )
             .await
             {
@@ -1385,12 +1695,18 @@ async fn execute_device_intent(
                     Outcome::Failed,
                     Some("Unsupported action / Действие недоступно"),
                 )),
-                // handle_device_interaction only returns Err before dispatch (lookup/state read).
-                Err(_) => Ok(TargetResult::new(
+                // Err is before dispatch: state read or admission/ACL/snapshot validation.
+                Err(error) => Ok(TargetResult::new(
                     TargetKind::Device,
                     id,
                     Outcome::Failed,
-                    Some("Device state unavailable / Состояние недоступно"),
+                    Some(if error.is::<DeviceTargetChanged>() {
+                        "Target changed / Цель изменилась"
+                    } else if error.is::<CriticalConsentRequired>() {
+                        "Critical device requires a new confirmation / Критичное устройство требует нового подтверждения"
+                    } else {
+                        "Device state unavailable / Состояние недоступно"
+                    }),
                 )),
             }
         }
@@ -1426,11 +1742,12 @@ async fn execute_device_intent(
     Ok(result)
 }
 
-async fn confirmation_description(
+async fn confirmation_description_tracked(
     user: u64,
     admin: bool,
     parsed: &ParsedCommand,
     config: &Arc<AppConfig>,
+    mut track: impl FnMut(crate::core::types::DisplaySource),
 ) -> Result<String> {
     let lang = db::get_user_language(user, &config.db)
         .await?
@@ -1439,6 +1756,12 @@ async fn confirmation_description(
     let (ids, action) = match &parsed.intent {
         CommandIntent::DeviceAction { device_id, action } => (vec![*device_id], *action),
         CommandIntent::MultiDeviceAction { device_ids, action } => (device_ids.clone(), *action),
+        CommandIntent::ScopedLightsAction {
+            targets, action, ..
+        } => (
+            targets.iter().map(|target| target.device_id).collect(),
+            *action,
+        ),
         _ => return Ok(parsed.target_label.clone()),
     };
     let verb = match (action, en) {
@@ -1454,12 +1777,19 @@ async fn confirmation_description(
     } else {
         format!("{verb} · {} устройств. Подтвердить отправку?", ids.len())
     };
+    if let CommandIntent::ScopedLightsAction { scope_label, .. } = &parsed.intent {
+        text = format!("{scope_label}\n{text}");
+    }
     for id in ids {
         if !db::access::can_view_device(user, admin, id, &config.db).await? {
             continue;
         }
         if let Some(device) = db::devices::get_device_by_id(id, &config.db).await? {
             if db::devices::is_device_critical(&device.entity_id, &config.db).await? {
+                track(crate::core::types::DisplaySource::Device {
+                    id: device.id,
+                    entity_id: device.entity_id.clone(),
+                });
                 text.push_str(&format!(
                     "\n⚠ {}",
                     device.alias.as_deref().unwrap_or(&device.entity_id)

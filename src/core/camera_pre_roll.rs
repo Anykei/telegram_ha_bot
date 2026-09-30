@@ -9,15 +9,16 @@ use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle as ThreadJoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+static OWNER_CAPACITY: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+const MAX_PRE_ROLL_OWNERS: usize = 32;
 const OWNER_RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const OWNER_RESTART_DELAY: Duration = Duration::from_secs(5);
-const OWNER_STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(6);
-const OWNER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const BUFFER_KEYFRAME_GRACE_S: u32 = 5;
 const DEFAULT_MAX_BYTES_PER_CAMERA: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 1024 * 1024 * 1024;
@@ -25,6 +26,8 @@ const DEFAULT_MAX_TOTAL_BYTES: usize = 1024 * 1024 * 1024;
 #[derive(Clone, Default)]
 pub struct CameraPreRollRegistry {
     buffers: Arc<DashMap<i64, Arc<Mutex<PreRollBufferInner>>>>,
+    #[cfg(test)]
+    archive_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -168,12 +171,31 @@ struct SelectedPacket {
 
 struct PreRollOwner {
     cancel: CancellationToken,
-    join: ThreadJoinHandle<()>,
+    thread_id: thread::ThreadId,
+}
+
+enum PreRollOutput {
+    Interactive {
+        path: PathBuf,
+        owner: Option<crate::core::cameras::TemporaryMedia>,
+    },
+    Archive(PathBuf),
 }
 
 impl CameraPreRollRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn archive_attempts_for_test(&self) -> usize {
+        self.archive_attempts
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_history_for_test(&self) {
+        self.buffers.clear();
     }
 
     pub fn stats(&self) -> CameraPreRollStats {
@@ -306,7 +328,58 @@ impl CameraPreRollRegistry {
         trigger_at: DateTime<Utc>,
         end_at: DateTime<Utc>,
         output_path: PathBuf,
+        owner: Option<crate::core::cameras::TemporaryMedia>,
     ) -> Result<PreRollWriteResult> {
+        self.write_selected_to_file(
+            camera_id,
+            seconds,
+            trigger_at,
+            end_at,
+            PreRollOutput::Interactive {
+                path: output_path,
+                owner,
+            },
+        )
+        .await
+    }
+
+    pub async fn write_archive_to_file(
+        &self,
+        camera_id: i64,
+        seconds: u32,
+        trigger_at: DateTime<Utc>,
+        end_at: DateTime<Utc>,
+        output_path: PathBuf,
+    ) -> Result<PreRollWriteResult> {
+        self.write_selected_to_file(
+            camera_id,
+            seconds,
+            trigger_at,
+            end_at,
+            PreRollOutput::Archive(output_path),
+        )
+        .await
+    }
+
+    async fn write_selected_to_file(
+        &self,
+        camera_id: i64,
+        seconds: u32,
+        trigger_at: DateTime<Utc>,
+        end_at: DateTime<Utc>,
+        output: PreRollOutput,
+    ) -> Result<PreRollWriteResult> {
+        let (output_path, owner, archive) = match output {
+            PreRollOutput::Interactive { path, owner } => (path, owner, false),
+            PreRollOutput::Archive(path) => (path, None, true),
+        };
+        #[cfg(test)]
+        if archive {
+            self.archive_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        // Clone the selected packet references before waiting for native capacity.
+        // Buffer eviction or owner replacement cannot discard this accepted head.
         let (parameters, input_time_base, fallback_duration, mut packets, partial_from_cache) =
             self.select_packets(camera_id, seconds, trigger_at, end_at)?;
         let from = packets
@@ -315,7 +388,8 @@ impl CameraPreRollRegistry {
             .unwrap_or(trigger_at - ChronoDuration::seconds(i64::from(seconds)));
 
         let output_for_log = output_path.display().to_string();
-        let write_result = tokio::task::spawn_blocking(move || {
+        let write_job = move || {
+            let _owner = owner;
             write_packets_to_mp4(
                 &output_path,
                 parameters,
@@ -323,9 +397,17 @@ impl CameraPreRollRegistry {
                 fallback_duration,
                 &mut packets,
             )
-        })
-        .await
-        .context("pre-roll writer task failed")??;
+        };
+        let write_result = if archive {
+            // The caller holds a writer lease before retaining these packets:
+            // even detached error paths share the global 64-writer bound.
+            // Dedicated mux capacity waits without expiring at the interactive
+            // 2s threshold, and cannot compete with the main camera capture.
+            crate::core::cameras::run_archive_pre_roll_job(write_job).await
+        } else {
+            crate::core::cameras::run_local_media_job(write_job).await
+        }
+        .context("pre-roll writer task failed")?;
 
         debug!(
             "Camera pre-roll segment written: camera={}, output={}, duration={}s, packets={}",
@@ -499,7 +581,7 @@ async fn reconcile_pre_roll_owners(
     for target in targets {
         let should_restart = owners
             .get(&target.camera.id)
-            .is_some_and(|owner| owner.join.is_finished());
+            .is_some_and(|owner| crate::core::cameras::native_thread_finished(owner.thread_id));
         if should_restart {
             if let Some(owner) = owners.remove(&target.camera.id) {
                 stop_owner(target.camera.id, owner);
@@ -510,23 +592,39 @@ async fn reconcile_pre_roll_owners(
             continue;
         }
 
+        let capacity = OWNER_CAPACITY
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_PRE_ROLL_OWNERS)))
+            .clone();
+        let Ok(permit) = capacity.try_acquire_owned() else {
+            warn!(
+                "Pre-roll native owner capacity exhausted: max={}",
+                MAX_PRE_ROLL_OWNERS
+            );
+            continue;
+        };
         let owner_cancel = cancel_token.child_token();
         let writer = config
             .camera_pre_roll_registry
             .new_writer(target.camera.id)?;
         let camera = target.camera.clone();
-        let join = thread::Builder::new()
-            .name(format!("telegram-ha-preroll-{}", target.camera.id))
-            .spawn({
+        let thread_id = crate::core::cameras::spawn_native_thread(
+            format!("telegram-ha-preroll-{}", target.camera.id),
+            owner_cancel.clone(),
+            {
                 let owner_cancel = owner_cancel.clone();
-                move || run_pre_roll_owner(camera, writer, owner_cancel)
-            })
-            .context("failed to start camera pre-roll owner thread")?;
+                move || {
+                    let _permit = permit;
+                    crate::core::cameras::with_native_control(owner_cancel.clone(), None, || {
+                        run_pre_roll_owner(camera, writer, owner_cancel)
+                    })
+                }
+            },
+        )?;
         owners.insert(
             target.camera.id,
             PreRollOwner {
                 cancel: owner_cancel,
-                join,
+                thread_id,
             },
         );
     }
@@ -567,26 +665,10 @@ fn stop_removed_owners(
 
 fn stop_owner(camera_id: i64, owner: PreRollOwner) {
     owner.cancel.cancel();
-    thread::spawn(move || {
-        let deadline = Instant::now() + OWNER_STOP_JOIN_TIMEOUT;
-        while !owner.join.is_finished() && Instant::now() < deadline {
-            thread::sleep(OWNER_JOIN_POLL_INTERVAL);
-        }
-
-        if owner.join.is_finished() {
-            if owner.join.join().is_err() {
-                error!(
-                    "Camera pre-roll owner thread panicked: camera={}",
-                    camera_id
-                );
-            }
-        } else {
-            warn!(
-                "Camera pre-roll owner did not stop within {:?}; detaching thread: camera={}",
-                OWNER_STOP_JOIN_TIMEOUT, camera_id
-            );
-        }
-    });
+    debug!(
+        "Camera pre-roll owner cancellation requested: camera={}",
+        camera_id
+    );
 }
 
 fn run_pre_roll_owner(
@@ -604,7 +686,10 @@ fn run_pre_roll_owner(
                     camera.id, camera.name, message
                 );
                 writer.mark_error(&message);
-                std::thread::sleep(OWNER_RESTART_DELAY);
+                let retry_at = Instant::now() + OWNER_RESTART_DELAY;
+                while !cancel_token.is_cancelled() && Instant::now() < retry_at {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
     }
@@ -643,11 +728,11 @@ fn run_pre_roll_owner_once(
 
     writer.configure(parameters, input_time_base, fallback_packet_duration);
 
-    for (stream, packet) in input_ctx.packets() {
+    while let Some(packet) = crate::core::cameras::read_packet(&mut input_ctx)? {
         if cancel_token.is_cancelled() {
             return Ok(());
         }
-        if stream.index() != input_stream_index {
+        if packet.stream() != input_stream_index {
             continue;
         }
         writer.push_packet(packet);
@@ -712,6 +797,7 @@ fn write_packets_to_mp4(
     let mut wrote_packets = 0usize;
 
     for selected in packets {
+        crate::core::cameras::check_native_cancelled()?;
         let mut packet = selected.packet.clone();
         if let Some(pts) = packet.pts() {
             packet.set_pts(Some(pts.saturating_sub(base_ts).max(0)));
@@ -830,6 +916,43 @@ fn frame_duration_ticks(frame_rate: Rational, time_base: Rational) -> Option<i64
 }
 
 #[cfg(test)]
+pub(crate) fn prepared_registry_for_test() -> Result<CameraPreRollRegistry> {
+    tests::buffered_jpeg_registry()
+}
+
+#[cfg(test)]
+pub(crate) fn prepared_history_for_test(
+    trigger: DateTime<Utc>,
+    seconds: i64,
+) -> Result<CameraPreRollRegistry> {
+    let registry = tests::buffered_jpeg_registry()?;
+    {
+        let entry = registry.buffers.get(&1).unwrap();
+        let mut buffer = entry.lock().unwrap();
+        let source = buffer.packets.front().unwrap().packet.clone();
+        buffer.packets.clear();
+        buffer.bytes = 0;
+        buffer.input_time_base = Some(Rational::new(1, 1));
+        buffer.fallback_packet_duration = 1;
+        for index in 0..=seconds {
+            let mut packet = source.clone();
+            packet.set_pts(Some(index));
+            packet.set_dts(Some(index));
+            packet.set_duration(1);
+            let size = packet.size();
+            buffer.packets.push_back(BufferedPacket {
+                packet,
+                size,
+                captured_at: Instant::now() - Duration::from_secs((seconds - index) as u64),
+                captured_wall_at: trigger - ChronoDuration::seconds(seconds - index),
+            });
+            buffer.bytes += size;
+        }
+    }
+    Ok(registry)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     const MIB: usize = 1024 * 1024;
@@ -928,6 +1051,82 @@ mod tests {
             join.join().unwrap();
         }
         assert!(registry.stats().total_bytes <= MIB);
+        Ok(())
+    }
+    pub(super) fn buffered_jpeg_registry() -> Result<CameraPreRollRegistry> {
+        crate::core::cameras::init_ffmpeg();
+        let registry = CameraPreRollRegistry::new();
+        registry.apply_limits(&[(1, 5)], MIB, MIB)?;
+        let writer = registry.new_writer(1)?;
+        let mut parameters = codec::Parameters::new();
+        unsafe {
+            let parameters = &mut *parameters.as_mut_ptr();
+            parameters.codec_type = ffmpeg::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+            parameters.codec_id = ffmpeg::ffi::AVCodecID::AV_CODEC_ID_MJPEG;
+            parameters.width = 16;
+            parameters.height = 16;
+            parameters.format = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32;
+        }
+        writer.configure(parameters, Rational::new(1, 10), 1);
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode(
+            &vec![80_u8; 16 * 16 * 3],
+            16,
+            16,
+            image::ColorType::Rgb8.into(),
+        )?;
+        for index in 0..3 {
+            let mut packet = ffmpeg::Packet::copy(&jpeg);
+            packet.set_flags(ffmpeg::packet::Flags::KEY);
+            packet.set_pts(Some(index));
+            packet.set_dts(Some(index));
+            packet.set_duration(1);
+            writer.push_packet(packet);
+        }
+        Ok(registry)
+    }
+
+    #[tokio::test]
+    async fn archive_pre_roll_survives_busy_compression_and_retains_queued_packets() -> Result<()> {
+        let _pool_test = crate::core::cameras::NATIVE_POOL_TEST_LOCK.lock().await;
+        let registry = buffered_jpeg_registry()?;
+        let output = crate::core::cameras::TemporaryMedia::new()?;
+        let local_capacity = crate::core::cameras::reserve_local_media_capacity_for_test().await?;
+        let now = Utc::now();
+        let written = tokio::time::timeout(
+            Duration::from_secs(1),
+            registry.write_archive_to_file(1, 1, now, now, output.path()),
+        )
+        .await??;
+        assert_eq!(written.duration_s, 1);
+        assert!(std::fs::metadata(output.path())?.len() > 0);
+        drop(local_capacity);
+
+        // With both archival mux slots also busy, retain the selected packet
+        // references beyond the old 2s timeout, even if the ring owner changes.
+        let recording_capacity =
+            crate::core::cameras::reserve_archive_pre_roll_capacity_for_test().await?;
+        let queued_output = crate::core::cameras::TemporaryMedia::new()?;
+        let pending = registry.write_archive_to_file(1, 1, now, now, queued_output.path());
+        tokio::pin!(pending);
+        tokio::select! {
+            result = &mut pending => panic!("archive pre-roll unexpectedly finished without an archival mux permit: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(2100)) => {}
+        }
+        registry.new_writer(1)?;
+        drop(recording_capacity);
+        let written = tokio::time::timeout(Duration::from_secs(1), &mut pending).await??;
+        assert_eq!(written.duration_s, 1);
+        let mut input =
+            crate::core::cameras::open_camera_input(queued_output.path().to_str().unwrap())?;
+        let mut count = 0;
+        while crate::core::cameras::read_packet(&mut input)?.is_some() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 3,
+            "queued packet references must survive buffer replacement"
+        );
         Ok(())
     }
 }

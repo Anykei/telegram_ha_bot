@@ -361,10 +361,10 @@ async fn exact_temperature_text_queues_before_step_and_late_result_preserves_new
     )
     .await?;
     let worker_token = config.view_updates.get(&42).unwrap().clone();
-    let step =
-        config
-            .climate_controls
-            .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))?;
+    let step = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?;
     config.cancel_view_update(42);
     let new_state = State::PersonalQuietHours;
     dialogue.update(new_state.clone()).await?;

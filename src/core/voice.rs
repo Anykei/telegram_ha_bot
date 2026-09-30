@@ -2,15 +2,87 @@ use anyhow::{anyhow, Context, Result};
 use ffmpeg::{codec, format, frame, media, software, ChannelLayout};
 use ffmpeg_next as ffmpeg;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Once,
+};
 use std::time::Duration;
 
 static FFMPEG_INIT: Once = Once::new();
 
-pub async fn decode_audio_file_to_pcm_mono(path: PathBuf, sample_rate: u32) -> Result<Vec<u8>> {
-    tokio::task::spawn_blocking(move || decode_audio_file_to_pcm_mono_blocking(&path, sample_rate))
+/// A downloaded recording belongs to every worker still using it. Cancelling
+/// an async caller must not remove input while a blocking decoder is running.
+#[derive(Clone)]
+pub struct TemporaryVoice(Arc<VoiceFiles>);
+
+struct VoiceFiles {
+    directory: PathBuf,
+    audio: PathBuf,
+}
+
+impl Drop for VoiceFiles {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.directory) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Cannot clean up temporary voice recording: {error}");
+            }
+        }
+    }
+}
+
+impl TemporaryVoice {
+    pub async fn create(user_id: u64) -> Result<(Self, tokio::fs::File)> {
+        let (owner, file) = tokio::task::spawn_blocking(move || {
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+            let directory = std::env::temp_dir().join(format!(
+                "telegram_ha_bot_voice_{}_{}_{}_{}",
+                user_id,
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&directory)?;
+            let owner = Self(Arc::new(VoiceFiles {
+                audio: directory.join("audio.oga"),
+                directory,
+            }));
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(owner.path())?;
+            Ok::<_, anyhow::Error>((owner, file))
+        })
         .await
-        .context("Не удалось запустить декодирование аудио")?
+        .context("Не удалось создать временный voice-файл")??;
+        Ok((owner, tokio::fs::File::from_std(file)))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0.audio
+    }
+
+    async fn with_path_blocking<T: Send + 'static>(
+        self,
+        operation: impl FnOnce(&Path) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        tokio::task::spawn_blocking(move || operation(self.path()))
+            .await
+            .context("Не удалось запустить декодирование аудио")?
+    }
+}
+
+pub async fn decode_audio_file_to_pcm_mono(
+    file: TemporaryVoice,
+    sample_rate: u32,
+) -> Result<Vec<u8>> {
+    file.with_path_blocking(move |path| decode_audio_file_to_pcm_mono_blocking(path, sample_rate))
+        .await
 }
 
 fn init_ffmpeg() {
@@ -136,4 +208,36 @@ pub fn estimated_pcm_duration(pcm_len: usize, sample_rate: u32) -> Duration {
 
     let samples = pcm_len / 2;
     Duration::from_secs_f64(samples as f64 / sample_rate as f64)
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_decoder_keeps_input_until_blocking_worker_finishes() -> Result<()> {
+        let (owner, file) = TemporaryVoice::create(8001).await?;
+        drop(file);
+        let path = owner.path().to_owned();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::spawn(owner.with_path_blocking(move |path| {
+            started_tx.send(()).unwrap();
+            release_rx.recv()?;
+            assert!(path.exists());
+            Ok(())
+        }));
+        started_rx.await?;
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(path.exists());
+        release_tx.send(())?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while path.parent().unwrap().exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
 }

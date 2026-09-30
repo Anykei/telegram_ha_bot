@@ -84,8 +84,8 @@ pub async fn commit(
     );
     let now = chrono::Utc::now().timestamp();
     let mut tx = pool.begin().await?;
-    let claimed = sqlx::query("UPDATE ui_drafts SET updated_at=updated_at WHERE id=? AND owner_id=? AND kind=? AND revision=? AND expires_at>? AND status IN ('editing','review')")
-        .bind(id).bind(owner as i64).bind(KIND).bind(revision).bind(now).execute(&mut *tx).await?;
+    let claimed = sqlx::query("UPDATE ui_drafts SET updated_at=updated_at WHERE id=? AND owner_id=? AND kind=? AND revision=? AND expires_at>CAST(strftime('%s','now') AS INTEGER) AND status IN ('editing','review')")
+        .bind(id).bind(owner as i64).bind(KIND).bind(revision).execute(&mut *tx).await?;
     if claimed.rows_affected() != 1 {
         let saved: Option<i64> = sqlx::query_scalar("SELECT committed_target_id FROM ui_drafts WHERE id=? AND owner_id=? AND status='saved'").bind(id).bind(owner as i64).fetch_optional(&mut *tx).await?.flatten();
         if let Some(saved) = saved {

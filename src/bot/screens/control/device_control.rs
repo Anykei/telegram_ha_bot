@@ -16,6 +16,7 @@ pub async fn render(
     let dev_db = crate::db::devices::get_device_by_id(device_id, db)
         .await?
         .context("Device not found")?;
+    ctx.track_device(dev_db.id, &dev_db.entity_id);
     let ha_ent = ctx
         .config
         .ha_client
@@ -30,7 +31,10 @@ pub async fn render(
         .unwrap_or(room_id);
     let room_name = crate::db::rooms::get_room_by_id(room_id, db)
         .await?
-        .map(|r| r.display_name().to_string())
+        .map(|r| {
+            ctx.track_room(r.id);
+            r.display_name().to_string()
+        })
         .unwrap_or_default();
     let lang = ctx.lang;
     let smart_obj = SmartDevice::new(ha_ent.clone());

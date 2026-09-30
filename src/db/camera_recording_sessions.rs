@@ -8,6 +8,41 @@ mod regression_tests {
     use super::*;
     use crate::db::{camera_recording_rules as rules, cameras, rooms};
 
+    #[tokio::test]
+    async fn pre_roll_upgrade_separates_post_event_duration_from_historical_coverage() -> Result<()>
+    {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        let mut baseline = sqlx::migrate::Migrator::new(std::path::Path::new("migrations")).await?;
+        baseline.migrations = std::borrow::Cow::Owned(
+            baseline
+                .iter()
+                .filter(|migration| migration.version < 20260930170000)
+                .cloned()
+                .collect(),
+        );
+        baseline.run(&pool).await?;
+        sqlx::raw_sql(r#"
+            INSERT INTO cameras(id,key,name,stream_url) VALUES(1,'test','Test','rtsp://unused');
+            INSERT INTO camera_recording_rules(id,name,camera_id) VALUES(1,'Rule',1);
+            INSERT INTO camera_recording_sessions(id,event_group_id,rule_id,camera_id,trigger_summary,status,first_event_at,last_event_at,stop_after_at,expires_at,pre_roll_from,pre_roll_seconds)
+            VALUES
+            (1,'test',1,1,'test','ready','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z','2026-09-30T10:01:00Z','2026-10-30T10:00:00Z','2026-09-30T09:59:45Z',20),
+            (2,'test',1,1,'test','ready','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z','2026-09-30T10:01:00Z','2026-10-30T10:00:00Z','2026-09-30T10:00:05Z',20),
+            (3,'test',1,1,'test','ready','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z','2026-09-30T10:01:00Z','2026-10-30T10:00:00Z','2026-09-30T09:59:45Z',7),
+            (4,'test',1,1,'test','recording','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z','2026-09-30T10:01:00Z','2026-10-30T10:00:00Z',NULL,15);
+        "#).execute(&pool).await?;
+        let upgrade = sqlx::migrate::Migrator::new(std::path::Path::new("migrations")).await?;
+        upgrade.run(&pool).await?;
+        upgrade.run(&pool).await?;
+        let coverage: Vec<(i64,i64,i64)> = sqlx::query_as("SELECT pre_roll_seconds,pre_roll_actual_seconds,pre_roll_attempted_seconds FROM camera_recording_sessions ORDER BY id")
+            .fetch_all(&pool).await?;
+        assert_eq!(
+            coverage,
+            vec![(20, 15, 20), (20, 0, 20), (7, 7, 7), (15, 0, 0)]
+        );
+        Ok(())
+    }
+
     async fn recording_rule(pool: &SqlitePool) -> Result<RecordingRule> {
         sqlx::migrate!("./migrations").run(pool).await?;
         rooms::sync_rooms_from_ha("test", "Test", pool).await?;
@@ -53,6 +88,20 @@ mod regression_tests {
         };
         mark_recording(id, pool).await?;
         assert!(get_session(id, pool).await?.unwrap().stop_after_at <= now);
+        let segment =
+            crate::db::camera_recording_segments::create_segment(id, rule.camera_id, 0, 5, pool)
+                .await?;
+        crate::db::camera_recording_segments::register_paths(segment, &["test.mp4".into()], pool)
+            .await?;
+        crate::db::camera_recording_segments::mark_ready(segment, "test.mp4", 1024, now, pool)
+            .await?;
+        mark_pre_roll_failure(
+            id,
+            rule.normalized_pre_roll_seconds(),
+            "fixture has no pre-roll history",
+            pool,
+        )
+        .await?;
         Ok(id)
     }
 
@@ -289,6 +338,202 @@ mod regression_tests {
         );
         Ok(())
     }
+
+    async fn another_rule(
+        original: &RecordingRule,
+        retention_days: i64,
+        cooldown_s: i64,
+        pool: &SqlitePool,
+    ) -> Result<RecordingRule> {
+        let id = rules::create_rule(
+            rules::NewRecordingRule {
+                name: "joined",
+                camera_id: original.camera_id,
+                condition_logic: rules::ConditionLogic::Any,
+                tail_seconds: 5,
+                max_segment_seconds: 60,
+                cooldown_s,
+                retention_days,
+                pre_roll_enabled: true,
+                pre_roll_seconds: 15,
+            },
+            pool,
+        )
+        .await?;
+        Ok(rules::get_rule(id, pool).await?.unwrap())
+    }
+
+    #[tokio::test]
+    async fn merged_retention_updates_existing_and_late_parts_without_shortening() -> Result<()> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        let mut short = recording_rule(&pool).await?;
+        short.retention_days = 1;
+        let long = another_rule(&short, 30, 0, &pool).await?;
+        let now = Utc::now();
+        let id = expired_session(&short, now, &pool).await?;
+        let original_expiry = get_session(id, &pool).await?.unwrap().expires_at;
+        let writer_part =
+            crate::db::camera_recording_segments::create_segment(id, short.camera_id, 1, 5, &pool)
+                .await?;
+
+        assert_eq!(
+            start_or_extend_session(&long, "joined", "long retention", now, &pool).await?,
+            SessionAction::Extended(id)
+        );
+        let promised = now + Duration::days(30);
+        assert!(original_expiry < promised);
+        assert_eq!(get_session(id, &pool).await?.unwrap().expires_at, promised);
+        // A writer selected its parameters before the merge, but inserts after
+        // it. Its stale snapshot must not restore the old part expiry.
+        crate::db::camera_recording_segments::create_segment(id, short.camera_id, 2, 5, &pool)
+            .await?;
+        start_or_extend_session(
+            &short,
+            "short",
+            "short retention",
+            now + Duration::seconds(1),
+            &pool,
+        )
+        .await?;
+        assert_eq!(get_session(id, &pool).await?.unwrap().expires_at, promised);
+        let parts = crate::db::camera_recording_segments::list_session_segments(id, &pool).await?;
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|part| part.expires_at == promised));
+        assert_eq!(
+            parts
+                .iter()
+                .find(|part| part.id == writer_part)
+                .unwrap()
+                .status,
+            "recording"
+        );
+
+        // A failed metadata write cannot commit just the session half.
+        sqlx::query("CREATE TRIGGER reject_retention BEFORE UPDATE OF expires_at ON camera_recording_segments BEGIN SELECT RAISE(ABORT, 'test retention barrier'); END")
+            .execute(&pool).await?;
+        assert!(
+            start_or_extend_session(&long, "later", "later", now + Duration::days(1), &pool)
+                .await
+                .is_err()
+        );
+        assert_eq!(get_session(id, &pool).await?.unwrap().expires_at, promised);
+        assert!(
+            crate::db::camera_recording_segments::list_session_segments(id, &pool)
+                .await?
+                .iter()
+                .all(|part| part.expires_at == promised)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_applies_cooldown_to_all_joined_rules_and_no_others() -> Result<()> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        let original = recording_rule(&pool).await?;
+        let joined = another_rule(&original, 30, 300, &pool).await?;
+        let unrelated = another_rule(&original, 30, 300, &pool).await?;
+        let now = Utc::now();
+        let id = expired_session(&original, now, &pool).await?;
+        assert_eq!(
+            start_or_extend_session(&joined, "joined", "joined", now, &pool).await?,
+            SessionAction::Extended(id)
+        );
+        assert!(!mark_ready_if_due(id, now, &pool).await?);
+        assert!(rules::get_rule(joined.id, &pool)
+            .await?
+            .unwrap()
+            .last_completed_at
+            .is_none());
+        let completed_at = now + Duration::seconds(5);
+        assert!(mark_ready_if_due(id, completed_at, &pool).await?);
+        for rule in [&original, &joined] {
+            assert_eq!(
+                rules::get_rule(rule.id, &pool)
+                    .await?
+                    .unwrap()
+                    .last_completed_at,
+                Some(completed_at)
+            );
+        }
+        assert!(rules::get_rule(unrelated.id, &pool)
+            .await?
+            .unwrap()
+            .last_completed_at
+            .is_none());
+        // The matcher still owns the snapshot captured before completion.
+        assert!(joined.last_completed_at.is_none());
+        assert_eq!(
+            start_or_extend_session(
+                &joined,
+                "too soon",
+                "joined",
+                completed_at + Duration::seconds(1),
+                &pool
+            )
+            .await?,
+            SessionAction::SkippedCooldown
+        );
+        assert!(!mark_ready_if_due(id, completed_at + Duration::seconds(100), &pool).await?);
+        assert_eq!(
+            rules::get_rule(joined.id, &pool)
+                .await?
+                .unwrap()
+                .last_completed_at,
+            Some(completed_at)
+        );
+        assert!(matches!(
+            start_or_extend_session(
+                &joined,
+                "after cooldown",
+                "joined",
+                completed_at + Duration::seconds(300),
+                &pool
+            )
+            .await?,
+            SessionAction::Created(_)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn automatic_delete_rechecks_pin_after_waiting_for_database() -> Result<()> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let rule = recording_rule(&pool).await?;
+        let now = Utc::now();
+        let id = expired_session(&rule, now, &pool).await?;
+        assert!(mark_ready_if_due(id, now, &pool).await?);
+        let mut connection = pool.acquire().await?;
+        let pending = soft_delete_session_if_unpinned(id, &pool);
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        sqlx::query("UPDATE camera_recording_sessions SET pinned_at=? WHERE id=?")
+            .bind(now)
+            .bind(id)
+            .execute(&mut *connection)
+            .await?;
+        drop(connection);
+        assert!(!pending.await?);
+        let session = get_session(id, &pool).await?.unwrap();
+        assert_eq!(session.status, "ready");
+        assert_eq!(session.pinned_at, Some(now));
+        let pending_files: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM recording_files WHERE delete_pending=1")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(pending_files, 0);
+        assert_eq!(
+            crate::db::camera_recording_segments::list_ready_segments(id, &pool)
+                .await?
+                .len(),
+            1
+        );
+        soft_delete_session(id, &pool).await?;
+        assert!(!toggle_pin(id, 1, &pool).await?);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +568,8 @@ pub struct RecordingSession {
     pub pin_note: Option<String>,
     pub pre_roll_from: Option<DateTime<Utc>>,
     pub pre_roll_seconds: i64,
+    pub pre_roll_attempted_seconds: i64,
+    pub pre_roll_actual_seconds: i64,
     pub pre_roll_partial: i64,
     pub pre_roll_warning: Option<String>,
 }
@@ -368,7 +615,7 @@ async fn start_or_extend_session_inner(
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE camera_id = ?
           AND deleted_at IS NULL
@@ -385,6 +632,9 @@ async fn start_or_extend_session_inner(
 
     if let Some(active) = active {
         let stop_after_at = active.stop_after_at.max(stop_after_at);
+        let expires_at = active
+            .expires_at
+            .max(now + Duration::days(rule.retention_days));
         let extended_ids = add_rule_id(active.extended_by_rule_ids.as_deref(), rule.id);
         let summary = append_summary(&active.trigger_summary, trigger_summary);
         let requested_pre_roll_seconds = if rule.pre_roll_enabled() {
@@ -400,7 +650,8 @@ async fn start_or_extend_session_inner(
                 stop_after_at = ?,
                 extended_by_rule_ids = ?,
                 trigger_summary = ?,
-                pre_roll_seconds = MAX(pre_roll_seconds, ?)
+                pre_roll_seconds = MAX(pre_roll_seconds, ?),
+                expires_at = ?
             WHERE id = ?
             "#,
         )
@@ -409,9 +660,18 @@ async fn start_or_extend_session_inner(
         .bind(extended_ids)
         .bind(summary)
         .bind(requested_pre_roll_seconds)
+        .bind(expires_at)
         .bind(active.id)
         .execute(&mut *tx)
         .await?;
+
+        // Existing parts and parts inserted after this transaction share the
+        // session's longest retention promise, including an in-flight writer.
+        sqlx::query("UPDATE camera_recording_segments SET expires_at = ? WHERE session_id = ? AND deleted_at IS NULL")
+            .bind(expires_at)
+            .bind(active.id)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
         return Ok(SessionAction::Extended(active.id));
@@ -472,7 +732,7 @@ pub async fn get_session(session_id: i64, pool: &SqlitePool) -> Result<Option<Re
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE id = ? AND deleted_at IS NULL
         "#,
@@ -504,7 +764,7 @@ pub async fn list_camera_sessions_filtered(
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE camera_id =
         "#,
@@ -595,7 +855,7 @@ pub async fn get_active_camera_session(
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE camera_id = ?
           AND deleted_at IS NULL
@@ -623,7 +883,7 @@ pub async fn list_active_sessions_for_cameras(
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE deleted_at IS NULL
           AND status IN ('queued', 'recording')
@@ -653,7 +913,7 @@ pub async fn get_last_rule_session(
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE rule_id = ?
           AND deleted_at IS NULL
@@ -720,17 +980,21 @@ pub async fn mark_recording(session_id: i64, pool: &SqlitePool) -> Result<()> {
     let query = sqlx::query(
         r#"
         UPDATE camera_recording_sessions
-        SET status = 'recording', started_at = COALESCE(started_at, ?), error = NULL
-        WHERE id = ?
+        SET status = 'recording', started_at = COALESCE(started_at, ?), error = CASE WHEN julianday('now')-julianday(first_event_at)>2.0/86400 THEN 'Recording started late; requested interval is only partially covered' ELSE NULL END
+        WHERE id = ? AND deleted_at IS NULL AND status IN ('queued','recording')
         "#,
     )
     .bind(Utc::now())
     .bind(session_id);
-    crate::db::log_slow_operation(
+    let result = crate::db::log_slow_operation(
         "camera_recording_sessions.mark_recording",
         query.execute(pool),
     )
     .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "Recording session no longer active"
+    );
     Ok(())
 }
 
@@ -774,32 +1038,45 @@ async fn mark_ready_if_due_inner(
     pool: &SqlitePool,
 ) -> Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let rule_id = sqlx::query_scalar::<_, i64>(
+    let finished = sqlx::query_scalar::<_, i64>(
         r#"
         UPDATE camera_recording_sessions
-        SET status = 'ready', completed_at = ?1, error = NULL
+        SET status = CASE WHEN EXISTS(SELECT 1 FROM camera_recording_segments s WHERE s.session_id=camera_recording_sessions.id AND s.status='ready' AND s.deleted_at IS NULL) THEN 'ready' ELSE 'failed' END, completed_at = ?1, error = CASE WHEN EXISTS(SELECT 1 FROM camera_recording_segments s WHERE s.session_id=camera_recording_sessions.id AND s.status='ready' AND s.deleted_at IS NULL) THEN error ELSE 'recording interval expired without material' END
         WHERE id = ?2 AND deleted_at IS NULL AND status = 'recording'
           AND stop_after_at <= ?1
-        RETURNING rule_id
+          AND pre_roll_attempted_seconds >= pre_roll_seconds
+          AND NOT EXISTS(SELECT 1 FROM recording_writers w WHERE w.session_id=camera_recording_sessions.id)
+        RETURNING id
         "#,
     )
     .bind(completed_at)
     .bind(session_id)
     .fetch_optional(&mut *tx)
     .await?;
-    if let Some(rule_id) = rule_id {
+    if finished.is_some() {
         // Publish completion and its cooldown together, before accepting a new
         // session. An extension leaves both timestamps untouched.
         sqlx::query(
-            "UPDATE camera_recording_rules SET last_completed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            r#"UPDATE camera_recording_rules
+               SET last_completed_at = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id IN (
+                   SELECT rule_id FROM camera_recording_sessions WHERE id = ?
+                   UNION
+                   SELECT CAST(j.value AS INTEGER)
+                   FROM camera_recording_sessions s,
+                        json_each(CASE WHEN json_valid(s.extended_by_rule_ids)
+                                       THEN s.extended_by_rule_ids ELSE '[]' END) j
+                   WHERE s.id = ? AND j.type = 'integer'
+               )"#,
         )
         .bind(completed_at)
-        .bind(rule_id)
+        .bind(session_id)
+        .bind(session_id)
         .execute(&mut *tx)
         .await?;
     }
     tx.commit().await?;
-    Ok(rule_id.is_some())
+    Ok(finished.is_some())
 }
 
 pub async fn mark_failed(session_id: i64, error: &str, pool: &SqlitePool) -> Result<()> {
@@ -831,102 +1108,85 @@ pub async fn mark_notification_sent(session_id: i64, pool: &SqlitePool) -> Resul
     Ok(())
 }
 
-pub async fn mark_pre_roll_result(
+/// Record a completed attempt without weakening a concurrently merged request.
+/// Failed attempts retain any previously published head and are retried only
+/// when the requested window grows.
+pub async fn mark_pre_roll_failure(
     session_id: i64,
-    pre_roll_from: Option<DateTime<Utc>>,
-    pre_roll_seconds: i64,
-    pre_roll_partial: bool,
-    warning: Option<&str>,
+    attempted_seconds: i64,
+    warning: &str,
     pool: &SqlitePool,
 ) -> Result<()> {
-    let query = sqlx::query(
-        r#"
-        UPDATE camera_recording_sessions
-        SET pre_roll_from = ?,
-            pre_roll_seconds = ?,
-            pre_roll_partial = ?,
-            pre_roll_warning = ?
-        WHERE id = ?
-        "#,
+    sqlx::query(
+        "UPDATE camera_recording_sessions SET pre_roll_attempted_seconds=MAX(pre_roll_attempted_seconds,?),pre_roll_partial=1,pre_roll_warning=? WHERE id=? AND deleted_at IS NULL AND status IN ('queued','recording')",
     )
-    .bind(pre_roll_from)
-    .bind(pre_roll_seconds.max(0))
-    .bind(if pre_roll_partial { 1 } else { 0 })
-    .bind(warning.map(crate::db::sanitize_error))
-    .bind(session_id);
-    crate::db::log_slow_operation(
-        "camera_recording_sessions.mark_pre_roll_result",
-        query.execute(pool),
-    )
+    .bind(attempted_seconds.max(0))
+    .bind(crate::db::sanitize_error(warning))
+    .bind(session_id)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn toggle_pin(session_id: i64, user_id: i64, pool: &SqlitePool) -> Result<bool> {
-    let current = get_session(session_id, pool).await?;
-    let Some(session) = current else {
-        return Ok(false);
-    };
-
-    if session.pinned_at.is_some() {
-        sqlx::query(
-            r#"
-            UPDATE camera_recording_sessions
-            SET pinned_at = NULL, pinned_by = NULL, pin_note = NULL
-            WHERE id = ?
-            "#,
-        )
-        .bind(session_id)
-        .execute(pool)
-        .await?;
-        Ok(false)
-    } else {
-        sqlx::query(
-            r#"
-            UPDATE camera_recording_sessions
-            SET pinned_at = ?, pinned_by = ?
-            WHERE id = ?
-            "#,
-        )
-        .bind(Utc::now())
-        .bind(user_id)
-        .bind(session_id)
-        .execute(pool)
-        .await?;
-        Ok(true)
-    }
+    Ok(sqlx::query_scalar::<_, bool>(
+        r#"UPDATE camera_recording_sessions
+           SET pinned_at = CASE WHEN pinned_at IS NULL THEN ? ELSE NULL END,
+               pinned_by = CASE WHEN pinned_at IS NULL THEN ? ELSE NULL END,
+               pin_note = NULL
+           WHERE id = ? AND deleted_at IS NULL AND status <> 'deleted'
+           RETURNING pinned_at IS NOT NULL"#,
+    )
+    .bind(Utc::now())
+    .bind(user_id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(false))
 }
 
 pub async fn soft_delete_session(session_id: i64, pool: &SqlitePool) -> Result<()> {
-    let now = Utc::now();
-    let mut tx = pool.begin().await?;
-
-    sqlx::query(
-        r#"
-        UPDATE camera_recording_sessions
-        SET status = 'deleted', deleted_at = ?
-        WHERE id = ?
-        "#,
-    )
-    .bind(now)
-    .bind(session_id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        UPDATE camera_recording_segments
-        SET status = 'deleted', deleted_at = ?, file_path = NULL
-        WHERE session_id = ?
-        "#,
-    )
-    .bind(now)
-    .bind(session_id)
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
+    soft_delete_session_inner(session_id, false, pool).await?;
     Ok(())
+}
+
+/// Automatic cleanup must recheck the pin after acquiring the write lock.
+/// False means this candidate was pinned since it was selected.
+pub async fn soft_delete_session_if_unpinned(session_id: i64, pool: &SqlitePool) -> Result<bool> {
+    soft_delete_session_inner(session_id, true, pool).await
+}
+
+async fn soft_delete_session_inner(
+    session_id: i64,
+    only_unpinned: bool,
+    pool: &SqlitePool,
+) -> Result<bool> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM camera_recording_sessions WHERE id=?")
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    anyhow::ensure!(
+        !status
+            .as_deref()
+            .is_some_and(|s| s == "queued" || s == "recording"),
+        "Сначала остановите запись и дождитесь завершения"
+    );
+    let marked = sqlx::query("UPDATE camera_recording_sessions SET status='deleted',deleted_at=COALESCE(deleted_at,?) WHERE id=? AND (?=0 OR pinned_at IS NULL)")
+        .bind(Utc::now()).bind(session_id).bind(only_unpinned).execute(&mut *tx).await?.rows_affected();
+    if marked == 0 {
+        tx.commit().await?;
+        return Ok(false);
+    }
+    sqlx::query("UPDATE camera_recording_segments SET status='deleted',deleted_at=COALESCE(deleted_at,?) WHERE session_id=?")
+        .bind(Utc::now()).bind(session_id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE recording_files SET delete_pending=1 WHERE session_id=?")
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn find_expired_sessions(pool: &SqlitePool) -> Result<Vec<RecordingSession>> {
@@ -936,7 +1196,7 @@ pub async fn find_expired_sessions(pool: &SqlitePool) -> Result<Vec<RecordingSes
                status, error, first_event_at, last_event_at, stop_after_at, started_at,
                completed_at, expires_at, notification_sent_at, deleted_at, created_at,
                pinned_at, pinned_by, pin_note, pre_roll_from, pre_roll_seconds,
-               pre_roll_partial, pre_roll_warning
+               pre_roll_partial, pre_roll_warning, pre_roll_attempted_seconds, pre_roll_actual_seconds
         FROM camera_recording_sessions
         WHERE deleted_at IS NULL
           AND status IN ('ready', 'failed')

@@ -11,6 +11,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
     let dev = db::devices::get_device_by_id(device_id, db)
         .await?
         .context("Device not found")?;
+    ctx.track_device(dev.id, &dev.entity_id);
 
     let subscribed = db::subscriptions::is_subscribed(ctx.user_id as i64, &dev.entity_id, db)
         .await
@@ -159,6 +160,7 @@ pub async fn render_state_aliases(
     let dev = db::devices::get_device_by_id(device_id, db)
         .await?
         .context("Device not found")?;
+    ctx.track_device(dev.id, &dev.entity_id);
     let ha_ent = ctx
         .config
         .ha_client
@@ -256,28 +258,40 @@ pub async fn render_state_aliases(
 
     if ctx.is_admin {
         for state in &editable_states {
+            let context = db::state_alias_contexts::register(
+                ctx.user_id,
+                &db::state_alias_contexts::StateAliasContext {
+                    device_id,
+                    entity_id: dev.entity_id.clone(),
+                    state: state.clone(),
+                    admission_generation: ctx.admission_generation.clone(),
+                },
+                db,
+            )
+            .await?;
+            let label_state: String = state.chars().take(32).collect();
             let edit_label = if aliases.contains_key(state) {
-                format!("✏️ Изменить `{}`", state)
+                format!("✏️ Изменить `{}`", label_state)
             } else {
-                format!("➕ Задать `{}`", state)
+                format!("➕ Задать `{}`", label_state)
             };
             rows.push(vec![InlineKeyboardButton::callback(
                 edit_label,
-                ctx.settings_payload(SettingsPayload::EditStateAlias {
+                ctx.settings_payload(SettingsPayload::StateAliasEditContext {
                     room: room_id,
                     device: device_id,
-                    state: state.clone(),
+                    context,
                 })
                 .to_string(),
             )]);
 
             if aliases.contains_key(state) {
                 rows.push(vec![InlineKeyboardButton::callback(
-                    format!("🧹 Сбросить `{}`", state),
-                    ctx.settings_payload(SettingsPayload::ResetStateAlias {
+                    format!("🧹 Сбросить `{}`", label_state),
+                    ctx.settings_payload(SettingsPayload::StateAliasResetContext {
                         room: room_id,
                         device: device_id,
-                        state: state.clone(),
+                        context,
                     })
                     .to_string(),
                 )]);

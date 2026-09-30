@@ -66,9 +66,9 @@ pub async fn save(
     pool: &SqlitePool,
 ) -> Result<i64> {
     let now = Utc::now().timestamp();
-    let result = sqlx::query("UPDATE ui_drafts SET payload=?,step=?,return_context=?,status=?,revision=revision+1,updated_at=?,expires_at=? WHERE id=? AND owner_id=? AND revision=? AND expires_at>? AND status IN ('editing','review')")
+    let result = sqlx::query("UPDATE ui_drafts SET payload=?,step=?,return_context=?,status=?,revision=revision+1,updated_at=?,expires_at=? WHERE id=? AND owner_id=? AND revision=? AND expires_at>CAST(strftime('%s','now') AS INTEGER) AND status IN ('editing','review')")
         .bind(payload).bind(step).bind(return_context).bind(if review { "review" } else { "editing" })
-        .bind(now).bind(expiration(now, ttl_hours)).bind(id).bind(owner as i64).bind(revision).bind(now)
+        .bind(now).bind(expiration(now, ttl_hours)).bind(id).bind(owner as i64).bind(revision)
         .execute(pool).await?;
     if result.rows_affected() != 1 {
         bail!("Draft expired or changed; reopen its current version");
@@ -78,8 +78,8 @@ pub async fn save(
 }
 
 pub async fn cancel(id: i64, owner: u64, revision: i64, pool: &SqlitePool) -> Result<()> {
-    let result = sqlx::query("UPDATE ui_drafts SET status='cancelled',revision=revision+1,updated_at=? WHERE id=? AND owner_id=? AND revision=? AND expires_at>? AND status IN ('editing','review')")
-        .bind(Utc::now().timestamp()).bind(id).bind(owner as i64).bind(revision).bind(Utc::now().timestamp())
+    let result = sqlx::query("UPDATE ui_drafts SET status='cancelled',revision=revision+1,updated_at=? WHERE id=? AND owner_id=? AND revision=? AND expires_at>CAST(strftime('%s','now') AS INTEGER) AND status IN ('editing','review')")
+        .bind(Utc::now().timestamp()).bind(id).bind(owner as i64).bind(revision)
         .execute(pool).await?;
     if result.rows_affected() != 1 {
         bail!("Draft expired or changed; reopen its current version");

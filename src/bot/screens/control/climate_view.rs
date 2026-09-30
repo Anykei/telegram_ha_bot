@@ -11,6 +11,7 @@ pub async fn render(
     dev: Device,
     entity: Entity,
 ) -> anyhow::Result<View> {
+    ctx.track_device(dev.id, &dev.entity_id);
     let can_control =
         crate::db::access::can_control_device(ctx.user_id, ctx.is_admin, dev.id, &ctx.config.db)
             .await?;

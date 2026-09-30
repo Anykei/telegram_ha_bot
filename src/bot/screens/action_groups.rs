@@ -27,6 +27,13 @@ pub async fn render_user_list_page(ctx: RenderContext, requested: Option<u16>) -
     let targets =
         db::action_groups::list_visible_ha_native_targets(ctx.is_admin, &ctx.config.db).await?;
 
+    for group in &groups {
+        ctx.track_group(group.id);
+    }
+    for target in &targets {
+        ctx.track_native(target.id, &target.entity_id);
+    }
+
     let (page, pages) = common::list_page(
         &ctx,
         &Payload::Control(ControlPayload::ActionGroups),
@@ -40,14 +47,20 @@ pub async fn render_user_list_page(ctx: RenderContext, requested: Option<u16>) -
         if !visible.contains(&index) {
             continue;
         }
-        let state = crate::core::action_groups::aggregate_group_state(
+        let contributors = crate::core::action_groups::group_state_targets(
             group.id,
             ctx.user_id,
             ctx.is_admin,
             &ctx.config,
         )
-        .await
-        .unwrap_or(crate::core::action_groups::AggregateState::Unknown);
+        .await?;
+        for item in &contributors {
+            ctx.track_device(item.device_id, &item.entity_id);
+            ctx.track_room(item.room_id);
+        }
+        let state = crate::core::action_groups::aggregate_group_state(&contributors, &ctx.config)
+            .await
+            .unwrap_or(crate::core::action_groups::AggregateState::Unknown);
         rows.push(vec![InlineKeyboardButton::callback(
             format!("💡 {} · {}", group.name, aggregate_label(ctx.lang, state)),
             Payload::Control(ControlPayload::ActionGroupDetail { group: group.id }).to_string(),
@@ -125,6 +138,13 @@ pub async fn render_admin_list_page(ctx: RenderContext, requested: Option<u16>) 
 
     let groups = db::action_groups::list_action_groups(&ctx.config.db).await?;
     let targets = db::action_groups::list_ha_native_targets(&ctx.config.db).await?;
+
+    for group in &groups {
+        ctx.track_group(group.id);
+    }
+    for target in &targets {
+        ctx.track_native(target.id, &target.entity_id);
+    }
 
     let (page, pages) = common::list_page(
         &ctx,
@@ -227,6 +247,7 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
         return Ok(view);
     }
 
+    ctx.track_group(group.id);
     let items = db::action_groups::list_action_group_items(group.id, &ctx.config.db).await?;
     let mut visible_items = Vec::new();
     for item in items {
@@ -242,6 +263,12 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
             continue;
         }
         visible_items.push(item);
+    }
+    // Aggregate state and counts depend on every contributor, including members
+    // beyond the twelve names shown in the detail text.
+    for item in &visible_items {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
     }
     let executable_items_count = visible_items
         .iter()
@@ -469,6 +496,7 @@ pub async fn render_ha_native_detail(
         return Ok(view);
     }
 
+    ctx.track_native(target.id, &target.entity_id);
     let mut rows = Vec::new();
     if target.is_enabled() && !target.is_archived() {
         let action = if admin {
@@ -619,6 +647,7 @@ pub async fn render_group_items(
         view.alert = Some(t(lang, "action_groups.group_not_found").to_string());
         return Ok(view);
     };
+    ctx.track_group(group.id);
     let candidates =
         db::action_groups::list_action_group_device_candidates(group_id, &ctx.config.db).await?;
     let candidates_count = candidates.len();
@@ -645,6 +674,8 @@ pub async fn render_group_items(
 
     let mut rows = Vec::new();
     for item in &slice {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "{} {} · {}{}",
@@ -1019,6 +1050,7 @@ pub async fn render_confirm_delete_group(ctx: RenderContext, group_id: i64) -> R
         view.alert = Some(t(lang, "action_groups.group_not_found").to_string());
         return Ok(view);
     };
+    ctx.track_group(group.id);
     Ok(
         crate::bot::screens::admin::list_actions::render_confirm_action(
             ctx,
@@ -1081,11 +1113,17 @@ async fn target_title(
     match target {
         db::action_groups::ActionTargetRef::BotGroup(group_id) => {
             let group = db::action_groups::get_action_group(group_id, &ctx.config.db).await?;
-            Ok(group.map(|group| group.name))
+            Ok(group.map(|group| {
+                ctx.track_group(group.id);
+                group.name
+            }))
         }
         db::action_groups::ActionTargetRef::HaNative(target_id) => {
             let target = db::action_groups::get_ha_native_target(target_id, &ctx.config.db).await?;
-            Ok(target.map(|target| target.display_name().to_string()))
+            Ok(target.map(|target| {
+                ctx.track_native(target.id, &target.entity_id);
+                target.display_name().to_string()
+            }))
         }
     }
 }
@@ -1256,6 +1294,7 @@ pub async fn render_group_devices(ctx: RenderContext, group: i64, requested: u16
     if !ctx.is_admin && (!target.is_enabled() || !target.is_visible_to_all_users()) {
         return render_user_list(ctx).await;
     }
+    ctx.track_group(target.id);
     let mut items = Vec::new();
     for item in db::action_groups::list_action_group_items(group, &ctx.config.db).await? {
         if !item.is_archived()
@@ -1271,6 +1310,10 @@ pub async fn render_group_devices(ctx: RenderContext, group: i64, requested: u16
         }
     }
     let pages = items.len().div_ceil(10).max(1);
+    for item in &items {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
+    }
     let page = usize::from(requested).min(pages - 1);
     let mut rows = items
         .iter()

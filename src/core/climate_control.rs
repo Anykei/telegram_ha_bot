@@ -4,10 +4,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
+use super::devices::{validate_critical_consent, CriticalConsent, DeviceAction};
 use crate::models::AppConfig;
 
 const QUEUE_CAPACITY: usize = 32;
+const MAX_CLIMATE_WORKERS: usize = 32;
 const STATE_SETTLE_TIME: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
@@ -25,64 +29,139 @@ pub type TemperatureReply = oneshot::Receiver<Result<TemperatureResult>>;
 
 struct Request {
     user_id: u64,
-    confirmed: bool,
+    admission_generation: String,
+    entity_id: String,
+    consent: Option<CriticalConsent>,
     command: TemperatureCommand,
     reply: oneshot::Sender<Result<TemperatureResult>>,
 }
 
 #[derive(Default)]
 pub struct ClimateControls {
-    workers: Mutex<HashMap<i64, mpsc::Sender<Request>>>,
+    workers: Mutex<Workers>,
+    stopping: CancellationToken,
+}
+
+#[derive(Default)]
+struct Workers {
+    senders: HashMap<i64, mpsc::Sender<Request>>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+// If the application's shared shutdown deadline expires, dropping the shutdown
+// future aborts remaining async tasks instead of detaching them past DB close.
+struct JoiningWorkers(Vec<JoinHandle<()>>);
+
+impl Drop for JoiningWorkers {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            if !task.is_finished() {
+                log::warn!("operation=climate_shutdown stage=deadline result=aborted outcome=possibly_unknown");
+                task.abort();
+            }
+        }
+    }
 }
 
 impl ClimateControls {
+    /// Stop admission synchronously; requests already sent to HA keep awaiting
+    /// their result until shutdown's caller exhausts its overall time budget.
+    pub fn stop_accepting(&self) {
+        let mut workers = self.workers.lock().unwrap();
+        self.stopping.cancel();
+        workers.senders.clear();
+    }
+
+    /// Join all workers. The caller supplies the application's shutdown timeout.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.stop_accepting();
+        let mut joining = JoiningWorkers({
+            let mut workers = self.workers.lock().unwrap();
+            std::mem::take(&mut workers.tasks)
+        });
+        let mut failure = None;
+        for task in &mut joining.0 {
+            if let Err(error) = task.await {
+                log::warn!("operation=climate_shutdown stage=join result=failed reason={error}");
+                failure = Some(error);
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
     /// Enqueue before spawning UI work so opposite button presses keep arrival order.
-    pub fn enqueue(
+    pub async fn enqueue(
         &self,
         config: Arc<AppConfig>,
         user_id: u64,
         device_id: i64,
         command: TemperatureCommand,
     ) -> Result<TemperatureReply> {
-        self.enqueue_inner(config, user_id, device_id, command, false)
+        self.enqueue_inner(config, user_id, device_id, command, None)
+            .await
     }
 
     /// Only the server-side confirmation flow may call this after claiming its record.
-    pub(crate) fn enqueue_confirmed(
+    pub(crate) async fn enqueue_confirmed(
         &self,
         config: Arc<AppConfig>,
         user_id: u64,
         device_id: i64,
         target: f32,
+        consent: CriticalConsent,
     ) -> Result<TemperatureReply> {
         self.enqueue_inner(
             config,
             user_id,
             device_id,
             TemperatureCommand::Set(target),
-            true,
+            Some(consent),
         )
+        .await
     }
 
-    fn enqueue_inner(
+    async fn enqueue_inner(
         &self,
         config: Arc<AppConfig>,
         user_id: u64,
         device_id: i64,
         command: TemperatureCommand,
-        confirmed: bool,
+        consent: Option<CriticalConsent>,
     ) -> Result<TemperatureReply> {
+        let admission_generation = crate::db::user::admission_generation(user_id, &config.db)
+            .await?
+            .context("Access revoked / Доступ отозван")?;
+        let entity_id = crate::db::devices::get_device_by_id(device_id, &config.db)
+            .await?
+            .context("Device missing")?
+            .entity_id;
         let mut workers = self.workers.lock().unwrap();
-        let sender = workers.entry(device_id).or_insert_with(|| {
+        anyhow::ensure!(
+            !self.stopping.is_cancelled(),
+            "Application is stopping; temperature command was not queued"
+        );
+        // Retired workers cannot accumulate an unbounded history of handles.
+        workers.tasks.retain(|task| !task.is_finished());
+        anyhow::ensure!(
+            workers.senders.contains_key(&device_id) || workers.senders.len() < MAX_CLIMATE_WORKERS,
+            "Temperature worker capacity is full"
+        );
+        let Workers { senders, tasks } = &mut *workers;
+        let sender = senders.entry(device_id).or_insert_with(|| {
             let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
-            tokio::spawn(run_worker(config, device_id, receiver));
+            tasks.push(tokio::spawn(run_worker(config, device_id, receiver)));
             sender
         });
         let (reply, receiver) = oneshot::channel();
         sender
             .try_send(Request {
                 user_id,
-                confirmed,
+                admission_generation,
+                entity_id,
+                consent,
                 command,
                 reply,
             })
@@ -99,7 +178,18 @@ struct RecentTargets {
 async fn run_worker(config: Arc<AppConfig>, device_id: i64, mut receiver: mpsc::Receiver<Request>) {
     let mut recent = None;
     loop {
-        let request = match tokio::time::timeout(STATE_SETTLE_TIME, receiver.recv()).await {
+        let received = tokio::select! {
+            biased;
+            _ = config.climate_controls.stopping.cancelled() => {
+                receiver.close();
+                while let Some(queued) = receiver.recv().await {
+                    let _ = queued.reply.send(Err(anyhow::anyhow!("Application stopped before temperature command was sent")));
+                }
+                break;
+            }
+            received = tokio::time::timeout(STATE_SETTLE_TIME, receiver.recv()) => received,
+        };
+        let request = match received {
             Ok(Some(request)) => request,
             Ok(None) => break,
             Err(_) => {
@@ -109,7 +199,7 @@ async fn run_worker(config: Arc<AppConfig>, device_id: i64, mut receiver: mpsc::
                 match receiver.try_recv() {
                     Ok(request) => request,
                     Err(_) => {
-                        workers.remove(&device_id);
+                        workers.senders.remove(&device_id);
                         break;
                     }
                 }
@@ -139,6 +229,19 @@ async fn execute(
     uncertain: &mut bool,
 ) -> Result<TemperatureResult> {
     anyhow::ensure!(
+        !config.climate_controls.stopping.is_cancelled(),
+        "Application is stopping; temperature command was not sent"
+    );
+    anyhow::ensure!(
+        crate::db::user::admission_is_current(
+            request.user_id,
+            &request.admission_generation,
+            &config.db
+        )
+        .await?,
+        "Temperature request admission expired"
+    );
+    anyhow::ensure!(
         crate::db::access::can_control_device(
             request.user_id,
             request.user_id == config.root_user,
@@ -152,9 +255,8 @@ async fn execute(
         .await?
         .context("Device not found")?;
     anyhow::ensure!(
-        request.confirmed
-            || !crate::db::devices::is_device_critical(&device.entity_id, &config.db).await?,
-        "Critical device requires confirmation"
+        device.entity_id == request.entity_id,
+        super::devices::DeviceTargetChanged
     );
     anyhow::ensure!(
         device.entity_id.starts_with("climate."),
@@ -167,6 +269,10 @@ async fn execute(
         .into_iter()
         .next()
         .context("Climate state missing")?;
+    anyhow::ensure!(
+        entity.entity_id == request.entity_id,
+        super::devices::DeviceTargetChanged
+    );
     let current = entity
         .attributes
         .temperature
@@ -208,7 +314,56 @@ async fn execute(
         entity.temperature_target_is_valid(target),
         "Temperature outside device limits"
     );
+    // Even a queued request that was ordinary when admitted may now require
+    // consent. A confirmed temperature authorizes only its exact resolved target.
+    validate_critical_consent(
+        &config.db,
+        device_id,
+        &request.entity_id,
+        &DeviceAction::SetTemperature(target),
+        request.consent.as_ref(),
+    )
+    .await?;
     if target != base {
+        // State reads may be slow. Revoke/readd and ACL changes during that read
+        // must invalidate the queued request before the first external effect.
+        anyhow::ensure!(
+            crate::db::user::admission_is_current(
+                request.user_id,
+                &request.admission_generation,
+                &config.db
+            )
+            .await?
+                && crate::db::access::can_control_device(
+                    request.user_id,
+                    request.user_id == config.root_user,
+                    device_id,
+                    &config.db
+                )
+                .await?,
+            "Temperature control access revoked"
+        );
+        anyhow::ensure!(
+            config
+                .runtime_status
+                .read()
+                .await
+                .shutdown_requested_at
+                .is_none(),
+            "Application is stopping; temperature command was not sent"
+        );
+        anyhow::ensure!(
+            !config.climate_controls.stopping.is_cancelled(),
+            "Application is stopping; temperature command was not sent"
+        );
+        validate_critical_consent(
+            &config.db,
+            device_id,
+            &request.entity_id,
+            &DeviceAction::SetTemperature(target),
+            request.consent.as_ref(),
+        )
+        .await?;
         *uncertain = true;
         config
             .ha_client

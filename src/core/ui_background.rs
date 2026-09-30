@@ -8,7 +8,7 @@ pub const UI_BACKGROUND_INTERVALS_S: &[u32] = &[5, 15, 30];
 const UI_BACKGROUND_FAILURE_BACKOFF_S: i64 = 30;
 const UI_BACKGROUND_WARNING_COOLDOWN_S: i64 = 300;
 
-pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
+pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<(i64, Vec<u8>)> {
     let camera_id = db::settings::get_i64(db::settings::UI_BACKGROUND_CAMERA_ID, &config.db)
         .await
         .ok()
@@ -32,7 +32,7 @@ pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
         if let (Some(bytes), Some(captured_at)) = (&cache.bytes, cache.captured_at) {
             let fresh_for = Duration::seconds(i64::from(refresh_s));
             if now - captured_at < fresh_for {
-                return Some(bytes.clone());
+                return Some((camera_id, bytes.clone()));
             }
         }
 
@@ -40,14 +40,14 @@ pub async fn resolve(config: Arc<AppConfig>, user_id: u64) -> Option<Vec<u8>> {
         if cache.failed_at.is_some_and(|failed_at| {
             now - failed_at < Duration::seconds(UI_BACKGROUND_FAILURE_BACKOFF_S)
         }) {
-            return bytes;
+            return bytes.map(|bytes| (camera_id, bytes));
         }
 
         if !cache.refreshing {
             cache.refreshing = true;
             spawn_refresh(config.clone(), camera);
         }
-        return bytes;
+        return bytes.map(|bytes| (camera_id, bytes));
     }
 
     *cache = Some(UiBackgroundCache {

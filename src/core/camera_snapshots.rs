@@ -139,6 +139,12 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
                     "Snapshot URL вернул пустой файл",
                 );
             }
+            Err(error) if crate::core::cameras::is_capacity_error(&error) => {
+                log::debug!(
+                    "Camera preview deferred: media capacity busy, camera={}",
+                    camera_id
+                );
+            }
             Err(error) => {
                 mark_refresh_failed(
                     cache,
@@ -157,18 +163,28 @@ async fn pre_roll_snapshot(config: Arc<AppConfig>, camera_id: i64) -> Option<Vec
     }
 
     let now = Utc::now();
-    let tmp_path = std::env::temp_dir().join(format!(
-        "telegram_ha_bot_preroll_snapshot_{}_{}.mp4",
-        camera_id,
-        now.timestamp_millis()
-    ));
+    let owner = match crate::core::cameras::TemporaryMedia::new() {
+        Ok(owner) => owner,
+        Err(error) => {
+            log::debug!("Cannot reserve pre-roll snapshot: {}", error);
+            return None;
+        }
+    };
+    let tmp_path = owner.path();
     let write_result = config
         .camera_pre_roll_registry
-        .write_to_file(camera_id, 3, now, now, tmp_path.clone())
+        .write_to_file(
+            camera_id,
+            3,
+            now,
+            now,
+            tmp_path.clone(),
+            Some(owner.clone()),
+        )
         .await;
 
     let bytes = match write_result {
-        Ok(_) => match crate::core::cameras::extract_video_preview(tmp_path.clone()).await {
+        Ok(_) => match crate::core::cameras::extract_owned_video_preview(owner.clone()).await {
             Ok(bytes) if !bytes.is_empty() => Some(bytes),
             Ok(_) => None,
             Err(error) => {
@@ -190,7 +206,7 @@ async fn pre_roll_snapshot(config: Arc<AppConfig>, camera_id: i64) -> Option<Vec
         }
     };
 
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    drop(owner);
     bytes
 }
 

@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_TOOLCHAIN: 1.87.0
+  RUST_TOOLCHAIN: 1.95.0
 
 jobs:
   rust:

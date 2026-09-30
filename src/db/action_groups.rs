@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+#[path = "action_schedule_runs.rs"]
+pub mod runs;
+
 pub const ACCESS_ALL_USERS: &str = "all_users";
 pub const TARGET_BOT_GROUP: &str = "bot_group";
 pub const TARGET_HA_NATIVE: &str = "ha_native";
@@ -826,6 +829,7 @@ pub async fn list_due_action_schedules(
     .await?)
 }
 
+#[cfg(test)]
 pub async fn mark_action_schedule_run(
     schedule_id: i64,
     run_key: &str,

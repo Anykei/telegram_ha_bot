@@ -119,6 +119,12 @@ async fn check_all_cameras(config: &Arc<AppConfig>) {
                     );
                 }
             }
+            Err(error) if crate::core::cameras::is_capacity_error(&error) => {
+                log::debug!(
+                    "Camera health probe deferred: native capacity busy, camera={}",
+                    camera.id
+                );
+            }
             Err(error) => {
                 let message = crate::core::cameras::sanitize_camera_error(&error);
                 if let Err(error) = db::camera_health::mark_error_kind(
@@ -293,9 +299,19 @@ async fn send_pending_alerts(bot: &Bot, config: &Arc<AppConfig>) {
         }
 
         let result = if alert.health_state == db::camera_health::HEALTH_STATE_DEGRADED {
-            db::camera_health::mark_degradation_alert_sent(alert.camera_id, &config.db).await
+            db::camera_health::mark_degradation_alert_sent(
+                alert.camera_id,
+                state_changed_at,
+                &config.db,
+            )
+            .await
         } else {
-            db::camera_health::mark_recovery_alert_sent(alert.camera_id, &config.db).await
+            db::camera_health::mark_recovery_alert_sent(
+                alert.camera_id,
+                state_changed_at,
+                &config.db,
+            )
+            .await
         };
         if let Err(error) = result {
             error!(
@@ -330,6 +346,303 @@ fn format_alert(camera_name: &str, alert: &db::camera_health::PendingHealthAlert
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delayed_telegram_ack_does_not_acknowledge_a_new_health_transition(
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for recovery in [false, true] {
+            let config = crate::test_support::config().await;
+            db::rooms::sync_rooms_from_ha("health", "Health", &config.db).await?;
+            let camera_id = db::cameras::add_manual_camera(
+                db::cameras::NewCamera {
+                    name: "Health barrier camera",
+                    room_id: 1,
+                    stream_url: "rtsp://unused",
+                    snapshot_url: None,
+                    clip_seconds: 5,
+                },
+                &config.db,
+            )
+            .await?;
+            db::settings::set_i64(db::settings::CAMERA_HEALTH_FAILURE_THRESHOLD, 1, &config.db)
+                .await?;
+            db::settings::set_i64(
+                db::settings::CAMERA_HEALTH_RECOVERY_SUCCESSES,
+                1,
+                &config.db,
+            )
+            .await?;
+            db::camera_health::mark_error(camera_id, "first incident", &config.db).await?;
+            if recovery {
+                db::camera_health::mark_check_ok(camera_id, 100, &config.db).await?;
+            }
+            let old = db::camera_health::list_pending_alerts(&config.db)
+                .await?
+                .remove(0);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let url = format!("http://{}", listener.local_addr()?).parse()?;
+            let client = teloxide::net::default_reqwest_settings()
+                .no_proxy()
+                .build()?;
+            let bot = Bot::with_client("123:test", client).set_api_url(url);
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(2);
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut release = Some(release_rx);
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await?;
+                    let mut bytes = Vec::new();
+                    let body_start = loop {
+                        let mut chunk = [0; 4096];
+                        let size = socket.read(&mut chunk).await?;
+                        anyhow::ensure!(size > 0, "Incomplete Telegram mock request");
+                        bytes.extend_from_slice(&chunk[..size]);
+                        if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                            break index + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&bytes[..body_start]);
+                    assert!(headers
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_lowercase()
+                        .contains("sendmessage"));
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .context("Missing request length")?;
+                    while bytes.len() < body_start + length {
+                        let mut chunk = [0; 4096];
+                        let size = socket.read(&mut chunk).await?;
+                        anyhow::ensure!(size > 0, "Incomplete Telegram mock body");
+                        bytes.extend_from_slice(&chunk[..size]);
+                    }
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&bytes[body_start..body_start + length])?;
+                    requests_tx.send(body).await?;
+                    if let Some(release) = release.take() {
+                        release.await?;
+                    }
+                    let response = json!({"ok":true,"result":{"message_id":7,"date":1_700_000_000,"chat":{"id":1,"type":"private"},"text":"ok"}}).to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            let pending_bot = bot.clone();
+            let pending_config = config.clone();
+            let pending = tokio::spawn(async move {
+                send_pending_alerts(&pending_bot, &pending_config).await;
+            });
+            let request = tokio::time::timeout(Duration::from_secs(5), requests_rx.recv())
+                .await?
+                .unwrap();
+            assert!(request["text"].as_str().unwrap().contains(if recovery {
+                "восстановилась"
+            } else {
+                "недоступна"
+            }));
+
+            if recovery {
+                db::camera_health::mark_error(camera_id, "second incident", &config.db).await?;
+                db::camera_health::mark_check_ok(camera_id, 200, &config.db).await?;
+            } else {
+                db::camera_health::mark_check_ok(camera_id, 200, &config.db).await?;
+                db::camera_health::mark_error(camera_id, "second incident", &config.db).await?;
+            }
+            let new = db::camera_health::list_pending_alerts(&config.db)
+                .await?
+                .remove(0);
+            assert_eq!(new.alert_kind(), old.alert_kind());
+            assert!(new.state_changed_at() > old.state_changed_at());
+            release_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), pending).await??;
+
+            let pending_alerts = db::camera_health::list_pending_alerts(&config.db).await?;
+            assert_eq!(
+                pending_alerts.len(),
+                1,
+                "Delayed ack consumed the new transition"
+            );
+            assert_eq!(pending_alerts[0].state_changed_at(), new.state_changed_at());
+            assert!(
+                db::camera_health::alert_delivery_sent(
+                    camera_id,
+                    old.alert_kind(),
+                    1,
+                    old.state_changed_at().unwrap(),
+                    &config.db
+                )
+                .await?
+            );
+            assert!(
+                !db::camera_health::alert_delivery_sent(
+                    camera_id,
+                    new.alert_kind(),
+                    1,
+                    new.state_changed_at().unwrap(),
+                    &config.db
+                )
+                .await?
+            );
+
+            tokio::time::timeout(Duration::from_secs(5), send_pending_alerts(&bot, &config))
+                .await?;
+            assert!(
+                requests_rx.recv().await.is_some(),
+                "New transition was not sent"
+            );
+            assert!(db::camera_health::list_pending_alerts(&config.db)
+                .await?
+                .is_empty());
+            assert!(
+                db::camera_health::alert_delivery_sent(
+                    camera_id,
+                    new.alert_kind(),
+                    1,
+                    new.state_changed_at().unwrap(),
+                    &config.db
+                )
+                .await?
+            );
+            server.await??;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_success_requires_decodable_image_for_health_and_snapshot_cache(
+    ) -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _pool_test = crate::core::cameras::NATIVE_POOL_TEST_LOCK.lock().await;
+        let html = b"<html><body>camera login page</body></html>".to_vec();
+        let payload = Arc::new(std::sync::Mutex::new(html.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}/snapshot", listener.local_addr()?);
+        let server_payload = payload.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                let body = server_payload.lock().unwrap().clone();
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let config = crate::test_support::config().await;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        let camera_id = db::cameras::add_manual_camera(
+            db::cameras::NewCamera {
+                name: "snapshot",
+                room_id: 1,
+                stream_url: "rtsp://unused",
+                snapshot_url: Some(&url),
+                clip_seconds: 5,
+            },
+            &config.db,
+        )
+        .await?;
+        db::settings::set_i64(db::settings::CAMERA_HEALTH_FAILURE_THRESHOLD, 1, &config.db).await?;
+        db::settings::set_i64(
+            db::settings::CAMERA_HEALTH_RECOVERY_SUCCESSES,
+            1,
+            &config.db,
+        )
+        .await?;
+        let camera = db::cameras::get_camera(camera_id, &config.db)
+            .await?
+            .unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8).write_to(&mut png, image::ImageFormat::Png)?;
+        let valid = png.into_inner();
+        for invalid in [html, valid[..valid.len() / 2].to_vec()] {
+            *payload.lock().unwrap() = invalid;
+            check_all_cameras(&config).await;
+            let health = db::camera_health::get(camera_id, &config.db)
+                .await?
+                .unwrap();
+            assert_eq!(
+                health.health_state,
+                db::camera_health::HEALTH_STATE_DEGRADED
+            );
+            assert_eq!(health.consecutive_successes, 0);
+            assert!(health.last_snapshot_ok_at.is_none());
+            assert!(health.recovered_at.is_none());
+            config.camera_snapshot_cache.lock().await.clear();
+            let preview =
+                crate::core::camera_snapshots::resolve(config.clone(), camera.clone()).await;
+            assert!(preview.bytes.is_none());
+            assert!(preview.received_at.is_none());
+            assert!(preview.failed);
+        }
+        *payload.lock().unwrap() = valid.clone();
+        check_all_cameras(&config).await;
+        let healthy = db::camera_health::get(camera_id, &config.db)
+            .await?
+            .unwrap();
+        assert_eq!(
+            healthy.health_state,
+            db::camera_health::HEALTH_STATE_HEALTHY
+        );
+        assert!(healthy.last_snapshot_ok_at.is_some());
+        assert!(healthy.recovered_at.is_some());
+        config.camera_snapshot_cache.lock().await.clear();
+        let preview = crate::core::camera_snapshots::resolve(config.clone(), camera.clone()).await;
+        assert_eq!(preview.bytes.as_deref(), Some(valid.as_slice()));
+        assert!(preview.received_at.is_some());
+        assert!(!preview.failed);
+        let old_capture = Utc::now() - chrono::Duration::seconds(20);
+        config
+            .camera_snapshot_cache
+            .lock()
+            .await
+            .get_mut(&camera_id)
+            .unwrap()
+            .captured_at = Some(old_capture);
+        *payload.lock().unwrap() = b"<html>temporary error</html>".to_vec();
+        crate::core::camera_snapshots::resolve(config.clone(), camera.clone()).await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if config
+                    .camera_snapshot_cache
+                    .lock()
+                    .await
+                    .get(&camera_id)
+                    .is_some_and(|cache| !cache.refreshing)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await?;
+        let stale = crate::core::camera_snapshots::resolve(config.clone(), camera).await;
+        assert_eq!(stale.bytes.as_deref(), Some(valid.as_slice()));
+        assert_eq!(stale.received_at, Some(old_capture));
+        assert!(stale.failed);
+        check_all_cameras(&config).await;
+        let degraded = db::camera_health::get(camera_id, &config.db)
+            .await?
+            .unwrap();
+        assert_eq!(
+            degraded.health_state,
+            db::camera_health::HEALTH_STATE_DEGRADED
+        );
+        assert_eq!(degraded.last_snapshot_ok_at, healthy.last_snapshot_ok_at);
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
 
     #[test]
     fn degraded_alert_contains_context() {

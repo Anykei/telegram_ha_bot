@@ -5,59 +5,80 @@ use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
 
-pub async fn send_notification_text_to_recipient(
+async fn send_notification_text_to_recipient(
     bot: Bot,
     config: Arc<AppConfig>,
     recipient: i64,
     message: String,
-) {
+) -> anyhow::Result<()> {
     let chat_id = ChatId(recipient);
     let delay = config.delete_notification_messages_timeout_s;
 
-    tokio::spawn(async move {
-        match bot
-            .send_message(chat_id, message.as_str())
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-            .await
-        {
-            Ok(msg) => {
-                crate::bot::utils::delete_message_after(bot, chat_id, msg.id, delay).await;
-            }
-            Err(e) => {
-                log::error!("Failed to send notification to {}: {}", recipient, e);
-            }
-        }
-    });
+    let msg = bot
+        .send_message(chat_id, message.as_str())
+        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+        .await?;
+    crate::bot::utils::delete_message_after(bot, chat_id, msg.id, delay).await;
+    Ok(())
 }
 
 pub async fn send_notification(
-    bot: Bot,
+    _bot: Bot,
     config: Arc<AppConfig>,
     data: NotificationData,
 ) -> anyhow::Result<()> {
-    for user_id in data.recipients {
-        if quiet_hours_active(config.clone(), user_id, data.critical).await {
-            let entity_id = user_id.to_string();
-            let _ = crate::db::activity_log::log(
-                crate::db::activity_log::NewActivity {
-                    user_id: Some(user_id as u64),
-                    kind: "notification",
-                    entity_type: "user",
-                    entity_id: Some(&entity_id),
-                    action: "quiet_hours_suppressed",
-                    status: "ok",
-                    message: Some(&data.human_state),
-                },
+    crate::core::notification_delivery::enqueue(&config, data).await
+}
+
+pub(crate) async fn deliver_notification(
+    bot: Bot,
+    config: Arc<AppConfig>,
+    user_id: i64,
+    generation: String,
+    message: String,
+    critical: bool,
+    scope: crate::models::NotificationScope,
+) -> anyhow::Result<()> {
+    if quiet_hours_active(config.clone(), user_id, critical).await {
+        let entity_id = user_id.to_string();
+        let _ = crate::db::activity_log::log(
+            crate::db::activity_log::NewActivity {
+                user_id: Some(user_id as u64),
+                kind: "notification",
+                entity_type: "user",
+                entity_id: Some(&entity_id),
+                action: "quiet_hours_suppressed",
+                status: "ok",
+                message: None,
+            },
+            &config.db,
+        )
+        .await;
+        return Ok(());
+    }
+
+    let allowed = match scope {
+        crate::models::NotificationScope::Device(entity) => {
+            crate::db::subscriptions::get_subscribers(&entity, &config.db)
+                .await?
+                .contains(&user_id)
+        }
+        crate::models::NotificationScope::Camera(camera) => {
+            crate::db::cameras::get_accessible_camera(
+                user_id as u64,
+                user_id as u64 == config.root_user,
+                camera,
                 &config.db,
             )
-            .await;
-            continue;
+            .await?
+            .is_some()
         }
-
-        let m = data.human_state.clone();
-        send_notification_text_to_recipient(bot.clone(), config.clone(), user_id, m).await;
+    };
+    if !allowed || !crate::db::admission_is_current(user_id as u64, &generation, &config.db).await?
+    {
+        return Ok(());
     }
-    Ok(())
+    send_notification_text_to_recipient(bot, config, user_id, message).await
 }
 
 async fn quiet_hours_active(config: Arc<AppConfig>, user_id: i64, critical: bool) -> bool {

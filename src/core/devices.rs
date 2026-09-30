@@ -18,7 +18,7 @@ pub enum InteractionResult {
 }
 
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DeviceAction {
     Toggle,
     TurnOn,
@@ -30,10 +30,103 @@ pub enum DeviceAction {
     EnterManualInput,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChartParams {
     pub period_hours: u32,
     pub offset_hours: i32, // 0 - текущее время, -24 - вчера и т.д.
+}
+
+/// An active target captured when the user reviews a scoped command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceTargetSnapshot {
+    pub device_id: i64,
+    pub entity_id: String,
+    pub room_id: i64,
+}
+
+impl DeviceTargetSnapshot {
+    pub async fn is_current(&self, pool: &sqlx::SqlitePool) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ? AND entity_id = ? AND room_id = ? AND archived = 0)",
+        )
+        .bind(self.device_id)
+        .bind(&self.entity_id)
+        .bind(self.room_id)
+        .fetch_one(pool)
+        .await?)
+    }
+}
+
+#[derive(Debug)]
+pub struct DeviceTargetChanged;
+
+impl std::fmt::Display for DeviceTargetChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Device target changed; command was not sent")
+    }
+}
+
+impl std::error::Error for DeviceTargetChanged {}
+
+/// Scope reviewed by the user. Only a successfully claimed server operation may
+/// pass this scope to dispatch; possessing an unclaimed proposal is insufficient.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CriticalConsent {
+    device_id: i64,
+    entity_id: String,
+    action: DeviceAction,
+}
+
+impl CriticalConsent {
+    pub(crate) fn new(device_id: i64, entity_id: String, action: DeviceAction) -> Self {
+        Self {
+            device_id,
+            entity_id,
+            action,
+        }
+    }
+
+    pub(crate) fn matches(&self, device_id: i64, entity_id: &str, action: &DeviceAction) -> bool {
+        self.device_id == device_id && self.entity_id == entity_id && &self.action == action
+    }
+
+    pub(crate) fn targets_device(&self, device_id: i64) -> bool {
+        self.device_id == device_id
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CriticalConsentRequired;
+
+impl std::fmt::Display for CriticalConsentRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Critical device requires a new confirmation / Критичное устройство требует нового подтверждения")
+    }
+}
+
+impl std::error::Error for CriticalConsentRequired {}
+
+pub(crate) async fn validate_critical_consent(
+    pool: &sqlx::SqlitePool,
+    device_id: i64,
+    entity_id: &str,
+    action: &DeviceAction,
+    consent: Option<&CriticalConsent>,
+) -> Result<()> {
+    let critical: Option<bool> = sqlx::query_scalar(
+        "SELECT COALESCE(critical, 0) FROM devices WHERE id = ? AND entity_id = ? AND archived = 0",
+    )
+    .bind(device_id)
+    .bind(entity_id)
+    .fetch_optional(pool)
+    .await?;
+    let critical = critical.ok_or(DeviceTargetChanged)?;
+    let matches = consent.is_some_and(|scope| scope.matches(device_id, entity_id, action));
+    anyhow::ensure!(
+        matches || (!critical && consent.is_none()),
+        CriticalConsentRequired
+    );
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -224,8 +317,32 @@ impl SmartEntity for SmartDevice {
 
 pub async fn handle_device_interaction(
     config: &Arc<AppConfig>,
+    user_id: u64,
+    admission_generation: &str,
     device_id: i64,
     action: DeviceAction,
+    expected_target: Option<&DeviceTargetSnapshot>,
+) -> Result<InteractionResult> {
+    handle_device_interaction_with_consent(
+        config,
+        user_id,
+        admission_generation,
+        device_id,
+        action,
+        expected_target,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn handle_device_interaction_with_consent(
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    admission_generation: &str,
+    device_id: i64,
+    action: DeviceAction,
+    expected_target: Option<&DeviceTargetSnapshot>,
+    consent: Option<&CriticalConsent>,
 ) -> Result<InteractionResult> {
     let dev_db = crate::db::devices::get_device_by_id(device_id, &config.db)
         .await?
@@ -239,6 +356,51 @@ pub async fn handle_device_interaction(
         .next()
         .context("HA state not found")?;
 
+    anyhow::ensure!(
+        config
+            .runtime_status
+            .read()
+            .await
+            .shutdown_requested_at
+            .is_none(),
+        "Application is stopping; command was not sent"
+    );
+    // HA reads may outlive removal/re-admission or an ACL change. Keep the
+    // caller's original admission and validate after the last external read.
+    let access = crate::db::access::get_effective_device_access(
+        user_id,
+        user_id == config.root_user,
+        device_id,
+        &config.db,
+    )
+    .await?;
+    let needs_control = !matches!(
+        action,
+        DeviceAction::GenerateChart(_) | DeviceAction::EnterManualInput
+    );
+    anyhow::ensure!(
+        access.can_view && (!needs_control || access.can_control),
+        "Device access revoked; command was not sent"
+    );
+    anyhow::ensure!(
+        crate::db::user::admission_is_current(user_id, admission_generation, &config.db).await?,
+        "User admission revoked; command was not sent"
+    );
+    if let Some(expected) = expected_target {
+        // The DB target can move, be archived or be replaced while HA is slow.
+        // Validate the reviewed scope and the actual HA target at dispatch,
+        // including for root, whose ACL otherwise permits every device.
+        anyhow::ensure!(
+            expected.device_id == device_id
+                && ha_state.entity_id == expected.entity_id
+                && expected.is_current(&config.db).await?,
+            DeviceTargetChanged
+        );
+    }
+    if needs_control {
+        validate_critical_consent(&config.db, device_id, &ha_state.entity_id, &action, consent)
+            .await?;
+    }
     let smart_obj = SmartDevice::new(ha_state);
     let res = smart_obj.on_click(config.ha_client.as_ref(), action).await;
     if matches!(res, InteractionResult::Processed) {
@@ -264,6 +426,7 @@ mod tests {
     struct FakeHaClient {
         states: Vec<Entity>,
         calls: Arc<Mutex<Vec<(String, String, String)>>>,
+        response_entity_id: Option<String>,
     }
 
     #[async_trait::async_trait]
@@ -296,6 +459,12 @@ mod tests {
                 .iter()
                 .filter(|entity| entity_ids.contains(&entity.entity_id))
                 .cloned()
+                .map(|mut entity| {
+                    if let Some(id) = &self.response_entity_id {
+                        entity.entity_id = id.clone();
+                    }
+                    entity
+                })
                 .collect())
         }
 
@@ -338,21 +507,12 @@ mod tests {
 
     async fn test_pool() -> anyhow::Result<SqlitePool> {
         let pool = SqlitePool::connect("sqlite::memory:").await?;
-        sqlx::query(
-            r#"
-            CREATE TABLE devices (
-                id INTEGER PRIMARY KEY,
-                room_id INTEGER NOT NULL,
-                entity_id TEXT NOT NULL UNIQUE,
-                alias TEXT,
-                device_class TEXT,
-                device_domain TEXT,
-                archived INTEGER NOT NULL DEFAULT 0
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await?
+            .run(&pool)
+            .await?;
+        crate::db::add_user(1, &pool).await?;
+        crate::db::rooms::sync_rooms_from_ha("test", "Test", &pool).await?;
 
         sqlx::query(
             r#"
@@ -378,6 +538,7 @@ mod tests {
                 attributes: Default::default(),
             }],
             calls: calls.clone(),
+            response_entity_id: None,
         });
 
         let (recording_tx, _recording_rx) =
@@ -415,6 +576,9 @@ mod tests {
             voice_show_recognized_text: true,
             voice_response_format: crate::options::VoiceResponseFormat::Text,
             sessions: DashMap::<u64, UserSession>::new(),
+            admission_lifecycle: tokio::sync::Mutex::new(()),
+            dialogue_generations: DashMap::new(),
+            active_dialogues: DashMap::new(),
             ui_locks: DashMap::new(),
             view_updates: DashMap::new(),
             climate_controls: Default::default(),
@@ -427,9 +591,15 @@ mod tests {
                 crate::core::camera_pre_roll::CameraPreRollRegistry::new(),
             ),
             runtime_status: tokio::sync::RwLock::new(crate::models::RuntimeStatus::default()),
+            notification_delivery: Default::default(),
         });
 
-        let result = handle_device_interaction(&config, 1, DeviceAction::Toggle).await?;
+        let generation = crate::db::user::admission_generation(1, &config.db)
+            .await?
+            .context("Test user admission missing")?;
+        let result =
+            handle_device_interaction(&config, 1, &generation, 1, DeviceAction::Toggle, None)
+                .await?;
 
         assert!(matches!(result, InteractionResult::Processed));
         assert_eq!(
@@ -441,6 +611,49 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scoped_device_rejects_ha_response_for_an_unreviewed_entity() -> Result<()> {
+        let mut config = crate::test_support::config().await;
+        crate::db::add_user(1, &config.db).await?;
+        crate::db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        crate::db::devices::sync_device("light.reviewed", "test", "Reviewed", "light", &config.db)
+            .await?;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        Arc::get_mut(&mut config).unwrap().ha_client = Arc::new(FakeHaClient {
+            states: vec![Entity {
+                entity_id: "light.reviewed".into(),
+                name: "Reviewed".into(),
+                state: "on".into(),
+                device_class: Some("light".into()),
+                attributes: Default::default(),
+            }],
+            calls: calls.clone(),
+            response_entity_id: Some("light.unreviewed".into()),
+        });
+        let snapshot = DeviceTargetSnapshot {
+            device_id: 1,
+            entity_id: "light.reviewed".into(),
+            room_id: 1,
+        };
+        assert!(snapshot.is_current(&config.db).await?);
+        let generation = crate::db::admission_generation(1, &config.db)
+            .await?
+            .unwrap();
+        let error = handle_device_interaction(
+            &config,
+            1,
+            &generation,
+            1,
+            DeviceAction::TurnOff,
+            Some(&snapshot),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is::<DeviceTargetChanged>());
+        assert!(calls.lock().unwrap().is_empty());
         Ok(())
     }
 }

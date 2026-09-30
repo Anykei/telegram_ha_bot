@@ -18,6 +18,10 @@ pub async fn render_page(
     use super::common;
     let rooms = db::rooms::get_rooms_for_user(ctx.user_id, ctx.is_admin, &ctx.config.db).await?;
 
+    for room in &rooms {
+        ctx.track_room(room.id);
+    }
+
     let text = crate::core::presentation::StateFormatter::get_rooms_header(&mode);
 
     let current_payload = match mode {

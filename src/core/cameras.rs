@@ -6,36 +6,236 @@ use image::codecs::jpeg::JpegEncoder;
 use image::ColorType;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 static FFMPEG_INIT: Once = Once::new();
 static LIVE_CAMERA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static RECORDING_CAMERA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static RECORDING_JOB_LIMIT: AtomicUsize = AtomicUsize::new(4);
+static NATIVE_STOPPING: AtomicBool = AtomicBool::new(false);
+static NATIVE_SHUTDOWN: OnceLock<CancellationToken> = OnceLock::new();
+static ARCHIVE_PRE_ROLL_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+const MAX_ARCHIVE_PRE_ROLL_JOBS: usize = 2;
+static NATIVE_CLEANUPS: OnceLock<Mutex<Vec<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+static NATIVE_JOBS: OnceLock<Mutex<Vec<NativeJob>>> = OnceLock::new();
 static LOCAL_MEDIA_JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static TIMED_OUT_LIVE_CAMERA_JOBS: AtomicUsize = AtomicUsize::new(0);
+static FAILED_NATIVE_JOBS: AtomicUsize = AtomicUsize::new(0);
 static TIMED_OUT_LOCAL_MEDIA_JOBS: AtomicUsize = AtomicUsize::new(0);
 const MAX_LIVE_CAMERA_JOBS: usize = 2;
 const MAX_LOCAL_MEDIA_JOBS: usize = 2;
-const MAX_TIMED_OUT_LIVE_CAMERA_JOBS: usize = 2;
-const MAX_TIMED_OUT_LOCAL_MEDIA_JOBS: usize = 2;
 const REMUX_KEYFRAME_WAIT_S: u64 = 10;
 const SNAPSHOT_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 pub struct CameraJobStats {
     pub active_live_jobs: usize,
+    pub active_recording_jobs: usize,
+    pub recording_job_limit: usize,
+    pub active_native_threads: usize,
+    pub failed_native_jobs: usize,
     pub active_local_media_jobs: usize,
+    pub active_archive_pre_roll_jobs: usize,
     pub timed_out_live_jobs: usize,
     pub timed_out_local_media_jobs: usize,
 }
 
-#[derive(Default)]
-struct CameraJobState {
-    done: bool,
-    timed_out: bool,
+struct NativeJob {
+    cancel: CancellationToken,
+    join: thread::JoinHandle<()>,
+}
+
+thread_local! {
+    static NATIVE_IO_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    static NATIVE_CONTROL: std::cell::RefCell<Option<(CancellationToken, Option<Instant>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_native_control<T>(
+    cancel: CancellationToken,
+    deadline: Option<Instant>,
+    job: impl FnOnce() -> T,
+) -> T {
+    NATIVE_CONTROL.with(|slot| *slot.borrow_mut() = Some((cancel, deadline)));
+    let result = job();
+    NATIVE_CONTROL.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
+pub(crate) fn check_native_cancelled() -> Result<()> {
+    let cancelled = NATIVE_CONTROL.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|(token, deadline)| {
+            token.is_cancelled() || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        })
+    });
+    let io_expired = NATIVE_IO_DEADLINE.with(|slot| {
+        slot.get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    });
+    anyhow::ensure!(
+        !cancelled && !io_expired,
+        "Native media operation cancelled or deadline exceeded"
+    );
+    Ok(())
+}
+
+struct IoDeadline(Option<Instant>);
+impl IoDeadline {
+    fn new() -> Self {
+        Self(
+            NATIVE_IO_DEADLINE
+                .with(|slot| slot.replace(Some(Instant::now() + Duration::from_secs(5)))),
+        )
+    }
+}
+impl Drop for IoDeadline {
+    fn drop(&mut self) {
+        NATIVE_IO_DEADLINE.with(|slot| slot.set(self.0));
+    }
+}
+
+// This callback does not own heap data: its lifetime is the native thread scope.
+extern "C" fn interrupt_native(_: *mut std::ffi::c_void) -> std::ffi::c_int {
+    i32::from(check_native_cancelled().is_err())
+}
+
+struct CancelOnDrop(CancellationToken);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+pub(crate) fn spawn_native_thread(
+    name: String,
+    cancel: CancellationToken,
+    job: impl FnOnce() + Send + 'static,
+) -> Result<thread::ThreadId> {
+    let mut jobs = NATIVE_JOBS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    anyhow::ensure!(
+        !NATIVE_STOPPING.load(Ordering::Acquire),
+        "Native media is shutting down"
+    );
+    reap_native_threads(&mut jobs);
+    let join = thread::Builder::new().name(name).spawn(job)?;
+    let id = join.thread().id();
+    jobs.push(NativeJob { cancel, join });
+    Ok(id)
+}
+
+pub(crate) fn native_thread_finished(id: thread::ThreadId) -> bool {
+    let mut jobs = NATIVE_JOBS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    reap_native_threads(&mut jobs);
+    !jobs.iter().any(|job| job.join.thread().id() == id)
+}
+
+fn reap_native_threads(jobs: &mut Vec<NativeJob>) {
+    let mut index = 0;
+    while index < jobs.len() {
+        if jobs[index].join.is_finished() {
+            let job = jobs.swap_remove(index);
+            if job.join.join().is_err() {
+                log::error!("Native media thread panicked");
+            }
+        } else {
+            index += 1;
+        }
+    }
+}
+
+pub(crate) fn cancel_native_jobs() {
+    NATIVE_STOPPING.store(true, Ordering::Release);
+    NATIVE_SHUTDOWN.get_or_init(CancellationToken::new).cancel();
+    if let Some(jobs) = NATIVE_JOBS.get() {
+        for job in jobs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            job.cancel.cancel();
+        }
+    }
+}
+
+pub(crate) fn spawn_media_task(
+    future: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let mut tasks = NATIVE_CLEANUPS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    anyhow::ensure!(
+        !NATIVE_STOPPING.load(Ordering::Acquire),
+        "Media is shutting down"
+    );
+    reap_media_tasks(&mut tasks);
+    tasks.push(tokio::spawn(future));
+    Ok(())
+}
+
+pub(crate) fn track_media_task(task: tokio::task::JoinHandle<()>) {
+    let mut tasks = NATIVE_CLEANUPS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    reap_media_tasks(&mut tasks);
+    tasks.push(task);
+}
+
+fn reap_media_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    use futures_util::FutureExt;
+    let mut index = 0;
+    while index < tasks.len() {
+        if tasks[index].is_finished() {
+            if let Some(Err(error)) = tasks.swap_remove(index).now_or_never() {
+                log::warn!("Media completion task failed: {}", error);
+            }
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn pending_media_tasks() -> usize {
+    let mut tasks = NATIVE_CLEANUPS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    reap_media_tasks(&mut tasks);
+    tasks.len()
+}
+
+pub(crate) async fn wait_native_jobs() {
+    loop {
+        let remaining = {
+            let mut jobs = NATIVE_JOBS
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reap_native_threads(&mut jobs);
+            jobs.len()
+        };
+        if remaining == 0
+            && pending_media_tasks() == 0
+            && crate::core::camera_recording::active_writer_leases() == 0
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+pub(crate) fn configure_recording_pool(limit: usize) {
+    RECORDING_CAMERA_JOBS.get_or_init(|| {
+        RECORDING_JOB_LIMIT.store(limit, Ordering::Relaxed);
+        Arc::new(Semaphore::new(limit))
+    });
 }
 
 pub fn camera_job_stats() -> CameraJobStats {
@@ -46,9 +246,27 @@ pub fn camera_job_stats() -> CameraJobStats {
         .get_or_init(|| Arc::new(Semaphore::new(MAX_LOCAL_MEDIA_JOBS)))
         .clone();
 
+    let recording_limit = RECORDING_JOB_LIMIT.load(Ordering::Relaxed);
+    let recording_active = RECORDING_CAMERA_JOBS.get().map_or(0, |pool| {
+        recording_limit.saturating_sub(pool.available_permits())
+    });
+    let active_native_threads = NATIVE_JOBS.get().map_or(0, |jobs| {
+        jobs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|job| !job.join.is_finished())
+            .count()
+    });
     CameraJobStats {
+        active_recording_jobs: recording_active,
+        recording_job_limit: recording_limit,
+        active_native_threads,
+        failed_native_jobs: FAILED_NATIVE_JOBS.load(Ordering::Relaxed),
         active_live_jobs: MAX_LIVE_CAMERA_JOBS.saturating_sub(live.available_permits()),
         active_local_media_jobs: MAX_LOCAL_MEDIA_JOBS.saturating_sub(local.available_permits()),
+        active_archive_pre_roll_jobs: ARCHIVE_PRE_ROLL_JOBS.get().map_or(0, |pool| {
+            MAX_ARCHIVE_PRE_ROLL_JOBS.saturating_sub(pool.available_permits())
+        }),
         timed_out_live_jobs: TIMED_OUT_LIVE_CAMERA_JOBS.load(Ordering::Relaxed),
         timed_out_local_media_jobs: TIMED_OUT_LOCAL_MEDIA_JOBS.load(Ordering::Relaxed),
     }
@@ -57,12 +275,20 @@ pub fn camera_job_stats() -> CameraJobStats {
 #[derive(Clone, Copy)]
 enum CameraJobPool {
     LiveCamera,
+    Recording,
+    ArchivePreRoll,
     LocalMedia,
 }
 
 impl CameraJobPool {
     fn semaphore(self) -> Arc<Semaphore> {
         match self {
+            Self::ArchivePreRoll => ARCHIVE_PRE_ROLL_JOBS
+                .get_or_init(|| Arc::new(Semaphore::new(MAX_ARCHIVE_PRE_ROLL_JOBS)))
+                .clone(),
+            Self::Recording => RECORDING_CAMERA_JOBS
+                .get_or_init(|| Arc::new(Semaphore::new(4)))
+                .clone(),
             Self::LiveCamera => LIVE_CAMERA_JOBS
                 .get_or_init(|| Arc::new(Semaphore::new(MAX_LIVE_CAMERA_JOBS)))
                 .clone(),
@@ -72,48 +298,35 @@ impl CameraJobPool {
         }
     }
 
-    fn timed_out_jobs(self) -> &'static AtomicUsize {
-        match self {
-            Self::LiveCamera => &TIMED_OUT_LIVE_CAMERA_JOBS,
-            Self::LocalMedia => &TIMED_OUT_LOCAL_MEDIA_JOBS,
-        }
-    }
-
-    fn max_timed_out_jobs(self) -> usize {
-        match self {
-            Self::LiveCamera => MAX_TIMED_OUT_LIVE_CAMERA_JOBS,
-            Self::LocalMedia => MAX_TIMED_OUT_LOCAL_MEDIA_JOBS,
-        }
-    }
-
-    fn queue_name(self) -> &'static str {
-        match self {
-            Self::LiveCamera => "камеры",
-            Self::LocalMedia => "локального видео",
-        }
-    }
-
-    fn unavailable_message(self) -> &'static str {
-        match self {
-            Self::LiveCamera => {
-                "Камеры временно недоступны: есть зависшие LibAV-задачи после таймаута. Перезапустите сервис, если поток камеры не восстановится."
-            }
-            Self::LocalMedia => {
-                "Видеоархив временно недоступен: есть зависшие LibAV-задачи обработки локального видео. Перезапустите сервис, если обработка не восстановится."
-            }
-        }
-    }
-
     fn thread_name(self) -> &'static str {
         match self {
-            Self::LiveCamera => "telegram-ha-camera",
-            Self::LocalMedia => "telegram-ha-media",
+            Self::LiveCamera | Self::Recording => "telegram-ha-camera",
+            Self::LocalMedia | Self::ArchivePreRoll => "telegram-ha-media",
         }
     }
 }
 
+#[derive(Debug)]
+struct CameraCapacityBusy;
+impl std::fmt::Display for CameraCapacityBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Ресурсы обработки камеры заняты. Попробуйте позже.")
+    }
+}
+impl std::error::Error for CameraCapacityBusy {}
+
+pub(crate) fn is_capacity_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CameraCapacityBusy>().is_some()
+}
+
 pub async fn capture_snapshot(camera: &Camera) -> Result<Vec<u8>> {
     if let Some(snapshot_url) = camera.snapshot_url.as_deref() {
+        let _permit = tokio::time::timeout(
+            Duration::from_secs(2),
+            CameraJobPool::LiveCamera.semaphore().acquire_owned(),
+        )
+        .await
+        .map_err(|_| anyhow!(CameraCapacityBusy))??;
         return fetch_snapshot(snapshot_url).await;
     }
 
@@ -171,7 +384,13 @@ async fn fetch_snapshot_inner(snapshot_url: &str, safe_url: &str) -> Result<Vec<
         return Err(anyhow!("Snapshot URL вернул пустой файл"));
     }
 
-    Ok(bytes)
+    run_local_media_job(move || {
+        check_native_cancelled()?;
+        image::load_from_memory(&bytes).context("Snapshot URL returned an invalid image")?;
+        check_native_cancelled()?;
+        Ok(bytes)
+    })
+    .await
 }
 
 pub async fn capture_clip(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
@@ -209,21 +428,116 @@ pub async fn capture_clip_to_file(
         safe_stream_label(&camera.stream_url),
         output_path.display()
     );
-    run_isolated_job(CameraJobPool::LiveCamera, timeout, move || {
+    run_isolated_job(CameraJobPool::Recording, timeout, move || {
         write_clip_file_blocking(&camera, seconds, &output_path)
     })
     .await
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct TemporaryMedia(Arc<TemporaryMediaDirectory>);
+
+#[derive(Debug)]
+struct TemporaryMediaDirectory(PathBuf);
+static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+static LIVE_TEMP_DIRECTORIES: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+
+impl TemporaryMedia {
+    pub(crate) fn new() -> Result<Self> {
+        let root = std::env::temp_dir().join("telegram-ha-owned-media");
+        std::fs::create_dir_all(&root)?;
+        for _ in 0..100 {
+            let path = root.join(format!(
+                "job-{}-{}-{}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    LIVE_TEMP_DIRECTORIES
+                        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path.clone());
+                    return Ok(Self(Arc::new(TemporaryMediaDirectory(path))));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(anyhow!("Cannot reserve unique media directory"))
+    }
+    pub(crate) fn path(&self) -> PathBuf {
+        self.0 .0.join("video.mp4")
+    }
+}
+
+impl Drop for TemporaryMediaDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Temporary media cleanup failed: {}", error);
+            }
+        }
+        if let Some(live) = LIVE_TEMP_DIRECTORIES.get() {
+            live.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.0);
+        }
+    }
+}
+
+pub(crate) fn cleanup_abandoned_media() {
+    let root = std::env::temp_dir().join("telegram-ha-owned-media");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten().take(256) {
+        let path = entry.path();
+        let live = LIVE_TEMP_DIRECTORIES.get().is_some_and(|live| {
+            live.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&path)
+        });
+        if live || !entry.file_name().to_string_lossy().starts_with("job-") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(1800));
+        if old {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 pub async fn compress_clip_for_telegram(
     input_path: PathBuf,
-    output_path: PathBuf,
+    input_owner: Option<TemporaryMedia>,
+    owner: TemporaryMedia,
     max_bytes: u64,
 ) -> Result<()> {
     run_isolated_job(
         CameraJobPool::LocalMedia,
         Duration::from_secs(180),
-        move || compress_clip_blocking(&input_path, &output_path, max_bytes),
+        move || {
+            // Keep both temporary input and output alive after async cancellation.
+            let _input_owner = input_owner;
+            compress_clip_blocking(&input_path, &owner.path(), max_bytes)
+        },
+    )
+    .await
+}
+
+pub(crate) async fn extract_owned_video_preview(owner: TemporaryMedia) -> Result<Vec<u8>> {
+    run_isolated_job(
+        CameraJobPool::LocalMedia,
+        Duration::from_secs(30),
+        move || extract_video_preview_blocking(&owner.path()),
     )
     .await
 }
@@ -237,57 +551,114 @@ pub async fn extract_video_preview(input_path: PathBuf) -> Result<Vec<u8>> {
     .await
 }
 
+pub(crate) async fn run_archive_pre_roll_job<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    run_isolated_job(CameraJobPool::ArchivePreRoll, Duration::from_secs(30), job).await
+}
+
+async fn acquire_archival_capacity(
+    semaphore: Arc<Semaphore>,
+    shutdown: &CancellationToken,
+) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => anyhow::bail!("Native media is shutting down"),
+        permit = semaphore.acquire_owned() => permit.context("Archival media queue closed"),
+    }
+}
+
+pub(crate) async fn run_recording_io_job<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    run_isolated_job(CameraJobPool::Recording, Duration::from_secs(30), job).await
+}
+
+pub(crate) async fn run_local_media_job<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    run_isolated_job(CameraJobPool::LocalMedia, Duration::from_secs(180), job).await
+}
+
 async fn run_isolated_job<T, F>(pool: CameraJobPool, timeout: Duration, job: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
-    let timed_out_jobs = pool.timed_out_jobs();
-    if timed_out_jobs.load(Ordering::Relaxed) >= pool.max_timed_out_jobs() {
-        return Err(anyhow!(pool.unavailable_message()));
-    }
-
+    anyhow::ensure!(
+        !NATIVE_STOPPING.load(Ordering::Acquire),
+        "Native media is shutting down"
+    );
     let semaphore = pool.semaphore();
-    let permit = tokio::time::timeout(Duration::from_secs(2), semaphore.acquire_owned())
-        .await
-        .with_context(|| format!("Очередь задач {} занята", pool.queue_name()))?
-        .with_context(|| format!("Очередь задач {} закрыта", pool.queue_name()))?;
+    let permit = if matches!(
+        pool,
+        CameraJobPool::Recording | CameraJobPool::ArchivePreRoll
+    ) {
+        acquire_archival_capacity(
+            semaphore,
+            NATIVE_SHUTDOWN.get_or_init(CancellationToken::new),
+        )
+        .await?
+    } else {
+        tokio::time::timeout(Duration::from_secs(2), semaphore.acquire_owned())
+            .await
+            .map_err(|_| anyhow!(CameraCapacityBusy))??
+    };
+    anyhow::ensure!(
+        !NATIVE_STOPPING.load(Ordering::Acquire),
+        "Native media is shutting down"
+    );
+    let cancel = CancellationToken::new();
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    let thread_cancel = cancel.clone();
+    let file_owner = crate::core::camera_recording::current_writer_lease();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let state = Arc::new(Mutex::new(CameraJobState::default()));
-    let thread_state = state.clone();
-
-    thread::Builder::new()
-        .name(pool.thread_name().to_string())
-        .spawn(move || {
-            let result = job();
-            let _ = tx.send(result);
-            if let Ok(mut state) = thread_state.lock() {
-                state.done = true;
-                if state.timed_out {
-                    timed_out_jobs.fetch_sub(1, Ordering::Relaxed);
+    let thread_id =
+        spawn_native_thread(pool.thread_name().to_string(), cancel.clone(), move || {
+            // The real native job owns capacity until all I/O and file handles finish.
+            let _permit = permit;
+            let _file_owner = file_owner;
+            let deadline = Instant::now() + timeout;
+            let result = with_native_control(thread_cancel, Some(deadline), || {
+                check_native_cancelled()?;
+                let value = job()?;
+                check_native_cancelled()?;
+                Ok(value)
+            });
+            if result.is_err() {
+                FAILED_NATIVE_JOBS.fetch_add(1, Ordering::Relaxed);
+                if Instant::now() >= deadline {
+                    match pool {
+                        CameraJobPool::LiveCamera | CameraJobPool::Recording => {
+                            TIMED_OUT_LIVE_CAMERA_JOBS.fetch_add(1, Ordering::Relaxed);
+                        }
+                        CameraJobPool::LocalMedia | CameraJobPool::ArchivePreRoll => {
+                            TIMED_OUT_LOCAL_MEDIA_JOBS.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
+            let _ = tx.send(result);
         })
         .context("Не удалось запустить поток обработки камеры")?;
-
-    let result = match tokio::time::timeout(timeout, rx).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err(anyhow!("Поток обработки камеры завершился без результата")),
-        Err(_) => {
-            if let Ok(mut state) = state.lock() {
-                if !state.done && !state.timed_out {
-                    state.timed_out = true;
-                    timed_out_jobs.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Err(anyhow!(
-                "LibAV не успел ответить за {}с. Задача изолирована от tokio runtime и завершится сама, когда системный вызов вернется.",
-                timeout.as_secs()
-            ))
+    // A deadline is enforced inside LibAV; never return a timeout while it can still write.
+    let result = rx
+        .await
+        .context("Поток обработки камеры завершился без результата")?;
+    loop {
+        let running = {
+            let mut jobs = NATIVE_JOBS
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reap_native_threads(&mut jobs);
+            jobs.iter().any(|job| job.join.thread().id() == thread_id)
+        };
+        if !running {
+            break;
         }
-    };
-
-    drop(permit);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
     result
 }
 
@@ -327,8 +698,8 @@ fn capture_snapshot_blocking(camera: &Camera) -> Result<Vec<u8>> {
     )
     .context("Не удалось создать scaler")?;
 
-    for (stream, packet) in input_ctx.packets() {
-        if stream.index() != video_stream_index {
+    while let Some(packet) = read_packet(&mut input_ctx)? {
+        if packet.stream() != video_stream_index {
             continue;
         }
 
@@ -341,6 +712,7 @@ fn capture_snapshot_blocking(camera: &Camera) -> Result<Vec<u8>> {
         }
     }
 
+    check_native_cancelled()?;
     decoder.send_eof().ok();
     if let Some(jpeg) = receive_first_jpeg_frame(&mut decoder, &mut scaler)? {
         return Ok(jpeg);
@@ -353,7 +725,7 @@ fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
     init_ffmpeg();
 
     let input_path_str = input_path.to_string_lossy().to_string();
-    let mut input_ctx = format::input(&input_path_str)
+    let mut input_ctx = open_camera_input(&input_path_str)
         .with_context(|| format!("Не удалось открыть видео {}", input_path.display()))?;
     let input_stream = input_ctx
         .streams()
@@ -381,8 +753,8 @@ fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
     )
     .context("Не удалось создать preview scaler")?;
 
-    for (stream, packet) in input_ctx.packets() {
-        if stream.index() != video_stream_index {
+    while let Some(packet) = read_packet(&mut input_ctx)? {
+        if packet.stream() != video_stream_index {
             continue;
         }
 
@@ -395,6 +767,7 @@ fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
         }
     }
 
+    check_native_cancelled()?;
     decoder.send_eof().ok();
     if let Some(jpeg) = receive_first_jpeg_frame(&mut decoder, &mut scaler)? {
         return Ok(jpeg);
@@ -409,12 +782,14 @@ fn receive_first_jpeg_frame(
 ) -> Result<Option<Vec<u8>>> {
     let mut decoded = util::frame::video::Video::empty();
 
+    check_native_cancelled()?;
     if decoder.receive_frame(&mut decoded).is_ok() {
         let mut rgb_frame = util::frame::video::Video::empty();
         scaler
             .run(&decoded, &mut rgb_frame)
             .context("Не удалось преобразовать кадр в RGB")?;
 
+        check_native_cancelled()?;
         return Ok(Some(encode_rgb_frame_as_jpeg(&rgb_frame)?));
     }
 
@@ -449,7 +824,8 @@ fn encode_rgb_frame_as_jpeg(frame: &util::frame::video::Video) -> Result<Vec<u8>
 }
 
 fn capture_clip_blocking(camera: &Camera, seconds: u32) -> Result<Vec<u8>> {
-    let output_path = temp_media_path(camera.id, "mp4");
+    let owner = TemporaryMedia::new()?;
+    let output_path = owner.path();
     let result = write_clip_file_blocking(camera, seconds, &output_path).map(|_| ());
     read_temp_file(output_path, result)
 }
@@ -468,6 +844,7 @@ fn write_clip_file_blocking(camera: &Camera, seconds: u32, output_path: &Path) -
     match publish_media_file(&tmp_output, output_path, result) {
         Ok(size_bytes) => Ok(size_bytes),
         Err(remux_error) => {
+            check_native_cancelled()?;
             log::warn!(
                 "Camera remux failed, trying transcode fallback: camera={} {}, error={}",
                 camera.id,
@@ -524,6 +901,7 @@ fn publish_media_file(
         return Err(anyhow!("LibAV создал пустой файл"));
     }
 
+    check_native_cancelled()?;
     std::fs::rename(tmp_path, output_path)
         .with_context(|| format!("Не удалось опубликовать видео {}", output_path.display()))?;
 
@@ -558,6 +936,7 @@ fn compress_clip_blocking(input_path: &Path, output_path: &Path, max_bytes: u64)
 
     let mut last_error = None;
     for profile in profiles {
+        check_native_cancelled()?;
         let _ = std::fs::remove_file(&tmp_output);
         match transcode_h264(input_path, &tmp_output, profile) {
             Ok(()) => {
@@ -567,6 +946,7 @@ fn compress_clip_blocking(input_path: &Path, output_path: &Path, max_bytes: u64)
                     })?
                     .len();
                 if compressed_size <= max_bytes {
+                    check_native_cancelled()?;
                     std::fs::rename(&tmp_output, output_path).with_context(|| {
                         format!(
                             "Не удалось опубликовать сжатое видео {}",
@@ -606,7 +986,7 @@ fn transcode_h264(
 ) -> Result<()> {
     let input_path_str = input_path.to_string_lossy().to_string();
     let output_path_str = output_path.to_string_lossy().to_string();
-    let mut input_ctx = format::input(&input_path_str)
+    let mut input_ctx = open_camera_input(&input_path_str)
         .with_context(|| format!("Не удалось открыть видео {}", input_path.display()))?;
     let input_stream = input_ctx
         .streams()
@@ -694,8 +1074,8 @@ fn transcode_h264(
     )
     .context("Не удалось создать scaler для сжатия")?;
 
-    for (stream, packet) in input_ctx.packets() {
-        if stream.index() != input_stream_index {
+    while let Some(packet) = read_packet(&mut input_ctx)? {
+        if packet.stream() != input_stream_index {
             continue;
         }
 
@@ -713,6 +1093,7 @@ fn transcode_h264(
         )?;
     }
 
+    check_native_cancelled()?;
     decoder.send_eof().ok();
     encode_available_frames(
         &mut decoder,
@@ -844,8 +1225,8 @@ fn transcode_camera_clip(
 
     let mut capture_started_at = None;
     let mut encoded_frames = 0usize;
-    for (stream, packet) in input_ctx.packets() {
-        if stream.index() != input_stream_index {
+    while let Some(packet) = read_packet(&mut input_ctx)? {
+        if packet.stream() != input_stream_index {
             continue;
         }
 
@@ -873,12 +1254,19 @@ fn transcode_camera_clip(
         }
     }
 
+    anyhow::ensure!(
+        capture_started_at.is_some_and(
+            |started: Instant| started.elapsed() >= Duration::from_secs(seconds.into())
+        ),
+        "Camera stream ended before requested duration"
+    );
     if encoded_frames == 0 {
         return Err(anyhow!(
             "Не удалось декодировать video frames из камеры для fallback записи"
         ));
     }
 
+    check_native_cancelled()?;
     decoder.send_eof().ok();
     encode_available_frames(
         &mut decoder,
@@ -926,10 +1314,12 @@ fn encode_available_frames(
     let mut decoded = frame::Video::empty();
     let mut encoded_frames = 0usize;
     while decoder.receive_frame(&mut decoded).is_ok() {
+        check_native_cancelled()?;
         let mut scaled = frame::Video::empty();
         scaler
             .run(&decoded, &mut scaled)
             .context("Не удалось масштабировать кадр")?;
+        check_native_cancelled()?;
         scaled.set_pts(decoded.timestamp());
         scaled.set_kind(picture::Type::None);
         encoder
@@ -957,6 +1347,7 @@ fn write_available_packets(
 ) -> Result<()> {
     let mut encoded = ffmpeg::Packet::empty();
     while encoder.receive_packet(&mut encoded).is_ok() {
+        check_native_cancelled()?;
         encoded.set_stream(output_stream_index);
         encoded.rescale_ts(input_time_base, output_time_base);
         encoded.write_interleaved(output_ctx)?;
@@ -1044,8 +1435,8 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
     let keyframe_wait_started_at = Instant::now();
     let mut record_started_at = None;
 
-    for (stream, mut packet) in input_ctx.packets() {
-        if stream.index() != input_stream_index {
+    while let Some(mut packet) = read_packet(&mut input_ctx)? {
+        if packet.stream() != input_stream_index {
             continue;
         }
 
@@ -1084,6 +1475,12 @@ fn remux_camera_clip(camera: &Camera, seconds: u32, output_path: &Path) -> Resul
         wrote_packets += 1;
     }
 
+    anyhow::ensure!(
+        record_started_at.is_some_and(
+            |started: Instant| started.elapsed() >= Duration::from_secs(seconds.into())
+        ),
+        "Camera stream ended before requested duration"
+    );
     if wrote_packets == 0 {
         return Err(anyhow!(
             "Не удалось получить video packets из камеры: keyframe не пришел за {}с",
@@ -1230,6 +1627,7 @@ fn frame_duration_ticks(frame_rate: Rational, time_base: Rational) -> Option<i64
 }
 
 pub(crate) fn open_camera_input(stream_url: &str) -> Result<format::context::Input> {
+    let _io_deadline = IoDeadline::new();
     let mut options = Dictionary::new();
 
     if stream_url.starts_with("rtsp://") || stream_url.starts_with("rtsps://") {
@@ -1240,13 +1638,75 @@ pub(crate) fn open_camera_input(stream_url: &str) -> Result<format::context::Inp
     options.set("stimeout", "5000000");
     options.set("rw_timeout", "5000000");
 
-    format::input_with_dictionary(stream_url, options).map_err(|error| {
-        anyhow!(
-            "Не удалось открыть видеопоток {}: {}",
-            safe_stream_label(stream_url),
-            sanitize_camera_error_text(&error.to_string())
-        )
+    check_native_cancelled()?;
+    let path = std::ffi::CString::new(stream_url).context("Invalid media path")?;
+    // ffmpeg-next 8.1 PacketIter retries every error, and input_with_interrupt
+    // leaks its boxed callback. Own the context explicitly without callback data.
+    unsafe {
+        let mut context = ffmpeg::ffi::avformat_alloc_context();
+        anyhow::ensure!(!context.is_null(), "Cannot allocate media input");
+        (*context).interrupt_callback = ffmpeg::ffi::AVIOInterruptCB {
+            callback: Some(interrupt_native),
+            opaque: std::ptr::null_mut(),
+        };
+        let mut options_ptr = options.disown();
+        let opened = ffmpeg::ffi::avformat_open_input(
+            &mut context,
+            path.as_ptr(),
+            std::ptr::null_mut(),
+            &mut options_ptr,
+        );
+        let _options = Dictionary::own(options_ptr);
+        if opened < 0 {
+            if !context.is_null() {
+                ffmpeg::ffi::avformat_close_input(&mut context);
+            }
+            return Err(anyhow!(
+                "Cannot open {}: {}",
+                safe_stream_label(stream_url),
+                ffmpeg::Error::from(opened)
+            ));
+        }
+        let found = ffmpeg::ffi::avformat_find_stream_info(context, std::ptr::null_mut());
+        if found < 0 {
+            ffmpeg::ffi::avformat_close_input(&mut context);
+            return Err(anyhow!(
+                "Cannot inspect {}: {}",
+                safe_stream_label(stream_url),
+                ffmpeg::Error::from(found)
+            ));
+        }
+        Ok(format::context::Input::wrap(context))
+    }
+}
+
+pub(crate) fn read_packet(input: &mut format::context::Input) -> Result<Option<ffmpeg::Packet>> {
+    let _io_deadline = IoDeadline::new();
+    read_with_retry(|| {
+        let mut packet = ffmpeg::Packet::empty();
+        packet.read(input)?;
+        Ok(packet)
     })
+}
+
+fn read_with_retry<T>(
+    mut read: impl FnMut() -> std::result::Result<T, ffmpeg::Error>,
+) -> Result<Option<T>> {
+    let mut retries = 0;
+    loop {
+        check_native_cancelled()?;
+        match read() {
+            Ok(packet) => return Ok(Some(packet)),
+            Err(ffmpeg::Error::Eof) => return Ok(None),
+            Err(ffmpeg::Error::Other { errno })
+                if errno == ffmpeg::error::EAGAIN && retries < 20 =>
+            {
+                retries += 1;
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(anyhow!("Media read failed: {}", error)),
+        }
+    }
 }
 
 fn read_temp_file(path: PathBuf, command_result: Result<()>) -> Result<Vec<u8>> {
@@ -1266,15 +1726,7 @@ fn read_temp_file(path: PathBuf, command_result: Result<()>) -> Result<Vec<u8>> 
     Ok(bytes)
 }
 
-fn temp_media_path(camera_id: i64, extension: &str) -> PathBuf {
-    let millis = chrono::Utc::now().timestamp_millis();
-    std::env::temp_dir().join(format!(
-        "telegram_ha_bot_camera_{}_{}.{}",
-        camera_id, millis, extension
-    ))
-}
-
-fn tmp_output_path(output_path: &Path) -> PathBuf {
+pub(crate) fn tmp_output_path(output_path: &Path) -> PathBuf {
     let stem = output_path
         .file_stem()
         .map(|value| value.to_string_lossy())
@@ -1360,5 +1812,225 @@ mod tests {
         assert!(!text.contains("secret"));
         assert!(!text.contains("token=abc"));
         assert!(!text.contains("/snapshot"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) static NATIVE_POOL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+pub(crate) async fn reserve_local_media_capacity_for_test(
+) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    Ok(CameraJobPool::LocalMedia
+        .semaphore()
+        .acquire_many_owned(MAX_LOCAL_MEDIA_JOBS as u32)
+        .await?)
+}
+
+#[cfg(test)]
+pub(crate) async fn reserve_archive_pre_roll_capacity_for_test(
+) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    Ok(CameraJobPool::ArchivePreRoll
+        .semaphore()
+        .acquire_many_owned(MAX_ARCHIVE_PRE_ROLL_JOBS as u32)
+        .await?)
+}
+
+#[cfg(test)]
+pub(crate) async fn reserve_recording_capacity_for_test(
+) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    Ok(CameraJobPool::Recording
+        .semaphore()
+        .acquire_many_owned(RECORDING_JOB_LIMIT.load(Ordering::Relaxed) as u32)
+        .await?)
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archival_queue_shutdown_releases_waiter_without_consuming_capacity() -> Result<()> {
+        let semaphore = Arc::new(Semaphore::new(0));
+        let shutdown = CancellationToken::new();
+        let pending = acquire_archival_capacity(semaphore.clone(), &shutdown);
+        tokio::pin!(pending);
+        tokio::select! {
+            result = &mut pending => panic!("archival queue should wait: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+        shutdown.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pending)
+                .await?
+                .is_err()
+        );
+        semaphore.add_permits(1);
+        assert_eq!(semaphore.available_permits(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn packet_read_distinguishes_eof_io_and_bounded_temporary_errors() {
+        assert_eq!(
+            read_with_retry::<u8>(|| Err(ffmpeg::Error::Eof)).unwrap(),
+            None
+        );
+        let mut attempts = 0;
+        assert!(read_with_retry::<u8>(|| {
+            attempts += 1;
+            Err(ffmpeg::Error::Other {
+                errno: ffmpeg::error::EIO,
+            })
+        })
+        .is_err());
+        assert_eq!(attempts, 1);
+        let mut attempts = 0;
+        assert_eq!(
+            read_with_retry(|| {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(ffmpeg::Error::Other {
+                        errno: ffmpeg::error::EAGAIN,
+                    })
+                } else {
+                    Ok(7)
+                }
+            })
+            .unwrap(),
+            Some(7)
+        );
+        let mut attempts = 0;
+        assert!(read_with_retry::<u8>(|| {
+            attempts += 1;
+            Err(ffmpeg::Error::Other {
+                errno: ffmpeg::error::EAGAIN,
+            })
+        })
+        .is_err());
+        assert_eq!(attempts, 21);
+    }
+
+    #[tokio::test]
+    async fn four_recordings_have_capacity_and_cancelled_native_keeps_permit() -> Result<()> {
+        let _pool_test = NATIVE_POOL_TEST_LOCK.lock().await;
+        configure_recording_pool(4);
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        let mut releases = Vec::new();
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(4);
+        for _ in 0..4 {
+            let release = Arc::new(AtomicBool::new(false));
+            releases.push(release.clone());
+            let active = active.clone();
+            let peak = peak.clone();
+            let tx = started_tx.clone();
+            tasks.push(tokio::spawn(run_isolated_job(
+                CameraJobPool::Recording,
+                Duration::from_secs(5),
+                move || {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    tx.blocking_send(()).unwrap();
+                    while !release.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )));
+        }
+        for _ in 0..4 {
+            tokio::time::timeout(Duration::from_secs(2), started_rx.recv()).await?;
+        }
+        // Live/health and local jobs do not steal archival capacity.
+        run_isolated_job(CameraJobPool::LiveCamera, Duration::from_secs(1), || Ok(())).await?;
+        tasks.remove(0).abort();
+        let fifth_started = Arc::new(AtomicBool::new(false));
+        let started = fifth_started.clone();
+        let fifth = tokio::spawn(run_isolated_job(
+            CameraJobPool::Recording,
+            Duration::from_secs(1),
+            move || {
+                started.store(true, Ordering::Release);
+                Ok(())
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !fifth_started.load(Ordering::Acquire),
+            "async abort must not free the native permit"
+        );
+        releases[0].store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(2), fifth).await???;
+        for release in releases {
+            release.store(true, Ordering::Release);
+        }
+        for task in tasks {
+            task.await??;
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 4);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+        assert_eq!(RECORDING_CAMERA_JOBS.get().unwrap().available_permits(), 4);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repeated_native_deadlines_return_capacity_and_temp_owner_survives_cancel() -> Result<()>
+    {
+        for _ in 0..10 {
+            let result =
+                run_isolated_job(CameraJobPool::LocalMedia, Duration::from_millis(5), || {
+                    loop {
+                        check_native_cancelled()?;
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    #[allow(unreachable_code)]
+                    Ok(())
+                })
+                .await;
+            assert!(result.is_err());
+        }
+        run_isolated_job(CameraJobPool::LocalMedia, Duration::from_secs(1), || Ok(())).await?;
+        let first = TemporaryMedia::new()?;
+        let second = TemporaryMedia::new()?;
+        assert_ne!(first.path(), second.path());
+        std::fs::write(first.path(), b"one")?;
+        std::fs::write(second.path(), b"two")?;
+        let native_owner = first.clone();
+        let first_path = first.path();
+        drop(first);
+        assert!(first_path.exists());
+        drop(native_owner);
+        assert!(!first_path.exists());
+        assert_eq!(std::fs::read(second.path())?, b"two");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn libav_interrupt_stops_stalled_rtsp_open_before_returning() -> Result<()> {
+        init_ffmpeg();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("rtsp://{}/stalled", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            drop(socket);
+        });
+        let started = Instant::now();
+        let result = run_isolated_job(
+            CameraJobPool::LiveCamera,
+            Duration::from_millis(100),
+            move || {
+                let _input = open_camera_input(&url)?;
+                Ok(())
+            },
+        )
+        .await;
+        server.abort();
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        Ok(())
     }
 }

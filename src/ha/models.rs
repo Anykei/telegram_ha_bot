@@ -48,11 +48,27 @@ pub struct Room {
     pub entities: Vec<Entity>,
 }
 
-#[derive(Default, Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct NotifyEvent {
     pub entity_id: String,
     pub old_state: String,
     pub new_state: String,
     pub friendly_name: String,
     pub device_class: Option<String>,
+    /// Local receipt time, captured before queueing or fetching rule context.
+    #[serde(default = "chrono::Utc::now")]
+    pub received_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Default for NotifyEvent {
+    fn default() -> Self {
+        Self {
+            entity_id: String::new(),
+            old_state: String::new(),
+            new_state: String::new(),
+            friendly_name: String::new(),
+            device_class: None,
+            received_at: chrono::Utc::now(),
+        }
+    }
 }

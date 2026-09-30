@@ -50,6 +50,10 @@ Telegram HA Bot - это Telegram-бот для управления Home Assist
 
 Дополнительные спецификации:
 
+- [Исправление 14 багов общего ревью](docks/application-review-remediation/README.md) —
+  требования к доступу, камерам, событиям, расписаниям и архиву; миграции и приёмка.
+- [Реализация и проверка исправлений](docks/application-review-remediation/IMPLEMENTATION.md) —
+  изменения, лимиты, обновление и откат, сверка архива и оставшаяся стендовая приёмка.
 - [Улучшение UI/UX без потери функций](docks/ui-ux-remediation/README.md) —
   требования по результатам ревью, совместимость и критерии приёмки.
 - `docks/operational-improvements/README.md` - продовые улучшения камер,
@@ -57,7 +61,7 @@ Telegram HA Bot - это Telegram-бот для управления Home Assist
 
 ## Требования
 
-- Rust 1.87+.
+- Rust 1.95.0 (единая версия для локальной проверки, CI и Docker).
 - SQLite.
 - Home Assistant с long-lived access token или Supervisor token.
 - Telegram bot token от BotFather.

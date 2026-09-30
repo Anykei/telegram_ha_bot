@@ -1,6 +1,176 @@
 use super::*;
 use crate::bot::personal::{FavoriteAction, PersonalPayload};
 
+#[tokio::test]
+async fn device_details_and_temperature_recheck_access_after_delayed_state_read(
+) -> anyhow::Result<()> {
+    for input in [false, true] {
+        for revocation in ["view", "delete", "readd"] {
+            let (config, ha) = setup().await?;
+            let payload = if input {
+                Payload::TemperatureInput { room: 1, device: 1 }
+            } else {
+                Payload::DeviceDetails { room: 1, device: 1 }
+            };
+            ha.pause_next_read.store(true, Ordering::SeqCst);
+            let task_config = config.clone();
+            let task = tokio::spawn(async move { router(payload, 42, task_config).await });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                ha.read_started.notified(),
+            )
+            .await?;
+            match revocation {
+                "view" => {
+                    db::access::set_device_access(42, "climate.bedroom", false, false, &config.db)
+                        .await?
+                }
+                "delete" => db::delete_user(42, &config.db).await?,
+                "readd" => {
+                    db::delete_user(42, &config.db).await?;
+                    db::add_user(42, &config.db).await?;
+                }
+                _ => unreachable!(),
+            }
+            ha.release_read.notify_one();
+            if let Ok(view) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), task).await??
+            {
+                assert!(
+                    !view.text.contains("climate.bedroom"),
+                    "{revocation}: {}",
+                    view.text
+                );
+                assert!(!view.text.contains("22°"), "{revocation}: {}", view.text);
+                assert!(
+                    !view.text.contains("temperature"),
+                    "{revocation}: {}",
+                    view.text
+                );
+                assert!(!matches!(
+                    view.next_state,
+                    Some(State::ExactTemperature { .. })
+                ));
+                assert!(view.notifications.is_empty());
+            }
+            assert!(ha.calls.lock().unwrap().is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rendered_device_views_recheck_access_at_delivery_including_text_pages(
+) -> anyhow::Result<()> {
+    for (payload, paged) in [
+        (Payload::DeviceDetails { room: 1, device: 1 }, false),
+        (Payload::DeviceDetails { room: 1, device: 1 }, true),
+        (Payload::TemperatureInput { room: 1, device: 1 }, false),
+        (
+            Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 }),
+            false,
+        ),
+    ] {
+        for change in ["view", "control", "delete", "readd"] {
+            if change == "control" && !matches!(payload, Payload::TemperatureInput { .. }) {
+                continue;
+            }
+            let (config, _) = setup().await?;
+            let mut view = router(payload.clone(), 42, config.clone()).await?;
+            if paged {
+                view.text.push_str(&"\nSensitive device state".repeat(500));
+                crate::bot::text_pages::prepare(&mut view, 42, &config).await?;
+                assert!(matches!(view.payload, Payload::TextPage { .. }));
+            }
+            match change {
+                "view" => {
+                    db::access::set_device_access(42, "climate.bedroom", false, false, &config.db)
+                        .await?
+                }
+                "control" => {
+                    db::access::set_device_access(42, "climate.bedroom", true, false, &config.db)
+                        .await?
+                }
+                "delete" => db::delete_user(42, &config.db).await?,
+                "readd" => {
+                    db::delete_user(42, &config.db).await?;
+                    db::add_user(42, &config.db).await?;
+                }
+                _ => unreachable!(),
+            }
+            // No server is needed: any attempted Telegram request is a test
+            // failure, while the delivery guard must return before transport.
+            let client = teloxide::net::default_reqwest_settings()
+                .no_proxy()
+                .build()?;
+            let bot = teloxide::Bot::with_client("123:test", client)
+                .set_api_url("http://127.0.0.1:9".parse()?);
+            crate::bot::handlers::update_view_cancellable(
+                &bot,
+                teloxide::types::ChatId(42),
+                teloxide::types::MessageId(7),
+                42,
+                view.clone(),
+                config.clone(),
+                None,
+            )
+            .await?;
+            assert!(
+                !crate::bot::handlers::send_new_view_inner(
+                    &bot,
+                    teloxide::types::ChatId(42),
+                    42,
+                    view,
+                    config.clone(),
+                    None,
+                )
+                .await?
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_view_retry_rechecks_access_after_telegram_delay() -> anyhow::Result<()> {
+    let (config, _) = setup().await?;
+    let payload = Payload::DeviceDetails { room: 1, device: 1 };
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &payload.to_string(),
+        crate::models::UiMessageMode::Text,
+    )
+    .await;
+    let mut view = router(payload, 42, config.clone()).await?;
+    view.text.push_str(&"\nDevice attributes".repeat(100));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (bot, server) = mock_telegram_responses(vec![
+        (429, serde_json::json!({"ok": false, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 0}})),
+    ], Some((started.clone(), release.clone()))).await?;
+    let task_config = config.clone();
+    let task = tokio::spawn(async move {
+        crate::bot::handlers::update_view_cancellable(
+            &bot,
+            teloxide::types::ChatId(42),
+            teloxide::types::MessageId(7),
+            42,
+            view,
+            task_config,
+            None,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified()).await?;
+    db::access::set_device_access(42, "climate.bedroom", false, false, &config.db).await?;
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(3), task).await???;
+    assert_eq!(server.await??.len(), 1);
+    Ok(())
+}
+
 async fn personal(
     config: &Arc<AppConfig>,
     user: u64,
@@ -28,7 +198,8 @@ async fn own_notifications_save_offline_idempotently_and_obey_admin_denial() -> 
     }
     assert!(db::subscriptions::is_subscribed(42, "light.bedroom", &config.db).await?);
     assert!(!db::subscriptions::is_subscribed(1, "light.bedroom", &config.db).await?);
-    db::access::set_device_access(42, "light.bedroom", true, true, false, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", true, true, &config.db).await?;
+    db::access::toggle_device_notify_access(42, "light.bedroom", &config.db).await?;
     let disabled = personal(
         &config,
         42,
@@ -50,7 +221,7 @@ async fn own_notifications_save_offline_idempotently_and_obey_admin_denial() -> 
     .await?;
     assert!(denied.alert.is_some());
     assert!(!db::subscriptions::is_subscribed(42, "light.bedroom", &config.db).await?);
-    db::access::set_device_access(42, "light.bedroom", false, false, false, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", false, false, &config.db).await?;
     let hidden = personal(&config, 42, PersonalPayload::Subscription { device: 3 }).await?;
     assert!(!hidden.text.contains("Люстра"));
     assert!(ha.calls.lock().unwrap().is_empty());
@@ -100,7 +271,7 @@ async fn favorites_are_owned_canonical_and_keep_critical_confirmation() -> anyho
         Payload::Control(ControlPayload::ReviewAction { .. })
     ));
     assert!(ha.calls.lock().unwrap().is_empty());
-    db::access::set_device_access(42, "light.bedroom", false, false, false, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", false, false, &config.db).await?;
     let favorites = personal(&config, 42, PersonalPayload::Favorites { page: 0 }).await?;
     assert!(!callbacks(&favorites).iter().any(|p| matches!(
         p,
@@ -259,7 +430,7 @@ async fn unavailable_device_favorite_remains_visible_with_safe_navigation() -> a
             .iter()
             .any(|p| matches!(p, Payload::Control(ControlPayload::QuickAction { .. }))));
     }
-    db::access::set_device_access(42, "light.bedroom", false, false, false, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", false, false, &config.db).await?;
     let before = ha.state_reads.load(Ordering::SeqCst);
     let hidden = router(Payload::Home, 42, config.clone()).await?;
     assert!(!hidden
@@ -342,7 +513,6 @@ async fn deleting_user_clears_owned_ui_state_without_affecting_another_user() ->
         db::settings::set_string(key, "keep", &config.db).await?;
     }
     let owned_tables = [
-        ("ui_action_buttons", "user_id"),
         ("ui_confirmations", "user_id"),
         ("pending_commands", "user_id"),
         ("command_choices", "user_id"),
@@ -367,6 +537,16 @@ async fn deleting_user_clears_owned_ui_state_without_affecting_another_user() ->
             .await?;
         assert_eq!(deleted, 0, "{table} retained deleted user's data");
         assert_eq!(retained, 1, "{table} changed another user's data");
+    }
+    // Legacy callback identities remain as replay tombstones after their
+    // executable confirmation is deleted, including across owner re-admission.
+    for (user, operation) in [(42_i64, operations[0]), (77, operations[1])] {
+        let saved: Vec<i64> =
+            sqlx::query_scalar("SELECT confirmation_id FROM ui_action_buttons WHERE user_id = ?")
+                .bind(user)
+                .fetch_all(&config.db)
+                .await?;
+        assert_eq!(saved, vec![operation]);
     }
     for namespace in ["list", "chart", "archive", "group-items"] {
         assert!(
@@ -414,6 +594,25 @@ async fn deleting_user_clears_owned_ui_state_without_affecting_another_user() ->
         .admin_alias
         .is_none());
     assert!(!db::ui_confirmations::claim(operations[0], 42, &config.db).await?);
+    let replay = crate::bot::confirmations::prepare_legacy_callback(
+        Payload::Control(ControlPayload::ExecuteActionGroup {
+            group,
+            command: db::action_groups::ActionGroupCommand::TurnOff,
+        }),
+        42,
+        42,
+        10,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(
+        replay,
+        Payload::Control(ControlPayload::ConfirmAction { id: operations[0] })
+    );
+    router(replay, 42, config.clone()).await?;
+    assert!(db::ui_confirmations::get(operations[0], 42, &config.db)
+        .await?
+        .is_none());
     assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
 }

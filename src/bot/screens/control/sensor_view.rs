@@ -21,6 +21,7 @@ pub async fn render(
     entity: crate::ha::models::Entity,
     cmd: DeviceCmd,
 ) -> anyhow::Result<View> {
+    ctx.track_device(dev.id, &dev.entity_id);
     // 1. Извлекаем параметры из команды или ставим дефолт
     let params = match cmd {
         DeviceCmd::ShowChart { h, o } => ChartParams {

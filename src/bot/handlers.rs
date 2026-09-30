@@ -224,7 +224,7 @@ fn spawn_voice_command(
     config: Arc<AppConfig>,
 ) {
     let token = config.begin_view_update(user_id);
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let result =
             handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone(), &token).await;
         if let Err(error) = result {
@@ -320,11 +320,9 @@ async fn handle_voice_message_inner(
         );
     }
 
-    let path = temp_voice_path(user_id);
-    let mut dst = tokio::fs::File::create(&path)
-        .await
-        .context("Не удалось создать временный voice-файл")?;
+    let (voice_file, mut dst) = crate::core::voice::TemporaryVoice::create(user_id).await?;
     bot.download_file(&file.path, &mut dst).await?;
+    tokio::io::AsyncWriteExt::flush(&mut dst).await?;
     drop(dst);
 
     let lang = db::get_user_language(user_id, &config.db)
@@ -354,7 +352,7 @@ async fn handle_voice_message_inner(
     );
 
     let result = async {
-        let metadata = tokio::fs::metadata(&path)
+        let metadata = tokio::fs::metadata(voice_file.path())
             .await
             .context("Не удалось проверить скачанный voice-файл")?;
         if metadata.len() > max_bytes {
@@ -365,7 +363,7 @@ async fn handle_voice_message_inner(
         }
 
         let pcm = crate::core::voice::decode_audio_file_to_pcm_mono(
-            path.clone(),
+            voice_file.clone(),
             config.voice_stt_sample_rate,
         )
         .await?;
@@ -444,24 +442,45 @@ async fn handle_voice_message_inner(
         }
 
         if !token.is_cancelled() {
-            let _ = bot.delete_message(chat_id, progress.id).await;
-            apply_command_execution(bot, chat_id, user_id, execution, config.clone()).await?;
+            finish_voice_execution(
+                bot,
+                chat_id,
+                user_id,
+                progress.id,
+                execution,
+                config.clone(),
+                token,
+            )
+            .await?;
         }
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = bot.delete_message(chat_id, progress.id).await;
-    let _ = tokio::fs::remove_file(&path).await;
     result
 }
 
-fn temp_voice_path(user_id: u64) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "telegram_ha_bot_voice_{}_{}.oga",
-        user_id,
-        Utc::now().timestamp_millis()
-    ))
+async fn finish_voice_execution(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    progress_id: MessageId,
+    execution: CommandExecution,
+    config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let _ = bot.delete_message(chat_id, progress_id).await;
+    let allowed = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Ok(()),
+        result = db::access::can_use_voice(user_id, user_id == config.root_user, &config.db) => result?,
+    };
+    if allowed {
+        apply_command_execution_cancellable(bot, chat_id, user_id, execution, config, Some(token))
+            .await?;
+    }
+    Ok(())
 }
 
 async fn handle_text_command(
@@ -495,22 +514,46 @@ async fn apply_command_execution(
     execution: CommandExecution,
     config: Arc<AppConfig>,
 ) -> Result<()> {
+    apply_command_execution_cancellable(bot, chat_id, user_id, execution, config, None).await
+}
+
+/// The action has already completed. Cancellation here only suppresses its
+/// obsolete presentation; never cancel or replay the accepted HA operation.
+async fn apply_command_execution_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    execution: CommandExecution,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        return Ok(());
+    }
     match execution {
-        CommandExecution::Done { message } => {
-            bot.send_message(chat_id, message).await?;
-        }
-        CommandExecution::NeedsConfirmation {
-            pending_id,
+        CommandExecution::Done {
             message,
+            displayed_resources,
+            admission_generation,
         } => {
-            let mut view = router(
+            if chat_id.0 == user_id as i64
+                && super::view_access::sources_allowed(&displayed_resources, user_id, &config)
+                    .await?
+                && db::user::admission_is_current(user_id, &admission_generation, &config.db)
+                    .await?
+                && !cancellation.is_some_and(|token| token.is_cancelled())
+            {
+                bot.send_message(chat_id, message).await?;
+            }
+        }
+        CommandExecution::NeedsConfirmation { pending_id, .. } => {
+            let view = router(
                 Payload::Command(CommandPayload::Result { id: pending_id }),
                 user_id,
                 config.clone(),
             )
             .await?;
-            view.text = message;
-            send_new_view(bot, chat_id, user_id, view, config).await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
         }
         CommandExecution::OpenCameraArchive { camera_id } => {
             let view = router(
@@ -524,9 +567,26 @@ async fn apply_command_execution(
                 .get(&user_id)
                 .map(|session| MessageId(session.last_menu_id));
             if let Some(message_id) = message_id {
-                update_view(bot, chat_id, message_id, user_id, view, config.clone()).await?;
+                update_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    cancellation,
+                )
+                .await?;
             } else {
-                send_new_view(bot, chat_id, user_id, view, config.clone()).await?;
+                send_new_view_cancellable(
+                    bot,
+                    chat_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    cancellation,
+                )
+                .await?;
             }
         }
         CommandExecution::SendCameraSnapshot { camera_id } => {
@@ -545,7 +605,7 @@ async fn apply_command_execution(
                 config.clone(),
             )
             .await?;
-            send_new_view(bot, chat_id, user_id, view, config).await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
         }
         CommandExecution::SavedResult { pending_id } => {
             let view = router(
@@ -554,7 +614,7 @@ async fn apply_command_execution(
                 config.clone(),
             )
             .await?;
-            send_new_view(bot, chat_id, user_id, view, config).await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
         }
         CommandExecution::NotACommand => {}
     }
@@ -607,6 +667,7 @@ pub async fn handle_callback(
         match config
             .climate_controls
             .enqueue(config.clone(), user_id, device, command)
+            .await
         {
             Ok(reply) => Some((room, device, reply)),
             Err(_) => {
@@ -643,7 +704,7 @@ pub async fn handle_callback(
         let token = config.begin_view_update(user_id);
         let chat_id = msg.chat().id;
         let message_id = msg.id();
-        tokio::spawn(async move {
+        crate::db::user::spawn_with_admission(async move {
             let result = async {
                 // Accepted temperature commands execute once in device order.
                 // Cancellation only prevents their old screen from replacing
@@ -721,7 +782,7 @@ pub async fn handle_callback(
         let token = config.begin_view_update(user_id);
         let chat_id = msg.chat().id;
         let message_id = msg.id();
-        tokio::spawn(async move {
+        crate::db::user::spawn_with_admission(async move {
             let result = handle_command_callback(
                 &bot,
                 chat_id,
@@ -757,7 +818,7 @@ pub async fn handle_callback(
         let token = config.begin_view_update(user_id);
         let chat = msg.chat().id;
         let message = msg.id();
-        tokio::spawn(async move {
+        crate::db::user::spawn_with_admission(async move {
             let result = async {
                 let payload = super::confirmations::prepare_legacy_callback(
                     payload,
@@ -803,7 +864,7 @@ pub async fn handle_callback(
     let token = config.begin_view_update(user_id);
     let chat_id = msg.chat().id;
     let message_id = msg.id();
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let result = async {
             let view = router(payload, user_id, config.clone()).await?;
             if token.is_cancelled() {
@@ -846,11 +907,29 @@ async fn handle_command_callback(
                 &config,
             )
             .await?;
-            if token.is_cancelled() {
-                return Ok(());
+            {
+                // Keep a delayed DELETE from removing a newer screen edited
+                // into the same anchor while this result was being delivered.
+                let ui_lock = config.ui_lock_for(user_id);
+                let _guard = tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    guard = ui_lock.lock() => guard,
+                };
+                if token.is_cancelled() {
+                    return Ok(());
+                }
+                let _ = bot.delete_message(chat_id, message_id).await;
             }
-            let _ = bot.delete_message(chat_id, message_id).await;
-            apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+            apply_command_execution_cancellable(
+                bot,
+                chat_id,
+                user_id,
+                execution,
+                config,
+                Some(token),
+            )
+            .await?;
         }
         CommandPayload::Cancel { id } => {
             crate::core::commands::cancel_pending(user_id, id, &config).await?;
@@ -867,7 +946,15 @@ async fn handle_command_callback(
             match crate::core::commands::choose_target(user_id, id, target, &config).await {
                 Ok(execution) => {
                     if !token.is_cancelled() {
-                        apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+                        apply_command_execution_cancellable(
+                            bot,
+                            chat_id,
+                            user_id,
+                            execution,
+                            config,
+                            Some(token),
+                        )
+                        .await?;
                     }
                 }
                 Err(_) if !token.is_cancelled() => {
@@ -991,7 +1078,7 @@ fn spawn_camera_snapshot(
     camera_id: i64,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         if let Err(error) = send_camera_snapshot(&bot, chat_id, user_id, camera_id, &config).await {
             log::warn!(
                 "Failed to send camera snapshot for user {} camera {}: {}",
@@ -1011,7 +1098,7 @@ fn spawn_camera_clip(
     seconds: u32,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         if let Err(error) =
             send_camera_clip(&bot, chat_id, user_id, camera_id, seconds, &config).await
         {
@@ -1026,7 +1113,7 @@ fn spawn_camera_clip(
 }
 
 pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppConfig>) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let Some(camera) = (match db::cameras::get_camera(camera_id, &config.db).await {
             Ok(camera) => camera,
             Err(error) => {
@@ -1059,8 +1146,11 @@ pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppCo
                 .await;
             }
             Err(error) => {
+                let busy = crate::core::cameras::is_capacity_error(&error);
                 let error = error.to_string();
-                let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+                if !busy {
+                    let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+                }
                 let camera_id = camera.id.to_string();
                 let _ = log_activity(
                     &config,
@@ -1087,7 +1177,7 @@ fn spawn_recording_segment(
     segment_id: i64,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         if let Err(error) = send_recording_segment(
             &bot, chat_id, user_id, camera_id, session_id, segment_id, &config,
         )
@@ -1111,7 +1201,7 @@ fn spawn_recording_all(
     session_id: i64,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let result =
             send_recording_all(&bot, chat_id, user_id, camera_id, session_id, &config).await;
         config.finish_recording_send(user_id, session_id);
@@ -1165,6 +1255,56 @@ async fn refresh_recording_session_view(
     }
 }
 
+struct CameraDeliveryAccess {
+    user_id: u64,
+    camera_id: i64,
+    generation: String,
+    config: Arc<AppConfig>,
+}
+
+impl CameraDeliveryAccess {
+    async fn new(
+        chat_id: ChatId,
+        user_id: u64,
+        camera_id: i64,
+        config: &Arc<AppConfig>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            chat_id.0 == user_id as i64,
+            "Camera delivery requires a private chat"
+        );
+        let generation = db::admission_generation(user_id, &config.db)
+            .await?
+            .context("User admission revoked")?;
+        let access = Self {
+            user_id,
+            camera_id,
+            generation,
+            config: config.clone(),
+        };
+        access.check().await?;
+        Ok(access)
+    }
+
+    async fn check(&self) -> Result<()> {
+        let allowed = db::cameras::get_accessible_camera(
+            self.user_id,
+            self.user_id == self.config.root_user,
+            self.camera_id,
+            &self.config.db,
+        )
+        .await?
+        .is_some();
+        anyhow::ensure!(
+            allowed
+                && db::admission_is_current(self.user_id, &self.generation, &self.config.db)
+                    .await?,
+            "Camera delivery access revoked"
+        );
+        Ok(())
+    }
+}
+
 async fn send_camera_snapshot(
     bot: &Bot,
     chat_id: ChatId,
@@ -1172,6 +1312,7 @@ async fn send_camera_snapshot(
     camera_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<()> {
+    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
     let Some(camera) = db::cameras::get_accessible_camera(
         user_id,
         config.root_user == user_id,
@@ -1185,6 +1326,7 @@ async fn send_camera_snapshot(
         return Ok(());
     };
 
+    access.check().await?;
     let bytes = match crate::core::cameras::capture_snapshot(&camera).await {
         Ok(bytes) => {
             let _ = db::camera_health::mark_snapshot_ok(camera.id, bytes.len() as i64, &config.db)
@@ -1204,14 +1346,17 @@ async fn send_camera_snapshot(
             bytes
         }
         Err(error) => {
+            let busy = crate::core::cameras::is_capacity_error(&error);
             let error = error.to_string();
-            let _ = db::camera_health::mark_error_kind(
-                camera.id,
-                db::camera_health::CameraHealthOperation::Snapshot,
-                &error,
-                &config.db,
-            )
-            .await;
+            if !busy {
+                let _ = db::camera_health::mark_error_kind(
+                    camera.id,
+                    db::camera_health::CameraHealthOperation::Snapshot,
+                    &error,
+                    &config.db,
+                )
+                .await;
+            }
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -1224,12 +1369,14 @@ async fn send_camera_snapshot(
                 Some(&error),
             )
             .await;
+            access.check().await?;
             bot.send_message(chat_id, format!("Не удалось получить снимок: {}", error))
                 .await?;
             return Ok(());
         }
     };
 
+    access.check().await?;
     match bot
         .send_photo(chat_id, InputFile::memory(bytes))
         .caption(format!("📸 {}", camera.name))
@@ -1278,6 +1425,7 @@ async fn send_camera_clip(
     seconds: u32,
     config: &Arc<AppConfig>,
 ) -> Result<()> {
+    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
     let Some(camera) = db::cameras::get_accessible_camera(
         user_id,
         config.root_user == user_id,
@@ -1299,6 +1447,7 @@ async fn send_camera_clip(
         )
         .await?;
 
+    access.check().await?;
     let capture_result = match capture_clip_from_pre_roll(config, camera.id, seconds).await {
         Some(Ok(bytes)) => Ok(bytes),
         Some(Err(error)) => {
@@ -1308,6 +1457,7 @@ async fn send_camera_clip(
                 seconds,
                 error
             );
+            access.check().await?;
             crate::core::cameras::capture_clip(&camera, seconds).await
         }
         None => crate::core::cameras::capture_clip(&camera, seconds).await,
@@ -1333,14 +1483,17 @@ async fn send_camera_clip(
             bytes
         }
         Err(error) => {
+            let busy = crate::core::cameras::is_capacity_error(&error);
             let error = error.to_string();
-            let _ = db::camera_health::mark_error_kind(
-                camera.id,
-                db::camera_health::CameraHealthOperation::Clip,
-                &error,
-                &config.db,
-            )
-            .await;
+            if !busy {
+                let _ = db::camera_health::mark_error_kind(
+                    camera.id,
+                    db::camera_health::CameraHealthOperation::Clip,
+                    &error,
+                    &config.db,
+                )
+                .await;
+            }
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -1353,6 +1506,7 @@ async fn send_camera_clip(
                 Some(&error),
             )
             .await;
+            access.check().await?;
             bot.edit_message_text(
                 chat_id,
                 status.id,
@@ -1363,14 +1517,19 @@ async fn send_camera_clip(
         }
     };
 
-    let send_result = bot
-        .send_video(chat_id, InputFile::memory(bytes))
-        .caption(format!("🎞 {} · {}с", camera.name, seconds))
-        .await;
+    access.check().await?;
+    let send_result = send_manual_camera_video(
+        bot,
+        chat_id,
+        bytes,
+        &format!("🎞 {} · {}с", camera.name, seconds),
+        &access,
+    )
+    .await;
     let _ = bot.delete_message(chat_id, status.id).await;
 
     match send_result {
-        Ok(_) => {
+        Ok(true) => {
             let camera_id = camera.id.to_string();
             let message = format!("{}с · {}", seconds, camera.name);
             let _ = log_activity(
@@ -1382,6 +1541,20 @@ async fn send_camera_clip(
                 "clip_send",
                 "ok",
                 Some(&message),
+            )
+            .await;
+        }
+        Ok(false) => {
+            let camera_id = camera.id.to_string();
+            let _ = log_activity(
+                config,
+                Some(user_id),
+                "camera",
+                "camera",
+                Some(&camera_id),
+                "clip_send",
+                "error",
+                Some("Video could not fit the Telegram upload limit"),
             )
             .await;
         }
@@ -1399,11 +1572,36 @@ async fn send_camera_clip(
                 Some(&error_text),
             )
             .await;
-            return Err(error.into());
+            return Err(error);
         }
     }
 
     Ok(())
+}
+
+async fn send_manual_camera_video(
+    bot: &Bot,
+    chat_id: ChatId,
+    bytes: Vec<u8>,
+    caption: &str,
+    access: &CameraDeliveryAccess,
+) -> Result<bool> {
+    access.check().await?;
+    let owner = crate::core::cameras::TemporaryMedia::new()?;
+    // Cancellation of the awaiting handler must not remove a directory while
+    // the blocking writer is still creating or writing its input file.
+    let writer_owner = owner.clone();
+    tokio::task::spawn_blocking(move || std::fs::write(writer_owner.path(), bytes)).await??;
+    send_camera_video_file(
+        bot,
+        chat_id,
+        &owner.path(),
+        caption,
+        None,
+        access,
+        Some(owner.clone()),
+    )
+    .await
 }
 
 async fn capture_clip_from_pre_roll(
@@ -1420,16 +1618,22 @@ async fn capture_clip_from_pre_roll(
 
     tokio::time::sleep(StdDuration::from_secs(u64::from(seconds))).await;
     let end_at = Utc::now();
-    let tmp_path = std::env::temp_dir().join(format!(
-        "telegram_ha_bot_preroll_clip_{}_{}_{}.mp4",
-        camera_id,
-        seconds,
-        end_at.timestamp_millis()
-    ));
+    let owner = match crate::core::cameras::TemporaryMedia::new() {
+        Ok(owner) => owner,
+        Err(error) => return Some(Err(error)),
+    };
+    let tmp_path = owner.path();
     let result = async {
         config
             .camera_pre_roll_registry
-            .write_to_file(camera_id, seconds, end_at, end_at, tmp_path.clone())
+            .write_to_file(
+                camera_id,
+                seconds,
+                end_at,
+                end_at,
+                tmp_path.clone(),
+                Some(owner.clone()),
+            )
             .await?;
         let bytes = tokio::fs::read(&tmp_path)
             .await
@@ -1438,7 +1642,7 @@ async fn capture_clip_from_pre_roll(
         Ok(bytes)
     }
     .await;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    drop(owner);
 
     Some(result)
 }
@@ -1479,6 +1683,7 @@ async fn send_recording_segment(
     segment_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<()> {
+    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(segment) = db::camera_recording_segments::get_segment(segment_id, &config.db).await?
@@ -1525,12 +1730,14 @@ async fn send_recording_segment(
         }
     };
     let thumbnail = recording_video_thumbnail(config, &path).await;
-    send_recording_video_file(
+    send_camera_video_file(
         bot,
         chat_id,
         &full_path,
         &format!("🎞 Часть {}", segment.segment_index),
         thumbnail,
+        &access,
+        None,
     )
     .await?;
 
@@ -1545,6 +1752,7 @@ async fn send_recording_all(
     session_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<()> {
+    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(session) = db::camera_recording_sessions::get_session(session_id, &config.db).await?
@@ -1609,13 +1817,16 @@ async fn send_recording_all(
     }
 
     for (segment_index, full_path, relative_path) in files {
+        access.check().await?;
         let thumbnail = recording_video_thumbnail(config, &relative_path).await;
-        send_recording_video_file(
+        send_camera_video_file(
             bot,
             chat_id,
             &full_path,
             &format!("🎞 Часть {}", segment_index),
             thumbnail,
+            &access,
+            None,
         )
         .await?;
     }
@@ -1623,13 +1834,16 @@ async fn send_recording_all(
     Ok(())
 }
 
-async fn send_recording_video_file(
+async fn send_camera_video_file(
     bot: &Bot,
     chat_id: ChatId,
     path: &Path,
     caption: &str,
     thumbnail: Option<Vec<u8>>,
-) -> Result<()> {
+    access: &CameraDeliveryAccess,
+    input_owner: Option<crate::core::cameras::TemporaryMedia>,
+) -> Result<bool> {
+    access.check().await?;
     let metadata = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -1643,7 +1857,7 @@ async fn send_recording_video_file(
                 "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         }
     };
     if !metadata.is_file() {
@@ -1653,7 +1867,7 @@ async fn send_recording_video_file(
             "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
 
     let size = metadata.len();
@@ -1664,12 +1878,13 @@ async fn send_recording_video_file(
             "Файл записи пустой. Проверьте поток камеры и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
-    let (send_path, send_size, compressed) = if size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
-        match prepare_telegram_compressed_video(path).await {
-            Ok(Some((path, size))) => (path, size, true),
+    let (send_path, send_size, media_owner) = if size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
+        match prepare_telegram_compressed_video(path, input_owner.clone()).await {
+            Ok(Some((owner, size))) => (owner.path(), size, Some(owner)),
             Ok(None) => {
+                access.check().await?;
                 bot.send_message(
                     chat_id,
                     format!(
@@ -1680,9 +1895,10 @@ async fn send_recording_video_file(
                     ),
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
             Err(error) => {
+                access.check().await?;
                 bot.send_message(
                     chat_id,
                     format!(
@@ -1693,14 +1909,15 @@ async fn send_recording_video_file(
                     ),
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
         }
     } else {
-        (path.to_path_buf(), size, false)
+        (path.to_path_buf(), size, None)
     };
 
     if send_size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
+        access.check().await?;
         bot.send_message(
             chat_id,
             format!(
@@ -1711,10 +1928,10 @@ async fn send_recording_video_file(
             ),
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
 
-    let caption = if compressed {
+    let caption = if media_owner.is_some() {
         format!(
             "{} · сжато до {}",
             caption,
@@ -1723,7 +1940,6 @@ async fn send_recording_video_file(
     } else {
         caption.to_string()
     };
-    let sent_path = send_path.clone();
     let request = bot
         .send_video(chat_id, InputFile::file(send_path))
         .caption(caption)
@@ -1733,12 +1949,11 @@ async fn send_recording_video_file(
     } else {
         request
     };
+    access.check().await?;
     request.await?;
-    if compressed {
-        let _ = tokio::fs::remove_file(sent_path).await;
-    }
+    drop(media_owner);
 
-    Ok(())
+    Ok(true)
 }
 
 async fn recording_video_thumbnail(config: &Arc<AppConfig>, file_path: &str) -> Option<Vec<u8>> {
@@ -1767,29 +1982,23 @@ async fn recording_video_thumbnail(config: &Arc<AppConfig>, file_path: &str) -> 
 
 async fn prepare_telegram_compressed_video(
     path: &Path,
-) -> Result<Option<(std::path::PathBuf, u64)>> {
-    let compressed_path = telegram_compressed_path(path);
-    if let Ok(metadata) = tokio::fs::metadata(&compressed_path).await {
-        if is_usable_telegram_compressed_video(metadata.len()) {
-            return Ok(Some((compressed_path, metadata.len())));
-        }
-        let _ = tokio::fs::remove_file(&compressed_path).await;
-    }
-
+    input_owner: Option<crate::core::cameras::TemporaryMedia>,
+) -> Result<Option<(crate::core::cameras::TemporaryMedia, u64)>> {
+    let owner = crate::core::cameras::TemporaryMedia::new()?;
     crate::core::cameras::compress_clip_for_telegram(
         path.to_path_buf(),
-        compressed_path.clone(),
+        input_owner,
+        owner.clone(),
         TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES,
     )
     .await?;
-    let metadata = tokio::fs::metadata(&compressed_path).await?;
-    if is_usable_telegram_compressed_video(metadata.len()) {
-        Ok(Some((compressed_path, metadata.len())))
-    } else if metadata.len() < TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES {
-        let _ = tokio::fs::remove_file(&compressed_path).await;
+    let size = tokio::fs::metadata(owner.path()).await?.len();
+    if is_usable_telegram_compressed_video(size) {
+        Ok(Some((owner, size)))
+    } else if size < TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES {
         anyhow::bail!(
-            "сжатая копия получилась подозрительно маленькой: {}. Попробуйте отправить еще раз после обновления профиля сжатия.",
-            crate::bot::format::decimal_mb(metadata.len())
+            "Сжатая копия получилась слишком маленькой: {}",
+            crate::bot::format::decimal_mb(size)
         );
     } else {
         Ok(None)
@@ -1798,14 +2007,6 @@ async fn prepare_telegram_compressed_video(
 
 fn is_usable_telegram_compressed_video(bytes: u64) -> bool {
     (TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES..=TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES).contains(&bytes)
-}
-
-fn telegram_compressed_path(path: &Path) -> std::path::PathBuf {
-    let stem = path
-        .file_stem()
-        .map(|value| value.to_string_lossy())
-        .unwrap_or_default();
-    path.with_file_name(format!("{}.telegram.v4.mp4", stem))
 }
 
 async fn ensure_recording_access(
@@ -1841,9 +2042,15 @@ pub async fn render_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
-    let payload = Payload::from_string(context)
-        .context("Context decoding failed")?
-        .for_refresh();
+    let decoded = Payload::from_string(context).context("Context decoding failed")?;
+    if matches!(
+        decoded,
+        Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
+            | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
+    ) {
+        return Ok(());
+    }
+    let payload = decoded.for_refresh();
     let token = config.begin_view_update(user_id);
     let result = async {
         let view = tokio::select! {
@@ -1905,9 +2112,15 @@ async fn refresh_current_view_inner(
         return Ok(());
     }
 
-    let payload = Payload::from_string(context)
-        .context("Context decoding failed")?
-        .for_refresh();
+    let decoded = Payload::from_string(context).context("Context decoding failed")?;
+    if matches!(
+        decoded,
+        Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
+            | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
+    ) {
+        return Ok(());
+    }
+    let payload = decoded.for_refresh();
     // Graphs are refreshed by their controls. Re-uploading them on every heartbeat
     // competes with navigation for Telegram's edit quota.
     if payload.is_chart_navigation() || matches!(payload, Payload::TextPage { .. }) {
@@ -1918,8 +2131,10 @@ async fn refresh_current_view_inner(
         _ = token.cancelled() => return Ok(()),
         result = router(payload, user_id, config.clone()) => result?,
     };
+    let Some(generation) = view_admission(&view, config, user_id, chat_id).await? else {
+        return Ok(());
+    };
     let payload_str = view.payload.to_string();
-    let text = view.get_text();
     let ui_lock = config.ui_lock_for(user_id);
     let _guard = ui_lock.lock().await;
 
@@ -1932,7 +2147,16 @@ async fn refresh_current_view_inner(
         return Ok(());
     }
 
-    let result = edit_existing_view(bot, config, user_id, chat_id, message_id, &view, &text).await;
+    let result = edit_existing_view(
+        bot,
+        config,
+        user_id,
+        chat_id,
+        message_id,
+        &view,
+        Some(token),
+    )
+    .await;
     if token.is_cancelled() {
         // Telegram may already have applied the edit; the UI lock keeps a newer
         // screen from being sent until this response is resolved. Never commit
@@ -1944,12 +2168,13 @@ async fn refresh_current_view_inner(
     }
     match result {
         Ok(EditViewResult::Updated(mode)) => {
-            crate::core::update_user_state_with_mode(
+            crate::core::update_user_state_for_admission(
                 config,
                 user_id,
                 message_id.0,
                 &payload_str,
                 mode,
+                &generation,
             )
             .await;
             Ok(())
@@ -2014,10 +2239,20 @@ async fn apply_view(
     view: View,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
-    if let Some(new_state) = view.next_state.clone() {
-        dialogue.update(new_state).await?;
-    } else {
-        dialogue.exit().await?;
+    {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        if token.is_cancelled()
+            || view_admission(&view, config, user_id, chat_id)
+                .await?
+                .is_none()
+        {
+            return Ok(());
+        }
+        if let Some(new_state) = view.next_state.clone() {
+            dialogue.update(new_state).await?;
+        } else {
+            dialogue.exit().await?;
+        }
     }
 
     update_view_cancellable(
@@ -2064,7 +2299,11 @@ pub(crate) async fn update_view_cancellable(
     config: Arc<AppConfig>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> anyhow::Result<()> {
+    let Some(generation) = view_admission(&view, &config, user_id, chat_id).await? else {
+        return Ok(());
+    };
     let mut view = view;
+    view.admission_generation = Some(generation.clone());
     super::text_pages::prepare(&mut view, user_id, &config).await?;
     let ui_lock = config.ui_lock_for(user_id);
     let payload_str = view.payload.to_string();
@@ -2072,7 +2311,9 @@ pub(crate) async fn update_view_cancellable(
 
     loop {
         let guard = ui_lock.lock().await;
-        if cancellation.is_some_and(|token| token.is_cancelled()) {
+        if cancellation.is_some_and(|token| token.is_cancelled())
+            || !db::user::admission_is_current(user_id, &generation, &config.db).await?
+        {
             return Ok(());
         }
         let delay = config.sessions.get(&user_id).and_then(|session| {
@@ -2101,10 +2342,16 @@ pub(crate) async fn update_view_cancellable(
             .get(&user_id)
             .map(|session| MessageId(session.last_menu_id))
             .unwrap_or(message_id);
-        let text = view.get_text();
-
-        let result =
-            edit_existing_view(bot, &config, user_id, chat_id, message_id, &view, &text).await;
+        let result = edit_existing_view(
+            bot,
+            &config,
+            user_id,
+            chat_id,
+            message_id,
+            &view,
+            cancellation,
+        )
+        .await;
         if cancellation.is_some_and(|token| token.is_cancelled()) {
             if let Err(RequestError::RetryAfter(retry_after)) = &result {
                 block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
@@ -2113,12 +2360,13 @@ pub(crate) async fn update_view_cancellable(
         }
         match result {
             Ok(EditViewResult::Updated(mode)) => {
-                crate::core::update_user_state_with_mode(
+                crate::core::update_user_state_for_admission(
                     &config,
                     user_id,
                     message_id.0,
                     &payload_str,
                     mode,
+                    &generation,
                 )
                 .await;
                 return Ok(());
@@ -2227,8 +2475,18 @@ async fn edit_existing_view(
     chat_id: ChatId,
     message_id: MessageId,
     view: &View,
-    text: &str,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> std::result::Result<EditViewResult, RequestError> {
+    if view_admission(view, config, user_id, chat_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(EditViewResult::NotModified);
+    }
+    let text = view.get_text();
     let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
     let edit_mode = if view.text_page.is_some() && view.image.is_none() {
@@ -2264,7 +2522,18 @@ async fn edit_existing_view(
         };
     }
 
-    let input_file = InputFile::memory(resolve_view_image(view, user_id, config).await);
+    let mut delivery_view = view.clone();
+    let input_file =
+        InputFile::memory(resolve_view_image(&mut delivery_view, user_id, config).await);
+    if view_admission(&delivery_view, config, user_id, chat_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(EditViewResult::NotModified);
+    }
 
     let media = InputMedia::Photo(
         InputMediaPhoto::new(input_file)
@@ -2301,16 +2570,105 @@ async fn reanchor_view_cancellable(
     }
 
     let b = bot.clone();
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let _ = b.delete_message(chat_id, old_message_id).await;
     });
 
     Ok(())
 }
 
+async fn view_admission(
+    view: &View,
+    config: &AppConfig,
+    user_id: u64,
+    chat_id: ChatId,
+) -> Result<Option<String>> {
+    if chat_id.0 != user_id as i64 {
+        return Ok(None);
+    }
+    let current = db::user::admission_generation(user_id, &config.db).await?;
+    if view
+        .admission_generation
+        .as_ref()
+        .is_some_and(|expected| current.as_ref() != Some(expected))
+    {
+        return Ok(None);
+    }
+    let Some(generation) = current else {
+        return Ok(None);
+    };
+    // Validate identities captured when values/names were read, not targets
+    // inferred from today's room membership or from action-only callbacks.
+    let sources: Vec<_> = view
+        .displayed_resources
+        .iter()
+        .chain(
+            view.notifications
+                .iter()
+                .flat_map(|item| item.source.iter().chain(item.additional_sources.iter())),
+        )
+        .cloned()
+        .collect();
+    if !super::view_access::sources_allowed(&sources, user_id, config).await? {
+        return Ok(None);
+    }
+    for notification in &view.notifications {
+        if let Some(crate::core::types::DisplaySource::Device { entity_id, .. }) =
+            &notification.source
+        {
+            if !db::access::can_notify_entity(user_id, entity_id, &config.db).await? {
+                return Ok(None);
+            }
+        }
+    }
+    // Rendered data can wait behind the UI lock, media generation, or a retry.
+    // Recheck the source screen, including owner-bound text pages, at delivery.
+    use crate::bot::router::{ControlPayload, SettingsPayload};
+    let source = super::text_pages::source_payload(view, user_id, config).await?;
+    let device = match source {
+        Payload::DeviceDetails { device, .. }
+        | Payload::Control(
+            ControlPayload::DeviceControl { device, .. }
+            | ControlPayload::QuickAction { device, .. },
+        ) => Some((device, false)),
+        Payload::TemperatureInput { device, .. } => Some((device, true)),
+        Payload::Settings(settings) | Payload::AdminSettings(settings) => match settings {
+            SettingsPayload::DeviceDetail { device, .. }
+            | SettingsPayload::ToggleNotify { device, .. }
+            | SettingsPayload::ToggleHide { device, .. }
+            | SettingsPayload::EditName { device, .. }
+            | SettingsPayload::StateAliases { device, .. }
+            | SettingsPayload::EditStateAlias { device, .. }
+            | SettingsPayload::StateAliasEditContext { device, .. }
+            | SettingsPayload::StateAliasResetContext { device, .. }
+            | SettingsPayload::ResetStateAlias { device, .. }
+            | SettingsPayload::ToggleStateInversion { device, .. }
+            | SettingsPayload::ToggleCritical { device, .. } => Some((device, false)),
+            _ => None,
+        },
+        Payload::TextPage { .. } => return Ok(None),
+        _ => None,
+    };
+    if let Some((device, control)) = device {
+        let access = db::access::get_effective_device_access(
+            user_id,
+            user_id == config.root_user,
+            device,
+            &config.db,
+        )
+        .await?;
+        if !access.can_view || (control && !access.can_control) {
+            return Ok(None);
+        }
+    }
+    if !db::admission_is_current(user_id, &generation, &config.db).await? {
+        return Ok(None);
+    }
+    Ok(Some(generation))
+}
+
 async fn clear_ghost_session(config: &Arc<AppConfig>, user_id: u64) {
     config.sessions.remove(&user_id);
-    config.ui_locks.remove(&user_id);
 
     if let Err(e) = db::clear_user_session(user_id, &config.db).await {
         log::error!("Failed to clear ghost session for user {}: {}", user_id, e);
@@ -2370,13 +2728,19 @@ fn log_telegram_retry_after(
     );
 }
 
-async fn resolve_view_image(view: &View, user_id: u64, config: &Arc<AppConfig>) -> Vec<u8> {
+async fn resolve_view_image(view: &mut View, user_id: u64, config: &Arc<AppConfig>) -> Vec<u8> {
     if let Some(image) = &view.image {
         return non_empty_image_or_placeholder(Some(image.as_slice()), "view image");
     }
 
     let background = crate::core::ui_background::resolve(config.clone(), user_id).await;
-    non_empty_image_or_placeholder(background.as_deref(), "UI background")
+    if let Some((id, bytes)) = background {
+        view.displayed_resources
+            .push(crate::core::types::DisplaySource::Camera { id });
+        non_empty_image_or_placeholder(Some(&bytes), "UI background")
+    } else {
+        non_empty_image_or_placeholder(None, "UI background")
+    }
 }
 
 fn non_empty_image_or_placeholder(image: Option<&[u8]>, source: &str) -> Vec<u8> {
@@ -2397,7 +2761,30 @@ async fn send_new_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> Result<()> {
-    send_new_view_inner(bot, chat_id, user_id, view, config, None)
+    send_new_view_cancellable(bot, chat_id, user_id, view, config, None).await
+}
+
+async fn send_new_view_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    // Serialize new messages and session publication with edits/reanchors. An
+    // in-flight Telegram request must finish before the newer screen is sent.
+    let ui_lock = config.ui_lock_for(user_id);
+    let _guard = if let Some(token) = cancellation {
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => return Ok(()),
+            guard = ui_lock.lock() => guard,
+        }
+    } else {
+        ui_lock.lock().await
+    };
+    send_new_view_inner(bot, chat_id, user_id, view, config, cancellation)
         .await
         .map(|_| ())
 }
@@ -2413,7 +2800,11 @@ pub(crate) async fn send_new_view_inner(
     if cancellation.is_some_and(|token| token.is_cancelled()) {
         return Ok(false);
     }
+    let Some(generation) = view_admission(&view, &config, user_id, chat_id).await? else {
+        return Ok(false);
+    };
     let mut view = view;
+    view.admission_generation = Some(generation.clone());
     super::text_pages::prepare(&mut view, user_id, &config).await?;
     let text = view.get_text();
     let payload_str = view.payload.to_string();
@@ -2428,6 +2819,13 @@ pub(crate) async fn send_new_view_inner(
             text.chars().count(),
             TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
         );
+        if view_admission(&view, &config, user_id, chat_id)
+            .await?
+            .is_none()
+            || cancellation.is_some_and(|token| token.is_cancelled())
+        {
+            return Ok(false);
+        }
         let sent = bot
             .send_message(chat_id, view.get_plain_text())
             .reply_markup(view.kb)
@@ -2437,20 +2835,28 @@ pub(crate) async fn send_new_view_inner(
             let _ = bot.delete_message(chat_id, sent.id).await;
             return Ok(false);
         }
-        crate::core::update_user_state_with_mode(
+        crate::core::update_user_state_for_admission(
             &config,
             user_id,
             sent.id.0,
             &payload_str,
             UiMessageMode::Text,
+            &generation,
         )
         .await;
         return Ok(true);
     }
 
     // Исправлено: send_photo принимает InputFile, а не InputMedia
-    let image = resolve_view_image(&view, user_id, &config).await;
+    let image = resolve_view_image(&mut view, user_id, &config).await;
     let input_file = InputFile::memory(image);
+    if view_admission(&view, &config, user_id, chat_id)
+        .await?
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(false);
+    }
 
     let sent = bot
         .send_photo(chat_id, input_file)
@@ -2464,12 +2870,13 @@ pub(crate) async fn send_new_view_inner(
         return Ok(false);
     }
     // Критическая правка: сохраняем ID СООБЩЕНИЯ БОТА (sent.id), а не входящего апдейта
-    crate::core::update_user_state_with_mode(
+    crate::core::update_user_state_for_admission(
         &config,
         user_id,
         sent.id.0,
         &payload_str,
         UiMessageMode::Photo,
+        &generation,
     )
     .await;
     Ok(true)
@@ -2497,6 +2904,10 @@ pub(crate) async fn cancel_input_payload(
     config: &AppConfig,
 ) -> Result<Payload> {
     use crate::bot::router::{ControlPayload, SettingsPayload};
+    if let State::WaitingForNameDraft { draft_id, .. } = state {
+        sqlx::query("UPDATE ui_drafts SET status='cancelled',revision=revision+1 WHERE id=? AND owner_id=? AND kind='device_name' AND status='editing'")
+            .bind(draft_id).bind(user as i64).execute(&config.db).await?;
+    }
     Ok(match state {
         State::EditUserAlias { user_id } => {
             Payload::Admin(AdminPayload::UserProfile { id: *user_id })
@@ -2513,6 +2924,9 @@ pub(crate) async fn cancel_input_payload(
             })
         }
         State::WaitingForName { room_id, device_id }
+        | State::WaitingForNameDraft {
+            room_id, device_id, ..
+        }
         | State::WaitingForStateAlias {
             room_id, device_id, ..
         } => {
@@ -2526,7 +2940,7 @@ pub(crate) async fn cancel_input_payload(
             ) {
                 Payload::AdminSettings(back)
             } else {
-                settings_payload_for_current_session(config, Some(user), back)
+                settings_payload_for_current_session(config, Some(user), back).await?
             }
         }
         State::AddActionScheduleTime { target, .. }
@@ -2649,6 +3063,94 @@ pub async fn handle_custom_interval(
     .await
 }
 
+pub async fn handle_device_name_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (device_id, room_id, draft_id): (i64, i64, Option<i64>),
+) -> Result<()> {
+    let Some(user) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let user_id = user.id.0;
+    if !msg.chat.is_private() || msg.chat.id.0 != user_id as i64 || user_id != config.root_user {
+        return Ok(());
+    }
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let Some(draft_id) = draft_id else {
+        bot.send_message(
+            msg.chat.id,
+            super::personal::words(
+                lang,
+                "Форма устарела. Нажмите «Изменить имя» снова.",
+                "This form expired. Open Rename again.",
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+    let Some(raw) = msg.text() else {
+        return Ok(());
+    };
+    if raw.starts_with('/') {
+        return Ok(());
+    }
+    let Ok(name) = db::devices::validate_device_name(raw) else {
+        bot.send_message(
+            msg.chat.id,
+            super::personal::words(
+                lang,
+                "Введите имя длиной 1–128 символов без переносов строки и управляющих символов.",
+                "Enter a name of 1–128 characters without line breaks or control characters.",
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+    let back = settings_payload_for_current_session(
+        &config,
+        Some(user_id),
+        crate::bot::router::SettingsPayload::DeviceDetail {
+            room: room_id,
+            device: device_id,
+        },
+    )
+    .await?;
+    {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        if !db::user_exists(user_id, &config.db).await {
+            return Ok(());
+        }
+        let current = dialogue.get().await?.unwrap_or_default();
+        if !matches!(current, State::WaitingForNameDraft { device_id: d, room_id: r, draft_id: draft } if d == device_id && r == room_id && draft == draft_id)
+        {
+            return Ok(());
+        }
+        let expected = crate::bot::router::SettingsPayload::EditName {
+            room: room_id,
+            device: device_id,
+        };
+        if !matches!(current_input_payload(&config, user_id).await?,
+            Some(Payload::Settings(payload) | Payload::AdminSettings(payload)) if payload == expected)
+        {
+            return Ok(());
+        }
+        let Some(device) = db::devices::get_device_by_id(device_id, &config.db).await? else {
+            return Ok(());
+        };
+        if !db::devices::commit_name_draft(user_id, device_id, draft_id, name, &config.db).await? {
+            return Ok(());
+        }
+        config
+            .name_aliases
+            .insert(device.entity_id, name.to_owned());
+    }
+    finalize_dialogue(bot, dialogue, msg, config, Some(back)).await
+}
+
 pub async fn handle_state_alias_input(
     bot: Bot,
     msg: Message,
@@ -2699,32 +3201,30 @@ pub async fn handle_state_alias_input(
             room: room_id,
             device: device_id,
         },
-    );
+    )
+    .await?;
 
     finalize_dialogue(bot, dialogue, msg, config, Some(target_payload)).await
 }
 
-fn settings_payload_for_current_session(
+async fn settings_payload_for_current_session(
     config: &AppConfig,
     user_id: Option<u64>,
     payload: crate::bot::router::SettingsPayload,
-) -> Payload {
-    let Some(user_id) = user_id else {
-        return Payload::Settings(payload);
-    };
-
-    let from_admin_settings = config.sessions.get(&user_id).is_some_and(|session| {
+) -> Result<Payload> {
+    let from_admin_settings = if let Some(user) = user_id {
         matches!(
-            Payload::from_string(&session.current_context),
-            Ok(Payload::AdminSettings(_))
+            current_input_payload(config, user).await?,
+            Some(Payload::AdminSettings(_))
         )
-    });
-
-    if from_admin_settings {
+    } else {
+        false
+    };
+    Ok(if from_admin_settings {
         Payload::AdminSettings(payload)
     } else {
         Payload::Settings(payload)
-    }
+    })
 }
 
 pub async fn handle_user_alias_input(
@@ -4771,6 +5271,110 @@ async fn finalize_dialogue(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn camera_background_keeps_its_source_until_delivery() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',1,'rtsp://unused.invalid')").execute(&config.db).await?;
+        db::settings::set_i64(db::settings::UI_BACKGROUND_CAMERA_ID, 1, &config.db).await?;
+        *config.ui_background_cache.lock().await = Some(crate::models::UiBackgroundCache {
+            camera_id: 1,
+            bytes: Some(vec![1, 2, 3]),
+            captured_at: Some(Utc::now()),
+            failed_at: None,
+            last_warned_at: None,
+            last_error: None,
+            refreshing: false,
+        });
+        let mut view = View::default();
+        assert_eq!(
+            resolve_view_image(&mut view, 42, &config).await,
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            view.displayed_resources,
+            vec![crate::core::types::DisplaySource::Camera { id: 1 }]
+        );
+        assert!(view_admission(&view, &config, 42, ChatId(42))
+            .await?
+            .is_some());
+        db::access::set_room_access(42, 1, false, false, &config.db).await?;
+        assert!(view_admission(&view, &config, 42, ChatId(42))
+            .await?
+            .is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manual_video_shares_upload_limit_and_reports_failed_compression() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',1,'rtsp://unused.invalid')").execute(&config.db).await?;
+        let access = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        let message = serde_json::json!({"ok":true,"result":{"message_id":7,"date":1_700_000_000,"chat":{"id":42,"type":"private"},"text":"ok"}});
+        let (bot, server) = crate::bot::router::control_tests::mock_telegram_edits(vec![
+            (200, message.clone()),
+            (200, message),
+        ])
+        .await?;
+        assert!(
+            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", &access).await?
+        );
+        // Invalid oversized input must enter compression and produce a readable
+        // error instead of sending a video that Telegram would reject.
+        assert!(
+            !send_manual_camera_video(
+                &bot,
+                ChatId(42),
+                vec![0; TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES as usize + 1],
+                "Manual 120s",
+                &access
+            )
+            .await?
+        );
+        let requests = tokio::time::timeout(StdDuration::from_secs(5), server).await???;
+        assert!(requests[0]["method"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("sendvideo"));
+        assert!(requests[1]["method"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("sendmessage"));
+        assert!(requests[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Не удалось сжать"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delayed_camera_delivery_rejects_revoked_readded_user_and_changed_acl() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        let room: i64 = sqlx::query_scalar("SELECT id FROM rooms WHERE area='test'")
+            .fetch_one(&config.db)
+            .await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',?,'rtsp://unused.invalid')")
+            .bind(room).execute(&config.db).await?;
+        let old = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        db::delete_user(42, &config.db).await?;
+        db::add_user(42, &config.db).await?;
+        assert!(old.check().await.is_err());
+        let current = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        db::access::set_room_access(42, room, false, false, &config.db).await?;
+        assert!(current.check().await.is_err());
+        assert!(CameraDeliveryAccess::new(ChatId(-42), 42, 1, &config)
+            .await
+            .is_err());
+        Ok(())
+    }
     use crate::bot::text_commands;
 
     #[test]
@@ -5024,19 +5628,17 @@ mod tests {
     }
 
     #[test]
-    fn telegram_compressed_path_uses_sidecar_mp4() {
-        let path = std::path::Path::new("data/recordings/a/b/camera_1_segment_1.mp4");
-
-        assert_eq!(
-            telegram_compressed_path(path),
-            std::path::PathBuf::from("data/recordings/a/b/camera_1_segment_1.telegram.v4.mp4")
-        );
-    }
-
-    #[test]
     fn tiny_cached_compressed_video_is_treated_as_stale() {
         assert!(!is_usable_telegram_compressed_video(136_508));
         assert!(is_usable_telegram_compressed_video(5_000_000));
         assert!(!is_usable_telegram_compressed_video(51_000_000));
     }
 }
+
+#[cfg(test)]
+#[path = "voice_delivery_tests.rs"]
+mod voice_delivery_tests;
+
+#[cfg(test)]
+#[path = "command_delivery_tests.rs"]
+mod command_delivery_tests;

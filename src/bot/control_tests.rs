@@ -142,6 +142,10 @@ async fn setup() -> anyhow::Result<(Arc<AppConfig>, Arc<FakeHa>)> {
         .run(&db)
         .await?;
     db::add_user(42, &db).await?;
+    // This fixture represents an authenticated user update; UI persistence
+    // itself no longer invents or advances an activity timestamp.
+    let generation = db::admission_generation(42, &db).await?.unwrap();
+    db::record_user_activity(42, &generation, Utc::now(), &db).await?;
     db::rooms::sync_rooms_from_ha("bedroom", "Спальня", &db).await?;
     for (id, name, class) in [
         ("climate.bedroom", "Термостат", "climate"),
@@ -202,6 +206,9 @@ async fn setup() -> anyhow::Result<(Arc<AppConfig>, Arc<FakeHa>)> {
         voice_show_recognized_text: false,
         voice_response_format: Default::default(),
         sessions: DashMap::new(),
+        admission_lifecycle: tokio::sync::Mutex::new(()),
+        dialogue_generations: DashMap::new(),
+        active_dialogues: DashMap::new(),
         ui_locks: DashMap::new(),
         view_updates: DashMap::new(),
         climate_controls: Default::default(),
@@ -214,6 +221,7 @@ async fn setup() -> anyhow::Result<(Arc<AppConfig>, Arc<FakeHa>)> {
             crate::core::camera_pre_roll::CameraPreRollRegistry::new(),
         ),
         runtime_status: tokio::sync::RwLock::new(Default::default()),
+        notification_delivery: Default::default(),
     });
     Ok((config, ha))
 }
@@ -345,7 +353,7 @@ async fn text_pages_recheck_device_access_and_never_replay_a_saved_command() -> 
         .iter()
         .flatten()
         .any(|b| b.text == t(Language::Ru, "control.refresh")));
-    db::access::set_device_access(42, "climate.bedroom", false, false, false, &config.db).await?;
+    db::access::set_device_access(42, "climate.bedroom", false, false, &config.db).await?;
     let denied = router(Payload::TextPage { screen, page: 1 }, 42, config.clone()).await?;
     assert!(denied.alert.is_some());
     assert!(!denied.get_plain_text().contains("Доступное устройство"));
@@ -582,7 +590,7 @@ async fn long_command_receipt_survives_pages_without_reexecution_and_is_not_shar
     assert_eq!(ha.calls.lock().unwrap().len(), 1);
     let foreign = router(last.payload.clone(), 1, config.clone()).await?;
     assert!(!foreign.get_plain_text().contains("результат команды"));
-    db::access::set_device_access(42, "climate.bedroom", false, false, false, &config.db).await?;
+    db::access::set_device_access(42, "climate.bedroom", false, false, &config.db).await?;
     let denied = router(last.payload, 42, config.clone()).await?;
     assert!(denied.alert.is_some());
     assert!(denied.notice.is_none());
@@ -647,6 +655,7 @@ async fn critical_confirmation_checks_owner_cancel_expiry_and_revoked_access() -
         cmd: DeviceCmd::TurnOff,
     };
     let id = confirmation_id(&open(&config, command.clone()).await?);
+    db::add_user(77, &config.db).await?;
     let stranger = router(
         Payload::Control(ControlPayload::ConfirmAction { id }),
         77,
@@ -665,9 +674,9 @@ async fn critical_confirmation_checks_owner_cancel_expiry_and_revoked_access() -
     let view = open(&config, ControlPayload::ConfirmAction { id: expired }).await?;
     assert!(view.text.contains("устарело"));
     let revoked = confirmation_id(&open(&config, command).await?);
-    db::access::set_device_access(42, "light.bedroom", true, false, true, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
     open(&config, ControlPayload::ConfirmAction { id: revoked }).await?;
-    db::access::set_device_access(42, "light.bedroom", true, true, true, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", true, true, &config.db).await?;
     open(&config, ControlPayload::ConfirmAction { id: revoked }).await?;
     assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
@@ -693,7 +702,8 @@ async fn critical_temperature_approves_exact_target_and_rechecks_limits() -> any
             42,
             1,
             crate::core::climate_control::TemperatureCommand::Step(1),
-        )?
+        )
+        .await?
         .await?;
     assert!(bypass.is_err());
     ha.states.lock().unwrap()[0].attributes.temperature = Some(25.0);
@@ -822,7 +832,7 @@ async fn room_labels_distinguish_devices_and_readonly_buttons_open_details() -> 
     );
     assert!(labels.contains("автоматический"));
     assert!(!labels.contains("97.00"));
-    db::access::set_device_access(42, "light.bedroom", true, false, true, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
     let room = open(&config, ControlPayload::RoomDetail { room: 1 }).await?;
     assert!(
         callbacks(&room).contains(&Payload::Control(ControlPayload::DeviceControl {
@@ -914,6 +924,24 @@ async fn view_only_user_can_open_sensor_graph_and_climate_but_cannot_change_temp
             ..
         })
     ));
+    let manual = open(
+        &config,
+        ControlPayload::QuickAction {
+            room: 1,
+            device: 2,
+            cmd: DeviceCmd::EnterManualInput,
+        },
+    )
+    .await?;
+    assert!(manual.alert.is_none(), "{:?}", manual.alert);
+    assert!(matches!(
+        manual.next_state,
+        Some(State::WaitingForGraphInterval {
+            device_id: 2,
+            room_id: 1
+        })
+    ));
+    assert!(ha.calls.lock().unwrap().is_empty());
     let climate = open(
         &config,
         ControlPayload::DeviceControl { room: 1, device: 1 },
@@ -1005,12 +1033,12 @@ async fn climate_rapid_steps_preserve_order_even_when_ha_reports_old_target() ->
     ha.stale_temperature.store(true, Ordering::SeqCst);
     let mut replies = Vec::new();
     for direction in [1, 1, -1, 1] {
-        replies.push(config.climate_controls.enqueue(
-            config.clone(),
-            42,
-            1,
-            TemperatureCommand::Step(direction),
-        )?);
+        replies.push(
+            config
+                .climate_controls
+                .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(direction))
+                .await?,
+        );
     }
     let mut targets = Vec::new();
     for reply in replies {
@@ -1030,7 +1058,8 @@ async fn climate_rapid_steps_preserve_order_even_when_ha_reports_old_target() ->
     ha.states.lock().unwrap()[0].attributes.temperature = Some(25.0);
     let next = config
         .climate_controls
-        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))?
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?
         .await??;
     assert_eq!(next.target, 25.5);
     Ok(())
@@ -1045,12 +1074,12 @@ async fn climate_queue_obeys_limits_and_stops_after_uncertain_service_failure() 
     ha.states.lock().unwrap()[0].attributes.temperature = Some(29.5);
     let mut replies = Vec::new();
     for direction in [1, 1, -1] {
-        replies.push(config.climate_controls.enqueue(
-            config.clone(),
-            42,
-            1,
-            TemperatureCommand::Step(direction),
-        )?);
+        replies.push(
+            config
+                .climate_controls
+                .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(direction))
+                .await?,
+        );
     }
     let mut targets = Vec::new();
     for reply in replies {
@@ -1059,14 +1088,17 @@ async fn climate_queue_obeys_limits_and_stops_after_uncertain_service_failure() 
     assert_eq!(targets, vec![30.0, 30.0, 29.5]);
     assert_eq!(ha.calls.lock().unwrap().len(), 2);
     ha.fail_write.store(true, Ordering::SeqCst);
-    let first =
-        config
-            .climate_controls
-            .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(-1))?;
-    let second =
-        config
-            .climate_controls
-            .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(-1))?;
+    ha.pause_next_write.store(true, Ordering::SeqCst);
+    let first = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(-1))
+        .await?;
+    ha.write_started.notified().await;
+    let second = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(-1))
+        .await?;
+    ha.release_write.notify_one();
     assert!(first.await?.is_err());
     assert!(second.await?.is_err());
     assert_eq!(
@@ -1082,19 +1114,19 @@ async fn climate_queue_rechecks_access_before_each_command() -> anyhow::Result<(
     use crate::core::climate_control::TemperatureCommand;
     let (config, ha) = setup().await?;
     ha.pause_next_write.store(true, Ordering::SeqCst);
-    let first =
-        config
-            .climate_controls
-            .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))?;
+    let first = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?;
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         ha.write_started.notified(),
     )
     .await?;
-    let second =
-        config
-            .climate_controls
-            .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))?;
+    let second = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?;
     db::access::set_room_access(42, 1, true, false, &config.db).await?;
     ha.release_write.notify_one();
     assert!(first.await?.is_ok());
@@ -1360,7 +1392,7 @@ async fn graph_rejects_zero_and_excessive_intervals_before_loading_history() -> 
     Ok(())
 }
 
-async fn mock_telegram_edits(
+pub(crate) async fn mock_telegram_edits(
     responses: Vec<(u16, serde_json::Value)>,
 ) -> anyhow::Result<(
     teloxide::Bot,
@@ -1397,21 +1429,52 @@ async fn mock_telegram_responses(
             }
             let headers = String::from_utf8_lossy(&request[..body_start]);
             let request_path = headers.lines().next().unwrap().to_string();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    let (key, value) = line.split_once(':')?;
-                    key.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse().unwrap())
-                })
-                .unwrap();
-            while request.len() < body_start + length {
-                let mut chunk = [0; 4096];
-                let count = stream.read(&mut chunk).await?;
-                anyhow::ensure!(count > 0, "Incomplete HTTP body");
-                request.extend_from_slice(&chunk[..count]);
-            }
-            let bytes = &request[body_start..body_start + length];
+            let length: Option<usize> = headers.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap())
+            });
+            let body_bytes = if let Some(length) = length {
+                while request.len() < body_start + length {
+                    let mut chunk = [0; 4096];
+                    let count = stream.read(&mut chunk).await?;
+                    anyhow::ensure!(count > 0, "Incomplete HTTP body");
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                request[body_start..body_start + length].to_vec()
+            } else {
+                // InputFile::file streams multipart uploads with chunked encoding.
+                let mut decoded = Vec::new();
+                let mut cursor = body_start;
+                loop {
+                    let end = loop {
+                        if let Some(index) = request[cursor..].windows(2).position(|w| w == b"\r\n")
+                        {
+                            break cursor + index;
+                        }
+                        let mut chunk = [0; 4096];
+                        let count = stream.read(&mut chunk).await?;
+                        anyhow::ensure!(count > 0, "Incomplete chunk header");
+                        request.extend_from_slice(&chunk[..count]);
+                    };
+                    let size =
+                        usize::from_str_radix(std::str::from_utf8(&request[cursor..end])?, 16)?;
+                    cursor = end + 2;
+                    if size == 0 {
+                        break;
+                    }
+                    while request.len() < cursor + size + 2 {
+                        let mut chunk = [0; 4096];
+                        let count = stream.read(&mut chunk).await?;
+                        anyhow::ensure!(count > 0, "Incomplete chunk body");
+                        request.extend_from_slice(&chunk[..count]);
+                    }
+                    decoded.extend_from_slice(&request[cursor..cursor + size]);
+                    cursor += size + 2;
+                }
+                decoded
+            };
+            let bytes = &body_bytes;
             let mut parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(
                 |_| serde_json::json!({"multipart": String::from_utf8_lossy(bytes)}),
             );
@@ -1893,7 +1956,7 @@ async fn climate_and_confirmation_use_actual_room_and_show_limits() -> anyhow::R
     )
     .await?;
     assert!(confirm.text.contains("Спальня"));
-    db::access::set_device_access(42, "light.bedroom", true, false, true, &config.db).await?;
+    db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
     let denied = open(
         &config,
         ControlPayload::QuickAction {
@@ -2751,7 +2814,8 @@ async fn admin_user_names_and_aliases_keep_identity_pagination_and_root_permissi
         .filter(|button| button.text.contains("Одинаковое имя"))
         .map(|button| button.text.clone())
         .collect();
-    assert_eq!(names.len(), 9);
+    // Root now has its own persisted admission and occupies one row.
+    assert_eq!(names.len(), 8);
     assert!(names
         .iter()
         .all(|name| name.contains(" · #") && name.ends_with(" · user")));
@@ -2772,7 +2836,7 @@ async fn admin_user_names_and_aliases_keep_identity_pagination_and_root_permissi
             .iter()
             .filter(|payload| matches!(payload, Payload::Admin(AdminPayload::UserProfile { .. })))
             .count(),
-        3
+        4
     );
     let restored = router(Payload::Admin(AdminPayload::ListUsers), 1, config.clone()).await?;
     assert_eq!(callbacks(&restored), callbacks(&second));
@@ -2823,3 +2887,595 @@ mod recording_wizard_tests;
 
 #[path = "personal_tests.rs"]
 mod personal_ux;
+
+#[tokio::test]
+async fn revoked_user_late_telegram_edit_does_not_restore_admission() -> anyhow::Result<()> {
+    for readd in [false, true] {
+        let (config, _) = setup().await?;
+        let context = Payload::Home.to_string();
+        crate::core::update_user_state_with_mode(
+            &config,
+            42,
+            7,
+            &context,
+            crate::models::UiMessageMode::Text,
+        )
+        .await;
+        let mut view = router(Payload::Home, 42, config.clone()).await?;
+        view.text.push_str(&"long screen ".repeat(150));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (bot, server) = mock_telegram_responses(vec![(200, serde_json::json!({"ok": true, "result": {"message_id": 7, "date": 1_700_000_000, "chat": {"id": 42, "type": "private"}, "text": "ok"}}))], Some((started.clone(), release.clone()))).await?;
+        let job_config = config.clone();
+        let job = tokio::spawn(async move {
+            crate::bot::handlers::update_view_cancellable(
+                &bot,
+                teloxide::types::ChatId(42),
+                teloxide::types::MessageId(7),
+                42,
+                view,
+                job_config,
+                None,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified()).await?;
+        let mut deletion = Payload::Admin(crate::bot::router::AdminPayload::DeleteUser { id: 42 });
+        // The real administrative route commits revocation while the edit is outstanding.
+        let _ = router(deletion.clone(), 1, config.clone()).await?;
+        if readd {
+            db::add_user(42, &config.db).await?;
+        }
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), job).await???;
+        server.await??;
+        assert!(!config.sessions.contains_key(&42));
+        assert!(db::get_all_active_sessions(&config.db).await?.is_empty());
+        assert_eq!(db::user_exists(42, &config.db).await, readd);
+        if !readd {
+            assert!(router(Payload::Home, 42, config.clone()).await.is_err());
+        }
+        deletion = Payload::Admin(crate::bot::router::AdminPayload::DeleteUser { id: 1 });
+        let root_delete = router(deletion, 1, config.clone()).await?;
+        assert!(root_delete.alert.is_some());
+        assert!(db::user_exists(1, &config.db).await);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_rename_form_validates_owner_state_and_updates_cache() -> anyhow::Result<()> {
+    use crate::bot::router::{SettingsPayload, State};
+    use teloxide::dispatching::dialogue::InMemStorage;
+    let (config, _) = setup().await?;
+    let payload = Payload::AdminSettings(SettingsPayload::EditName { room: 1, device: 3 });
+    let view = router(payload.clone(), 1, config.clone()).await?;
+    let Some(State::WaitingForNameDraft {
+        device_id: 3,
+        room_id: 1,
+        draft_id,
+    }) = view.next_state
+    else {
+        panic!("Expected name draft")
+    };
+    let storage = InMemStorage::<State>::new();
+    let dialogue =
+        teloxide::dispatching::dialogue::Dialogue::new(storage, teloxide::types::ChatId(1));
+    dialogue
+        .update(State::WaitingForNameDraft {
+            device_id: 3,
+            room_id: 1,
+            draft_id,
+        })
+        .await?;
+    crate::core::update_user_state_with_mode(
+        &config,
+        1,
+        7,
+        &payload.to_string(),
+        crate::models::UiMessageMode::Text,
+    )
+    .await;
+    let msg: teloxide::types::Message = serde_json::from_value(
+        serde_json::json!({"message_id": 8, "date": 1_700_000_000, "from": {"id":1,"is_bot":false,"first_name":"Root"}, "chat":{"id":1,"type":"private"},"text":"  Новая лампа 🏠_*  "}),
+    )?;
+    let (bot, server) = mock_telegram_edits(vec![
+        (200, serde_json::json!({"ok":true,"result":true})),
+        (200, serde_json::json!({"ok":true,"result":{"message_id":7,"date":1_700_000_000,"chat":{"id":1,"type":"private"},"text":"ok"}})),
+    ]).await?;
+    // A stale form does not write, independently of transport availability.
+    dialogue.update(State::Idle).await?;
+    crate::bot::handlers::handle_device_name_input(
+        bot.clone(),
+        msg.clone(),
+        config.clone(),
+        dialogue.clone(),
+        (3, 1, Some(draft_id)),
+    )
+    .await?;
+    assert_ne!(
+        db::devices::get_device_by_id(3, &config.db)
+            .await?
+            .unwrap()
+            .alias
+            .as_deref(),
+        Some("Новая лампа 🏠_*")
+    );
+    dialogue
+        .update(State::WaitingForNameDraft {
+            device_id: 3,
+            room_id: 1,
+            draft_id,
+        })
+        .await?;
+    crate::bot::handlers::handle_device_name_input(
+        bot,
+        msg,
+        config.clone(),
+        dialogue,
+        (3, 1, Some(draft_id)),
+    )
+    .await?;
+    assert_eq!(
+        db::devices::get_device_by_id(3, &config.db)
+            .await?
+            .unwrap()
+            .alias
+            .as_deref(),
+        Some("Новая лампа 🏠_*")
+    );
+    assert_eq!(
+        config.name_aliases.get("light.bedroom").unwrap().as_str(),
+        "Новая лампа 🏠_*"
+    );
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn climate_shutdown_rejects_queued_work_and_joins_started_ha_request() -> anyhow::Result<()> {
+    use crate::core::climate_control::TemperatureCommand;
+    let (config, ha) = setup().await?;
+    ha.pause_next_write.store(true, Ordering::SeqCst);
+    let started = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ha.write_started.notified(),
+    )
+    .await?;
+    let queued = config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await?;
+    config.climate_controls.stop_accepting();
+    assert!(config
+        .climate_controls
+        .enqueue(config.clone(), 42, 1, TemperatureCommand::Step(1))
+        .await
+        .is_err());
+    let joining_config = config.clone();
+    let joining = tokio::spawn(async move { joining_config.climate_controls.shutdown().await });
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    // The in-flight service remains alive; its deterministic barrier is released
+    // only after admission stopped and the second command entered the queue.
+    ha.release_write.notify_one();
+    assert!(started.await?.is_ok());
+    assert!(queued.await?.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(2), joining).await???;
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    config.climate_controls.shutdown().await?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RevocationDuringDeviceRead {
+    Delete,
+    DeleteAndReadd,
+    DenyControl,
+}
+
+async fn assert_device_write_rechecks_access_after_slow_read(
+    revocation: RevocationDuringDeviceRead,
+    confirmed: bool,
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let mut payload = ControlPayload::QuickAction {
+        room: 1,
+        device: 3,
+        cmd: DeviceCmd::TurnOff,
+    };
+    if confirmed {
+        db::devices::toggle_device_critical(3, &config.db).await?;
+        let id = confirmation_id(&open(&config, payload).await?);
+        payload = ControlPayload::ConfirmAction { id };
+    }
+    assert!(ha.calls.lock().unwrap().is_empty());
+    ha.pause_next_read.store(true, Ordering::SeqCst);
+    let request_config = config.clone();
+    let request = tokio::spawn(async move { open(&request_config, payload).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ha.read_started.notified(),
+    )
+    .await?;
+    // The state snapshot was read under the old admission and ACL. Resume it
+    // only after the revocation transaction commits, without a timing sleep.
+    match revocation {
+        RevocationDuringDeviceRead::Delete => db::delete_user(42, &config.db).await?,
+        RevocationDuringDeviceRead::DeleteAndReadd => {
+            db::delete_user(42, &config.db).await?;
+            db::add_user(42, &config.db).await?;
+        }
+        RevocationDuringDeviceRead::DenyControl => {
+            db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
+        }
+    }
+    ha.release_read.notify_one();
+    // Both a rejected request and an access-denied view are valid UI outcomes.
+    let _outcome = tokio::time::timeout(std::time::Duration::from_secs(2), request).await??;
+    assert!(
+        ha.calls.lock().unwrap().is_empty(),
+        "A stale state read dispatched a physical write: {revocation:?}, confirmed={confirmed}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_write_after_slow_read_rejects_deleted_user() -> anyhow::Result<()> {
+    assert_device_write_rechecks_access_after_slow_read(RevocationDuringDeviceRead::Delete, false)
+        .await
+}
+
+#[tokio::test]
+async fn device_write_after_slow_read_rejects_previous_admission_after_readd() -> anyhow::Result<()>
+{
+    assert_device_write_rechecks_access_after_slow_read(
+        RevocationDuringDeviceRead::DeleteAndReadd,
+        false,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn device_write_after_slow_read_rechecks_current_control_permission() -> anyhow::Result<()> {
+    assert_device_write_rechecks_access_after_slow_read(
+        RevocationDuringDeviceRead::DenyControl,
+        false,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn confirmed_device_write_after_slow_read_rechecks_admission_and_acl() -> anyhow::Result<()> {
+    for revocation in [
+        RevocationDuringDeviceRead::Delete,
+        RevocationDuringDeviceRead::DeleteAndReadd,
+        RevocationDuringDeviceRead::DenyControl,
+    ] {
+        assert_device_write_rechecks_access_after_slow_read(revocation, true).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn text_device_write_after_slow_read_rechecks_admission_and_acl() -> anyhow::Result<()> {
+    use crate::core::commands::{execute_text, CommandExecution, CommandSource};
+    for revocation in [
+        RevocationDuringDeviceRead::Delete,
+        RevocationDuringDeviceRead::DeleteAndReadd,
+        RevocationDuringDeviceRead::DenyControl,
+    ] {
+        let (config, ha) = setup().await?;
+        ha.pause_next_read.store(true, Ordering::SeqCst);
+        let request_config = config.clone();
+        let request = tokio::spawn(async move {
+            execute_text(
+                42,
+                false,
+                CommandSource::Text,
+                "выключи люстра",
+                &request_config,
+            )
+            .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ha.read_started.notified(),
+        )
+        .await?;
+        match revocation {
+            RevocationDuringDeviceRead::Delete => db::delete_user(42, &config.db).await?,
+            RevocationDuringDeviceRead::DeleteAndReadd => {
+                db::delete_user(42, &config.db).await?;
+                db::add_user(42, &config.db).await?;
+            }
+            RevocationDuringDeviceRead::DenyControl => {
+                db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
+            }
+        }
+        ha.release_read.notify_one();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), request).await??;
+        assert!(
+            ha.calls.lock().unwrap().is_empty(),
+            "Stale text command reached HA: {revocation:?}"
+        );
+        match outcome {
+            Err(_) => {}
+            Ok(CommandExecution::Done { message, .. }) => assert!(
+                message.contains("Команды не отправлены"),
+                "Unexpected success: {message}"
+            ),
+            other => panic!("Expected failed text command, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_recording_group_callback_cannot_mutate_or_log_success_after_revocation(
+) -> anyhow::Result<()> {
+    for revocation in ["delete", "readd", "scope"] {
+        let (config, ha) = setup().await?;
+        let group = db::camera_recording_rule_groups::create_group("Guarded", &config.db).await?;
+        db::camera_recording_rule_groups::cycle_group_access_scope(group, &config.db).await?;
+        let token = config.begin_view_update(42);
+        let ctx = RenderContext {
+            displayed_resources: Default::default(),
+            user_id: 42,
+            admission_generation: db::admission_generation(42, &config.db).await?.unwrap(),
+            config: config.clone(),
+            notifications: vec![],
+            is_admin: false,
+            lang: Language::Ru,
+            settings_origin: SettingsOrigin::Home,
+        };
+        match revocation {
+            "delete" => db::delete_user(42, &config.db).await?,
+            "readd" => {
+                db::delete_user(42, &config.db).await?;
+                db::add_user(42, &config.db).await?;
+            }
+            "scope" => {
+                db::camera_recording_rule_groups::cycle_group_access_scope(group, &config.db)
+                    .await?;
+            }
+            _ => unreachable!(),
+        }
+        config.cancel_view_update(42);
+        assert!(token.is_cancelled());
+        let view = router_camera(ctx, CameraPayload::ToggleRecordingGroupMode { group }).await?;
+        assert!(
+            view.alert.is_some(),
+            "stale {revocation} callback was not rejected"
+        );
+        assert!(view.notice.is_none());
+        assert!(
+            db::camera_recording_rule_groups::get_group(group, &config.db)
+                .await?
+                .unwrap()
+                .is_enabled()
+        );
+        let successes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM activity_log WHERE action IN ('rule_group.enable','rule_group.pause') AND status='ok'")
+            .fetch_one(&config.db).await?;
+        assert_eq!(successes, 0);
+        assert!(ha.calls.lock().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_redraw_preserves_user_activity_in_memory_and_persisted_session(
+) -> anyhow::Result<()> {
+    let (config, _) = setup().await?;
+    let payload = Payload::DeviceDetails { room: 1, device: 1 };
+    let context = payload.to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let generation = db::admission_generation(42, &config.db).await?.unwrap();
+    let inactive_since = Utc::now() - Duration::hours(25);
+    db::record_user_activity(42, &generation, inactive_since, &config.db).await?;
+    {
+        let mut session = config.sessions.get_mut(&42).unwrap();
+        session.last_seen_at = inactive_since;
+        session.last_persisted_at = Some(inactive_since);
+    }
+    let (bot, server) = mock_telegram_edits(vec![
+        (200, telegram_message(7, true)),
+        (200, telegram_message(7, true)),
+    ])
+    .await?;
+    for _ in 0..2 {
+        crate::bot::handlers::refresh_current_view(
+            &bot,
+            &config,
+            42,
+            teloxide::types::ChatId(42),
+            teloxide::types::MessageId(7),
+            &context,
+        )
+        .await?;
+        let session = config.sessions.get(&42).unwrap();
+        assert_eq!(session.last_seen_at, inactive_since);
+        assert!(session.last_ui_refresh_at.unwrap() > inactive_since);
+        drop(session);
+        assert_eq!(
+            db::user_activity_at(42, &generation, &config.db).await?,
+            Some(inactive_since)
+        );
+    }
+    assert_eq!(server.await??.len(), 2);
+    // Restart restoration and a later UI reanchor must keep the same inactivity
+    // lease, even when they must write the changed message ID and context.
+    config.sessions.remove(&42);
+    crate::core::update_user_state_for_admission(
+        &config,
+        42,
+        8,
+        &context,
+        crate::models::UiMessageMode::Photo,
+        &generation,
+    )
+    .await;
+    assert_eq!(
+        config.sessions.get(&42).unwrap().last_seen_at,
+        inactive_since
+    );
+    let persisted = db::get_all_active_sessions(&config.db).await?;
+    assert_eq!(
+        persisted
+            .iter()
+            .find(|(user, _, _, _)| *user == 42)
+            .unwrap()
+            .3,
+        inactive_since
+    );
+    let cutoff = Utc::now() - Duration::hours(config.session_ttl_hours as i64);
+    assert!(config.sessions.get(&42).unwrap().last_seen_at < cutoff);
+    crate::core::maintenance::cleanup_expired_sessions(&config).await;
+    assert!(!config.sessions.contains_key(&42));
+    assert!(db::get_all_active_sessions(&config.db).await?.is_empty());
+    crate::core::update_user_state_for_admission(
+        &config,
+        42,
+        9,
+        &context,
+        crate::models::UiMessageMode::Photo,
+        &generation,
+    )
+    .await;
+    assert!(
+        !config.sessions.contains_key(&42),
+        "late redraw recreated an expired session"
+    );
+    assert!(db::get_all_active_sessions(&config.db).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepted_callback_updates_activity_even_without_a_new_view() -> anyhow::Result<()> {
+    let (config, _) = setup().await?;
+    let context = Payload::Home.to_string();
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &context,
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let generation = db::admission_generation(42, &config.db).await?.unwrap();
+    let inactive_since = Utc::now() - Duration::hours(25);
+    db::record_user_activity(42, &generation, inactive_since, &config.db).await?;
+    config.sessions.get_mut(&42).unwrap().last_seen_at = inactive_since;
+    let update: teloxide::types::Update = serde_json::from_str(&serde_json::json!({
+        "update_id": 1, "callback_query": {
+            "id": "activity", "from": {"id": 42, "is_bot": false, "first_name": "User"},
+            "chat_instance": "private", "data": "expired callback",
+            "message": {"message_id": 7, "date": 1700000000, "chat": {"id": 42, "type": "private"}, "text": "Home"}
+        }
+    }).to_string())?;
+    let (bot, server) =
+        mock_telegram_edits(vec![(200, serde_json::json!({"ok": true, "result": true}))]).await?;
+    let input = teloxide::dptree::deps![
+        update,
+        bot,
+        config.clone(),
+        teloxide::dispatching::dialogue::InMemStorage::<State>::new()
+    ];
+    let outcome = crate::bot::schema().dispatch(input).await;
+    assert!(matches!(outcome, std::ops::ControlFlow::Break(Ok(()))));
+    let session = config.sessions.get(&42).unwrap();
+    assert!(session.last_seen_at > inactive_since);
+    assert_eq!(session.last_menu_id, 7);
+    assert_eq!(session.current_context, context);
+    let activity = session.last_seen_at;
+    drop(session);
+    assert_eq!(
+        db::user_activity_at(42, &generation, &config.db).await?,
+        Some(activity)
+    );
+    assert_eq!(server.await??.len(), 1);
+    db::delete_user(42, &config.db).await?;
+    db::add_user(42, &config.db).await?;
+    assert!(!crate::core::record_user_activity_for_admission(&config, 42, &generation).await?);
+    Ok(())
+}
+
+#[path = "review_followup_tests.rs"]
+mod review_followup_tests;
+
+#[path = "view_access_tests.rs"]
+mod view_access_tests;
+
+#[tokio::test]
+async fn late_criticality_rejection_reports_no_send_in_both_languages() -> anyhow::Result<()> {
+    for (lang, expected) in [
+        (Language::Ru, "Команда не отправлена: устройство стало критическим. Откройте действие заново и подтвердите его."),
+        (Language::En, "Command not sent: the device became critical. Reopen the action and confirm it."),
+    ] {
+        for (device, cmd) in [(3, DeviceCmd::TurnOff), (1, DeviceCmd::SetTemp(23.0))] {
+            let (config, ha) = setup().await?;
+            db::set_user_language(42, lang, &config.db).await?;
+            ha.pause_next_read.store(true, Ordering::SeqCst);
+            let request_config = config.clone();
+            let request = tokio::spawn(async move {
+                open(&request_config, ControlPayload::QuickAction { room: 1, device, cmd }).await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                ha.read_started.notified(),
+            ).await?;
+            db::devices::toggle_device_critical(device, &config.db).await?;
+            ha.release_read.notify_one();
+            let view = tokio::time::timeout(std::time::Duration::from_secs(2), request).await???;
+            assert_eq!(view.alert.as_deref(), Some(expected));
+            assert!(view.notice.is_none());
+            assert!(ha.calls.lock().unwrap().is_empty());
+            assert!(callbacks(&view).contains(&Payload::Home));
+            assert!(!callbacks(&view).iter().any(|payload| matches!(payload,
+                Payload::Control(ControlPayload::QuickAction { .. } | ControlPayload::ConfirmAction { .. }))));
+            config.climate_controls.shutdown().await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_expiration_rechecks_activity_after_waiting_for_lifecycle() -> anyhow::Result<()> {
+    let (config, _) = setup().await?;
+    crate::core::update_user_state_with_mode(
+        &config,
+        42,
+        7,
+        &Payload::Home.to_string(),
+        crate::models::UiMessageMode::Photo,
+    )
+    .await;
+    let generation = db::admission_generation(42, &config.db).await?.unwrap();
+    let old = Utc::now() - Duration::hours(25);
+    db::record_user_activity(42, &generation, old, &config.db).await?;
+    config.sessions.get_mut(&42).unwrap().last_seen_at = old;
+    let lifecycle = config.admission_lifecycle.lock().await;
+    let cleanup = crate::core::maintenance::cleanup_expired_sessions(&config);
+    tokio::pin!(cleanup);
+    // Candidate collection runs before the first lock await. Refresh activity
+    // while cleanup is waiting at precisely that boundary.
+    assert!(futures_util::poll!(cleanup.as_mut()).is_pending());
+    let active = Utc::now();
+    db::record_user_activity(42, &generation, active, &config.db).await?;
+    config.sessions.get_mut(&42).unwrap().last_seen_at = active;
+    drop(lifecycle);
+    cleanup.await;
+    assert_eq!(config.sessions.get(&42).unwrap().last_seen_at, active);
+    assert_eq!(db::get_all_active_sessions(&config.db).await?.len(), 1);
+    Ok(())
+}

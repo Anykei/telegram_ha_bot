@@ -11,3 +11,4 @@ sqlite:
 /docs
 /docks/*SPEC*.md
 /docks/**/SPEC.md
+__pycache__/

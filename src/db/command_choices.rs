@@ -46,8 +46,8 @@ pub async fn get(id: i64, user: u64, pool: &SqlitePool) -> Result<Option<Choice>
     .await?)
 }
 pub async fn claim(id: i64, user: u64, pool: &SqlitePool) -> Result<bool> {
-    Ok(sqlx::query("UPDATE command_choices SET status = 'selected' WHERE id = ? AND user_id = ? AND status = 'pending' AND expires_at > ?")
-        .bind(id).bind(user as i64).bind(chrono::Utc::now().timestamp()).execute(pool).await?.rows_affected() == 1)
+    Ok(sqlx::query("UPDATE command_choices SET status = 'selected' WHERE id = ? AND user_id = ? AND status = 'pending' AND expires_at > CAST(strftime('%s', 'now') AS INTEGER)")
+        .bind(id).bind(user as i64).execute(pool).await?.rows_affected() == 1)
 }
 pub async fn cancel(id: i64, user: u64, pool: &SqlitePool) -> Result<()> {
     sqlx::query("UPDATE command_choices SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'pending'")

@@ -1,4 +1,6 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.87-slim-bookworm AS chef
+# Match the validated CI toolchain; locked home/time dependencies require Rust >= 1.88.
+RUN rustup toolchain install 1.95.0 --profile minimal && rustup default 1.95.0
 WORKDIR /app
 
 FROM chef AS planner
@@ -29,11 +31,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Сборка кэша зависимостей
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --locked --release --recipe-path recipe.json
 
 # Сборка самого бота
 COPY . .
-RUN cargo build --release --bin telegram_ha_bot
+RUN cargo build --locked --release --bin telegram_ha_bot
 
 # --- ЭТАП 3: Runtime (Финальный образ) ---
 FROM debian:bookworm-slim AS runtime

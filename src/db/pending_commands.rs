@@ -92,8 +92,8 @@ pub async fn get_pending(
 
 /// Claim before the first external effect. Confirmed commands are never replayed.
 pub async fn claim(id: i64, user: u64, pool: &SqlitePool) -> Result<bool> {
-    Ok(sqlx::query("UPDATE pending_commands SET status = 'confirmed', confirmed_at = ? WHERE id = ? AND user_id = ? AND status = 'pending' AND julianday(expires_at) > julianday(?)")
-        .bind(Utc::now().to_rfc3339()).bind(id).bind(user as i64).bind(Utc::now().to_rfc3339())
+    Ok(sqlx::query("UPDATE pending_commands SET status = 'confirmed', confirmed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND user_id = ? AND status = 'pending' AND julianday(expires_at) > julianday('now')")
+        .bind(id).bind(user as i64)
         .execute(pool).await?.rows_affected() == 1)
 }
 
@@ -130,10 +130,9 @@ pub async fn expire_old(pool: &SqlitePool) -> Result<u64> {
         r#"
         UPDATE pending_commands
         SET status = 'expired'
-        WHERE status = 'pending' AND expires_at <= ?
+        WHERE status = 'pending' AND julianday(expires_at) <= julianday('now')
         "#,
     )
-    .bind(Utc::now().to_rfc3339())
     .execute(pool)
     .await?;
 

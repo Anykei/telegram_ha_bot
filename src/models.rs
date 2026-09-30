@@ -74,6 +74,9 @@ pub struct AppConfig {
     pub voice_response_format: VoiceResponseFormat,
 
     pub sessions: DashMap<u64, UserSession>,
+    pub admission_lifecycle: Mutex<()>,
+    pub dialogue_generations: DashMap<u64, String>,
+    pub active_dialogues: DashMap<u64, crate::bot::handlers::MyDialogue>,
     pub ui_locks: DashMap<u64, Arc<Mutex<()>>>,
     pub view_updates: DashMap<u64, Arc<tokio_util::sync::CancellationToken>>,
     pub climate_controls: crate::core::climate_control::ClimateControls,
@@ -85,6 +88,7 @@ pub struct AppConfig {
     pub camera_snapshot_cache: Mutex<HashMap<i64, CameraSnapshotCache>>,
     pub camera_pre_roll_registry: Arc<crate::core::camera_pre_roll::CameraPreRollRegistry>,
     pub runtime_status: RwLock<RuntimeStatus>,
+    pub notification_delivery: crate::core::notification_delivery::NotificationDelivery,
 }
 
 impl AppConfig {
@@ -196,6 +200,13 @@ pub struct NotificationData {
     pub recipients: Vec<i64>,
     #[serde(default)]
     pub critical: bool,
+    pub scope: NotificationScope,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub enum NotificationScope {
+    Device(String),
+    Camera(i64),
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +232,15 @@ pub struct CameraSnapshotCache {
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
+    pub ha_events_processed: u64,
+    pub ha_rule_failures: u64,
+    pub ha_events_queued: usize,
+    pub notification_overflow: u64,
+    pub notifications_queued: usize,
+    pub notifications_active: usize,
+    pub notifications_failed: u64,
+    pub ui_refresh_queued: usize,
+    pub ui_refresh_overflow: u64,
     pub last_maintenance_tick_at: Option<DateTime<Utc>>,
     pub last_ha_sync_at: Option<DateTime<Utc>>,
     pub last_ha_sync_error: Option<String>,
