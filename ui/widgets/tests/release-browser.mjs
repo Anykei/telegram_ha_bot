@@ -58,9 +58,10 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   async function assertPreserved(page, label) {
     const content = await collectParts(label);
-    assert.ok(content.text.endsWith(page.alert + page.notice + page.body), `${label}: all text survives local pagination exactly`);
+    assert.ok(content.text.endsWith(page.alert + page.notice + page.body + (page.hint || '')), `${label}: all body/hint text survives local pagination exactly`);
     assert.deepEqual(content.actions, page.rows.flat().map(b => [b.key, b.text]), `${label}: every original action survives in order`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
+    assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), page.kind || 'menu');
     assert.equal(await evaluate(`${get('r-read-label')}.textContent`), page.lang === 'ru' ? 'Обновить' : 'Refresh');
     return content;
   }
@@ -93,6 +94,10 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  // Old snapshots without optional kind/hint still have the default menu presentation.
+  await reload('home');
+  assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
+  assert.equal(await evaluate(`${doc}.querySelector('.r-hint')`), null);
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
@@ -116,6 +121,42 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await click('room'); await until(`${get('r-title')}.textContent === 'Гостиная'`);
   await click('ceiling'); await until(`${get('r-title')}.textContent === 'Люстра'`);
   assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Включена.');
+  for (const [id, theme] of [['scenes','light'],['confirmation','light'],['climate','dark'],['form','light'],['admin','light']]) {
+    await reload(id, {theme}); await capture('release-'+id+'-'+theme);
+  }
+  // Existing callback menus keep their entire continuation and both directions.
+  for (const lang of ['ru','en']) {
+    await reload(lang === 'ru' ? 'admin' : 'admin_en');
+    for (const page of [2,3]) {
+      await evaluate(`${get('r-next')}.click()`);
+      await until(`${get('r-count')}.textContent.endsWith(' ${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    }
+    for (const page of [2,1]) {
+      await evaluate(`${get('r-prev')}.click()`);
+      await until(`${get('r-count')}.textContent.endsWith(' ${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    }
+    assert.equal(await evaluate(`${get('r-read-label')}.textContent`), lang === 'ru' ? 'Обновить' : 'Refresh');
+  }
+  // Form prompts preserve every instruction; typing remains in the Telegram chat.
+  await reload('form', {width:200});
+  const form = fixtures.find(f => f.id === 'form').page;
+  await assertPreserved(form, 'form hint/200');
+  assert.equal(await evaluate(`${doc}.querySelector('input,textarea,select')`), null);
+  // A failed confirmation never retries its action and returns through the original Cancel key.
+  for (const lang of ['ru','en']) {
+    await reload(lang === 'ru' ? 'confirmation' : 'confirmation_en', {scenario:'error'});
+    await click('run_scene');
+    await until(`${get('r-feedback')}.textContent.includes(${JSON.stringify(lang === 'ru' ? 'Нет ответа' : 'No response')})`);
+    assert.equal(await evaluate(disabled('run_scene')), 'true');
+    await evaluate(`${get('r-read')}.click()`);
+    await until(`${disabled('scenes')} === 'false' && ${get('r-feedback')}.textContent === ''`);
+    await evaluate(`${win}.TelegramWidget.request=async key=>{${win}.__lastRequest=key;return {result:JSON.stringify({accepted:true})}}`);
+    await click('scenes');
+    assert.ok((await evaluate(`${win}.__lastRequest`)).endsWith(':scenes'));
+    const next = {...fixtures.find(f=>f.id === (lang==='ru'?'scenes':'scenes_en')).page,seq:100,rev:'a'.repeat(32)};
+    await evaluate(`${win}.previewSetData(${JSON.stringify(next)})`);
+    await until(`${get('r-title')}.textContent === ${JSON.stringify(next.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  }
   // A command timeout blocks every action; read recovers through accepted + push.
   await reload('home', {scenario:'error'}); await click('rooms');
   await until(`${get('r-feedback')}.textContent.includes('Нет ответа')`);
@@ -190,7 +231,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('/classic')`));
   // Arbitrary strings stay text; long title/context stay available in local parts.
   await reload('home', {width:200});
-  const longPage = {...fixtures[0].page,seq:50,title:'<img src=x onerror=alert(1)> '+'Ш'.repeat(80),context:'Г'.repeat(80)};
+  const longPage = {...fixtures[0].page,seq:50,title:'<img src=x onerror=alert(1)> '+'Ш'.repeat(80),context:'Г'.repeat(80),hint:'<img src=x onerror=alert(1)>'};
   await evaluate(`${win}.previewSetData(${JSON.stringify(longPage)})`);
   assert.equal(await evaluate(`${doc}.querySelector('img')`), null);
   const longContent = await assertPreserved(longPage, 'long titles/200');

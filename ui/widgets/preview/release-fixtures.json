@@ -209,17 +209,32 @@
       "notice": "",
       "alert": "",
       "rows": [
-        [{"text": "Включить", "key": "lamp_on", "kind": "action"}],
         [
-          {"text": "Назад", "key": "room", "kind": "nav"},
-          {"text": "Дом", "key": "home", "kind": "nav"}
+          {
+            "text": "Включить",
+            "key": "lamp_on",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Назад",
+            "key": "room",
+            "kind": "nav"
+          },
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
         ]
       ],
       "read": "read",
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "kind": "device"
     }
   },
   {
@@ -407,6 +422,618 @@
       "next": null,
       "page": 1,
       "pages": 1
+    }
+  },
+  {
+    "id": "scenes",
+    "label": "Сценарии · RU",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000a",
+      "seq": 10,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Сценарии",
+      "context": "Мой дом",
+      "body": "Выберите сценарий для просмотра и запуска.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Уйти из дома",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Кино",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Утро",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "scenes_en",
+    "label": "Scenes · EN",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000b",
+      "seq": 11,
+      "lang": "en",
+      "kind": "list",
+      "title": "Scenes",
+      "context": "My home",
+      "body": "Choose a scene to review and run.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Leave home",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Movie night",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Morning",
+            "key": "confirmation",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Home",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "confirmation",
+    "label": "Подтверждение · RU",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000c",
+      "seq": 12,
+      "lang": "ru",
+      "kind": "confirmation",
+      "title": "Подтверждение",
+      "context": "Сценарий · Уйти из дома",
+      "body": "Сценарий «Уйти из дома» выключит свет в выбранных комнатах. Проверьте список действий в настройках сценария перед запуском. Подтверждение относится только к этому запросу.",
+      "notice": "",
+      "alert": "",
+      "hint": "Нажмите «Выполнить» или вернитесь к сценариям.",
+      "rows": [
+        [
+          {
+            "text": "Выполнить",
+            "key": "run_scene",
+            "kind": "danger"
+          }
+        ],
+        [
+          {
+            "text": "Отмена",
+            "key": "scenes",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "confirmation_en",
+    "label": "Confirmation · EN",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000d",
+      "seq": 13,
+      "lang": "en",
+      "kind": "confirmation",
+      "title": "Confirmation",
+      "context": "Scene · Leave home",
+      "body": "The “Leave home” scene will turn off lights in the selected rooms. Review its actions in scene settings before running it. This confirmation applies only to this request.",
+      "notice": "",
+      "alert": "",
+      "hint": "Press Run scene or return to the scene list.",
+      "rows": [
+        [
+          {
+            "text": "Run scene",
+            "key": "run_scene",
+            "kind": "danger"
+          }
+        ],
+        [
+          {
+            "text": "Cancel",
+            "key": "scenes",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "climate",
+    "label": "Климат · RU",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000e",
+      "seq": 14,
+      "lang": "ru",
+      "kind": "climate",
+      "title": "Климат",
+      "context": "Гостиная · Отопление",
+      "body": "Сейчас: 21,4 °C\nЗадано: 22 °C\nРежим: Обогрев",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "−0,5 °C",
+            "key": "temp_down",
+            "kind": "action"
+          },
+          {
+            "text": "+0,5 °C",
+            "key": "temp_up",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Задать температуру",
+            "key": "form",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Назад",
+            "key": "room",
+            "kind": "nav"
+          },
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "climate_en",
+    "label": "Climate · EN",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000f",
+      "seq": 15,
+      "lang": "en",
+      "kind": "climate",
+      "title": "Climate",
+      "context": "Living room · Heating",
+      "body": "Current: 21.4 °C\nTarget: 22 °C\nMode: Heating",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "−0.5 °C",
+            "key": "temp_down",
+            "kind": "action"
+          },
+          {
+            "text": "+0.5 °C",
+            "key": "temp_up",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Set temperature",
+            "key": "form",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Back",
+            "key": "room",
+            "kind": "nav"
+          },
+          {
+            "text": "Home",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "form",
+    "label": "Задать температуру · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000010",
+      "seq": 16,
+      "lang": "ru",
+      "kind": "form",
+      "title": "Задать температуру",
+      "context": "Гостиная · Отопление",
+      "body": "Допустимо: 16–28 °C.",
+      "notice": "",
+      "alert": "",
+      "hint": "Отправьте число сообщением в этот чат, например 22. Можно использовать точку или запятую. Настройка изменится только после проверки ответа.",
+      "rows": [
+        [
+          {
+            "text": "Отмена",
+            "key": "climate",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "form_en",
+    "label": "Set temperature · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000011",
+      "seq": 17,
+      "lang": "en",
+      "kind": "form",
+      "title": "Set temperature",
+      "context": "Living room · Heating",
+      "body": "Allowed range: 16–28 °C.",
+      "notice": "",
+      "alert": "",
+      "hint": "Send a number as a message in this chat, for example 22. You may use a decimal point or comma. The setting changes only after your reply is validated.",
+      "rows": [
+        [
+          {
+            "text": "Cancel",
+            "key": "climate",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "admin",
+    "label": "Администрирование · RU · 1/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000012",
+      "seq": 18,
+      "lang": "ru",
+      "kind": "menu",
+      "title": "Администрирование",
+      "context": "Мой дом",
+      "body": "Выберите раздел управления.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Пользователи",
+            "key": "users",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Состояние системы",
+            "key": "system",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Камеры",
+            "key": "cameras",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Фон интерфейса",
+            "key": "background",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "admin_more",
+      "page": 1,
+      "pages": 3
+    }
+  },
+  {
+    "id": "admin_en",
+    "label": "Administration · EN · 1/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000013",
+      "seq": 19,
+      "lang": "en",
+      "kind": "menu",
+      "title": "Administration",
+      "context": "My home",
+      "body": "Choose a management section.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Users",
+            "key": "users",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "System status",
+            "key": "system",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Cameras",
+            "key": "cameras",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Interface background",
+            "key": "background",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "admin_more",
+      "page": 1,
+      "pages": 3
+    }
+  },
+  {
+    "id": "admin_more",
+    "label": "Администрирование · RU · 2/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000014",
+      "seq": 20,
+      "lang": "ru",
+      "kind": "menu",
+      "title": "Администрирование",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Журнал действий",
+            "key": "activity",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Группы действий",
+            "key": "groups",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Группы правил",
+            "key": "rules",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Настройки",
+            "key": "settings",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "admin",
+      "next": "admin_last",
+      "page": 2,
+      "pages": 3
+    }
+  },
+  {
+    "id": "admin_more_en",
+    "label": "Administration · EN · 2/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000015",
+      "seq": 21,
+      "lang": "en",
+      "kind": "menu",
+      "title": "Administration",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Activity log",
+            "key": "activity",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Action groups",
+            "key": "groups",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Rule groups",
+            "key": "rules",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Settings",
+            "key": "settings",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "admin",
+      "next": "admin_last",
+      "page": 2,
+      "pages": 3
+    }
+  },
+  {
+    "id": "admin_last",
+    "label": "Администрирование · RU · 3/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000016",
+      "seq": 22,
+      "lang": "ru",
+      "kind": "menu",
+      "title": "Администрирование",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "admin_more",
+      "next": null,
+      "page": 3,
+      "pages": 3
+    }
+  },
+  {
+    "id": "admin_last_en",
+    "label": "Administration · EN · 3/3",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000017",
+      "seq": 23,
+      "lang": "en",
+      "kind": "menu",
+      "title": "Administration",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Home",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "admin_more",
+      "next": null,
+      "page": 3,
+      "pages": 3
     }
   }
 ]

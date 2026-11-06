@@ -48,9 +48,10 @@
           parent.postMessage({type:'release-preview',text:raw}, '*');
           if (scenario === 'denied') return {result:JSON.stringify({denied:true})};
           if (scenario === 'error' && key !== 'read') { await new Promise(resolve => setTimeout(resolve, 300)); throw Error('timeout'); }
-          let target = {home:'home',rooms:'rooms',room:'room',device:'device',ceiling:'device',settings:'settings',ru:'settings',en:'english'}[key];
+          let target = {home:'home',rooms:'rooms',room:'room',device:'device',ceiling:'device',settings:'settings',ru:'settings',en:'english'}[key] || key;
           if (key === 'next' && id === 'home') target = 'home_more';
           if (key === 'prev') target = 'home';
+          if (state.lang === 'en' && all.some(fixture => fixture.id === target + '_en')) target += '_en';
           const found = all.find(fixture => fixture.id === target);
           const next = structuredClone(found ? found.page : state);
           if (found) id = found.id;

@@ -14,6 +14,8 @@
   function valid(v) {
     return v && v.v === 1 && typeof v.rev === 'string' && /^[a-f0-9]{32}$/.test(v.rev) && Number.isSafeInteger(v.seq) && v.seq >= 0
       && ['ru', 'en'].includes(v.lang) && ['title', 'context', 'body', 'notice', 'alert'].every(k => typeof v[k] === 'string')
+      && (v.kind === undefined || ['menu', 'device', 'climate', 'confirmation', 'form', 'list'].includes(v.kind))
+      && (v.hint === undefined || typeof v.hint === 'string')
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
       && Array.isArray(v.rows) && v.rows.length <= 4 && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= 2
@@ -46,19 +48,30 @@
   }
   function mount(nodes) {
     el('r-content').textContent = '';
-    nodes.forEach(node => el('r-content').appendChild(node));
+    let previous;
+    nodes.forEach(node => {
+      if (node.tagName === 'P') {
+        if (!previous || previous.className !== node.className) {
+          previous = document.createElement('p'); previous.className = node.className;
+          el('r-content').appendChild(previous);
+        }
+        previous.textContent += node.textContent;
+      } else { previous = null; el('r-content').appendChild(node); }
+    });
   }
   function layout() {
     const blocks = [];
-    const paragraphs = [[data.alert, 'r-alert'], [data.notice, 'r-notice'], [data.body, '']];
+    const paragraphs = [[data.alert, 'r-alert'], [data.notice, 'r-notice'], [data.body, 'r-body'], [data.hint || '', 'r-hint']];
     for (const id of ['r-title', 'r-context']) {
-      if (el(id).scrollWidth > el(id).clientWidth) paragraphs.unshift([el(id).textContent, '']);
+      if (el(id).scrollWidth > el(id).clientWidth) paragraphs.unshift([el(id).textContent, id]);
     }
     for (const [value, style] of paragraphs) {
       const chars = Array.from(value);
       while (chars.length) {
         const node = document.createElement('p'); node.className = 'r-text ' + style;
-        node.textContent = chars.splice(0, 100).join(''); blocks.push(node);
+        let end = Math.min(100, chars.length);
+        while (end > 60 && end < chars.length && !/\s/.test(chars[end - 1])) end--;
+        node.textContent = chars.splice(0, end).join(''); blocks.push(node);
       }
     }
     data.rows.forEach(row => {
@@ -88,6 +101,7 @@
   }
   function render() {
     const locked = denied || !data || !api;
+    el('release').setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
     text('r-read-label', w(2));
