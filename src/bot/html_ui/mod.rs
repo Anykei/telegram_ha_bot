@@ -168,23 +168,23 @@ pub async fn deliver(
         .await?;
         message
     } else {
-        let caption = if config.ha_client.is_mock() {
-            if view.lang == crate::i18n::Language::En {
-                "Test home · Virtual devices · /ui — interface"
-            } else {
-                "Тестовый дом · Устройства виртуальные · /ui — вид интерфейса"
-            }
-        } else if view.lang == crate::i18n::Language::En {
-            "Home · /ui — interface · /classic — Telegram buttons"
-        } else {
-            "Дом · /ui — вид интерфейса · /classic — кнопки Telegram"
-        };
         let html = if view.html_chart.is_some() {
             GRAPH_HTML
         } else {
             HTML
         };
-        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":html,"width":0,"height":600,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
+        let mut request = json!({
+            "chat_id": chat.0, "html": html, "width": 0, "height": 600,
+            "allow_queries": true, "chat_data": data
+        });
+        if config.ha_client.is_mock() {
+            request["caption"] = json!(if view.lang == crate::i18n::Language::En {
+                "Test home · Virtual devices"
+            } else {
+                "Тестовый дом · Устройства виртуальные"
+            });
+        }
+        let sent = transport::call(bot, "sendWidget", request).await?;
         MessageId(
             sent["message_id"]
                 .as_i64()

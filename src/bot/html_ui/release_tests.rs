@@ -276,6 +276,7 @@ async fn device_state_and_primary_controls_fit_the_first_server_page() -> Result
         .1;
     assert_eq!(sent["width"], 0);
     assert_eq!(sent["height"], 600);
+    assert_eq!(sent["caption"], "Test home · Virtual devices");
     Ok(())
 }
 
