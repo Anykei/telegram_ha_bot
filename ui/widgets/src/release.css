@@ -27,10 +27,12 @@ button { font: inherit; cursor: pointer; }
 .r-read svg { width: 16px; height: 16px; }
 .r-feedback { min-height: 34px; margin: var(--ha-space-2) 0 0; color: var(--ha-muted); font-size: 14px; overflow-wrap: anywhere; }
 .r-error .r-feedback { color: var(--ha-error); }
-.r-disabled { opacity: .45; cursor: default; }
+.r-disabled { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
-.r-wait { background:linear-gradient(var(--ha-accent),var(--ha-accent)) 0 100%/35% 3px no-repeat var(--ha-accent-soft); animation:pending 1s ease-in-out infinite alternate; }
-@keyframes pending { to { background-position:100% 100%; } }
-@media (prefers-reduced-motion:reduce) { .r-wait { animation:none; } }
+.r-wait { position:relative; opacity:1; }
+.r-wait span { opacity:0; }
+.r-wait::before { content:""; position:absolute; inset:0; margin:auto; width:24px; height:24px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; animation:wait 1s linear infinite; }
+@keyframes wait { to { rotate:1turn; } }
+@media (prefers-reduced-motion:reduce) { .r-wait::before { animation:none; } }
 @media (max-width: 260px) { .release { padding: var(--ha-space-3); } .release h1 { font-size: 26px; } .r-button { min-height: 56px; padding: 9px var(--ha-space-2); font-size: 14px; } }
 .release { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }

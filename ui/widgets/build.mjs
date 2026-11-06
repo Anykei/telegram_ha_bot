@@ -27,8 +27,11 @@ async function build(screen, stylesheet, title) {
   const script = r1
     ? {code:(await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',minify:true,target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text}
     : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
-  const body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
-  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
+  let body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
+  // Widget v1 has no forms or browser tab: omit redundant button types and
+  // the tab title in r1 assets. Keep preview titles and accessible labels.
+  if (r1) body = body.replaceAll(' type="button"', '');
+  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${r1 ? '' : `<title>${title}</title>`}<style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);
