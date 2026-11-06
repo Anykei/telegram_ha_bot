@@ -1,0 +1,980 @@
+[
+  {
+    "id": "numeric",
+    "label": "numeric · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000001",
+      "seq": 1,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Сейчас: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Ранее",
+            "shift",
+            "nav"
+          ],
+          [
+            "Сейчас",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "numeric_en",
+    "label": "numeric · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000002",
+      "seq": 2,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Now: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Earlier",
+            "shift",
+            "nav"
+          ],
+          [
+            "Now",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "binary",
+    "label": "binary · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000003",
+      "seq": 3,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Окно",
+      "context": "Гостиная",
+      "body": "Сейчас: Закрыто",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Ранее",
+            "shift",
+            "nav"
+          ],
+          [
+            "Сейчас",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "AAAAAAAAAAAAAAAAAAAAAA_AAAAAAA________________________AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "top": "Открыто",
+        "bottom": "Закрыто",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "binary_en",
+    "label": "binary · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000004",
+      "seq": 4,
+      "lang": "en",
+      "kind": "list",
+      "title": "Window",
+      "context": "Living room",
+      "body": "Now: Closed",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Earlier",
+            "shift",
+            "nav"
+          ],
+          [
+            "Now",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "AAAAAAAAAAAAAAAAAAAAAA_AAAAAAA________________________AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "top": "Open",
+        "bottom": "Closed",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "empty",
+    "label": "empty · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000005",
+      "seq": 5,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Сейчас: Нет данных",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Ранее",
+            "shift",
+            "nav"
+          ],
+          [
+            "Сейчас",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "................................................................................................",
+        "top": "",
+        "bottom": "",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "empty_en",
+    "label": "empty · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000006",
+      "seq": 6,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Now: No data",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Earlier",
+            "shift",
+            "nav"
+          ],
+          [
+            "Now",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "................................................................................................",
+        "top": "",
+        "bottom": "",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "gaps",
+    "label": "gaps · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000007",
+      "seq": 7,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Сейчас: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Ранее",
+            "shift",
+            "nav"
+          ],
+          [
+            "Сейчас",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1t..................ViaS_fPcUNaSMZRMZRNaSPcUReW.........humlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "gaps_en",
+    "label": "gaps · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000008",
+      "seq": 8,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Now: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Earlier",
+            "shift",
+            "nav"
+          ],
+          [
+            "Now",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1t..................ViaS_fPcUNaSMZRMZRNaSPcUReW.........humlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "constant",
+    "label": "constant · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000009",
+      "seq": 9,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Сейчас: 21,5 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Ранее",
+            "shift",
+            "nav"
+          ],
+          [
+            "Сейчас",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "top": "22,5 °C",
+        "bottom": "20,5 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "constant_en",
+    "label": "constant · EN",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000000a",
+      "seq": 10,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Now: 21.5 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "← Earlier",
+            "shift",
+            "nav"
+          ],
+          [
+            "Now",
+            "now",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "top": "22,5 °C",
+        "bottom": "20,5 °C",
+        "start": "06.11 00:00",
+        "end": "07.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "controls",
+    "label": "Управление историей",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000001",
+      "seq": 1,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "Подробности",
+            "info",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Свой интервал",
+            "range",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Избранное",
+            "favorite",
+            "action"
+          ],
+          [
+            "Уведомления",
+            "alerts",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Дом",
+            "home",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": "plot",
+      "next": "info",
+      "page": 2,
+      "pages": 3,
+      "graph": null
+    }
+  },
+  {
+    "id": "info",
+    "label": "Сведения об истории",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000001",
+      "seq": 1,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Температура · Гостиная\nПериод: 06.11 00:00 — 07.11 00:00.\nШтрихи показывают минимум и максимум каждого интервала, линия — последнее значение. Пропуски означают отсутствие достоверных данных.",
+      "notice": "",
+      "alert": "",
+      "b": [],
+      "back": "room",
+      "read": "read",
+      "prev": "controls",
+      "next": null,
+      "page": 3,
+      "pages": 3,
+      "graph": null
+    }
+  },
+  {
+    "id": "controls_en",
+    "label": "History controls",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000002",
+      "seq": 2,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "Details",
+            "info",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Custom interval",
+            "range",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Favorite",
+            "favorite",
+            "action"
+          ],
+          [
+            "Notifications",
+            "alerts",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Home",
+            "home",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": "plot",
+      "next": "info",
+      "page": 2,
+      "pages": 3,
+      "graph": null
+    }
+  },
+  {
+    "id": "info_en",
+    "label": "History details",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000002",
+      "seq": 2,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Temperature · Living room\nPeriod: 06.11 00:00 — 07.11 00:00.\nBars show each interval’s minimum and maximum; the line shows its last value. Gaps indicate missing reliable data.",
+      "notice": "",
+      "alert": "",
+      "b": [],
+      "back": "room",
+      "read": "read",
+      "prev": "controls",
+      "next": null,
+      "page": 3,
+      "pages": 3,
+      "graph": null
+    }
+  },
+  {
+    "id": "numeric_past",
+    "label": "Прошлый период · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000001",
+      "seq": 1,
+      "lang": "ru",
+      "kind": "list",
+      "title": "Температура",
+      "context": "Гостиная",
+      "body": "Сейчас: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "−24 ч",
+            "shift",
+            "nav"
+          ],
+          [
+            "Текущее",
+            "now",
+            "nav"
+          ],
+          [
+            "+24 ч",
+            "forward",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 ч",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 ч",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 дня",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 дней",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "05.11 00:00",
+        "end": "06.11 00:00"
+      }
+    }
+  },
+  {
+    "id": "numeric_past_en",
+    "label": "Past period · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000002",
+      "seq": 2,
+      "lang": "en",
+      "kind": "list",
+      "title": "Temperature",
+      "context": "Living room",
+      "body": "Now: 23 °C",
+      "notice": "",
+      "alert": "",
+      "b": [
+        [
+          [
+            "−24 h",
+            "shift",
+            "nav"
+          ],
+          [
+            "Current",
+            "now",
+            "nav"
+          ],
+          [
+            "+24 h",
+            "forward",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12 h",
+            "p12",
+            "nav"
+          ],
+          [
+            "✓ 24 h",
+            "p24",
+            "selected"
+          ]
+        ],
+        [
+          [
+            "3 days",
+            "p3",
+            "nav"
+          ],
+          [
+            "7 days",
+            "p7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "room",
+      "read": "read",
+      "prev": null,
+      "next": "controls",
+      "page": 1,
+      "pages": 3,
+      "graph": {
+        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
+        "top": "24 °C",
+        "bottom": "18 °C",
+        "start": "05.11 00:00",
+        "end": "06.11 00:00"
+      }
+    }
+  }
+]

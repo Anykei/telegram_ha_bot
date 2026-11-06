@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { transform } from 'esbuild';
+import { transform, build as bundle } from 'esbuild';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const read = path => readFile(root + path, 'utf8');
@@ -11,26 +11,29 @@ const block = (selector, values) => `${selector} {\n${Object.entries(values).map
 await writeFile(root + 'src/tokens.css', block(':root', { ...tokens.shared, ...tokens.themes.light }) + block(':root[data-theme="dark"]', tokens.themes.dark));
 await mkdir(root + 'dist', { recursive: true });
 async function build(screen, stylesheet, title) {
+  const r1 = screen === 'release' || screen === 'graph';
   let components = await read('src/' + stylesheet);
   // Shared tokens are immutable; keep semantic names in source and inline their values in r1.
-  if (screen === 'release') for (const [key, value] of Object.entries(tokens.shared)) components = components.replaceAll(`var(${key})`, value);
+  if (r1) for (const [key, value] of Object.entries(tokens.shared)) components = components.replaceAll(`var(${key})`, value);
   const used = new Set(components.match(/--ha-[a-z0-9-]+/g));
   const usedTokens = values => Object.fromEntries(Object.entries(values).filter(([key]) => used.has(key)));
   const tokenCSS = `:root{${declarations(usedTokens({ ...tokens.shared, ...tokens.themes.light }))}}:root[data-theme="dark"]{${declarations(usedTokens(tokens.themes.dark))}}`;
   let styles = tokenCSS + components;
-  if (screen === 'release') {
+  if (r1) {
     const aliases = [...used];
     styles = styles.replace(/--ha-[a-z0-9-]+/g, key => '--' + String.fromCharCode(97 + aliases.indexOf(key)));
   }
   const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
-  const script = await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
+  const script = r1
+    ? {code:(await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',minify:true,target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text}
+    : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
   const body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
   const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);
   if (bytes > 32768 || size > 4096) throw Error(`Widget too large: ${bytes} raw / ${size} zlib bytes`);
-  const manifest = { designVersion: tokens.version, screen, bytes, zlibBytes: size, limit: 4096, protocol: screen === 'release' ? 'r1' : screen === 'panel' ? 'p1' : 'w1', transport: 'TelegramWidget', liveIntegrationVerified: false };
+  const manifest = { designVersion: tokens.version, screen, bytes, zlibBytes: size, limit: 4096, protocol: r1 ? 'r1' : screen === 'panel' ? 'p1' : 'w1', transport: 'TelegramWidget', liveIntegrationVerified: false };
   await writeFile(root + `dist/${screen}.html`, html);
   console.log(`${screen}.html: ${bytes} bytes, zlib ${size}/4096.`);
   return {html, manifest};
@@ -59,3 +62,10 @@ const releasePreview = (await read('preview/release.html'))
   .replace('__FIXTURES__', escaped(JSON.parse(await read('preview/release-fixtures.json'))))
   .replace('__MANIFEST__', escaped(release.manifest));
 await writeFile(root + 'dist/release-preview.html', releasePreview);
+const graph = await build('graph', 'graph.css', 'История');
+await writeFile(root + 'dist/graph-manifest.json', JSON.stringify(graph.manifest, null, 2) + '\n');
+const graphPreview = (await read('preview/release.html'))
+  .replace('__PAYLOAD__', escaped(graph.html))
+  .replace('__FIXTURES__', escaped(JSON.parse(await read('preview/graph-fixtures.json'))))
+  .replace('__MANIFEST__', escaped(graph.manifest));
+await writeFile(root + 'dist/graph-preview.html', graphPreview);

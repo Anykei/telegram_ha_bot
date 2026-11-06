@@ -110,6 +110,13 @@ pub async fn render(
         format!("/// {}", labels.unknown)
     };
     let image_title = chart_title.clone();
+    let html_chart = crate::charts::widget::overview(
+        &history.points,
+        history.start_time,
+        history.end_time,
+        style,
+        &labels,
+    );
     let image = if no_data {
         None
     } else {
@@ -254,11 +261,12 @@ pub async fn render(
     let alias = ctx
         .config
         .state_alias_for_display(&dev.entity_id, &entity.state, inverted);
-    text.push_str(&format!(
-        "\n{}: {}",
+    let summary = format!(
+        "{}: {}",
         localized(ctx.lang, "Сейчас", "Now"),
         super::labels::state(&entity, ctx.lang, inverted, alias.as_deref())
-    ));
+    );
+    text.push_str(&format!("\n{summary}"));
 
     let current_state_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
@@ -278,6 +286,9 @@ pub async fn render(
     );
     Ok(View {
         compact: true,
+        html_title: Some(chart_title),
+        html_summary: Some(summary),
+        html_chart: Some(html_chart),
         image,
         notifications: ctx.notifications,
         text,

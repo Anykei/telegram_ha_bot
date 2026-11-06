@@ -27,6 +27,7 @@ use teloxide::{
 use tokio_util::sync::CancellationToken;
 
 const HTML: &str = include_str!("../../../ui/widgets/dist/release.html");
+const GRAPH_HTML: &str = include_str!("../../../ui/widgets/dist/graph.html");
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 fn sequence() -> u64 {
     SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -71,6 +72,13 @@ pub async fn preferred(config: &AppConfig, user: u64) -> bool {
 }
 pub fn eligible(view: &View) -> bool {
     presentation::prepare(view, "0".repeat(32), 1).is_ok()
+}
+pub fn renderer_matches(config: &AppConfig, user: u64, view: &View) -> bool {
+    config
+        .html_ui
+        .sessions
+        .get(&user)
+        .is_some_and(|session| session.view.html_chart.is_some() == view.html_chart.is_some())
 }
 pub async fn reject(bot: &Bot, query: &CallbackQuery, text: &str) -> Result<()> {
     answer(bot, query, if is_widget(query) { "denied" } else { text }).await
@@ -158,7 +166,12 @@ pub async fn deliver(
         } else {
             "Дом · /ui — вид интерфейса · /classic — кнопки Telegram"
         };
-        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":HTML,"width":0,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
+        let html = if view.html_chart.is_some() {
+            GRAPH_HTML
+        } else {
+            HTML
+        };
+        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":html,"width":0,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
         MessageId(
             sent["message_id"]
                 .as_i64()

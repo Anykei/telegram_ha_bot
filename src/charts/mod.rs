@@ -4,6 +4,8 @@ use image::{ExtendedColorType, ImageEncoder};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
+pub(crate) mod widget;
+
 // --- ЦВЕТОВАЯ ПАЛИТРА (HA DARK THEME) ---
 const HA_BG: RGBColor = RGBColor(28, 28, 28);
 const HA_GRID: RGBColor = RGBColor(50, 50, 50);

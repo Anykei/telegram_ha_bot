@@ -2092,7 +2092,8 @@ async fn ensure_recording_access(
     Ok(())
 }
 
-/// Live-обновление интерфейса без изменения состояния диалога.
+/// Перерисовка после завершения ввода; защита открытой формы относится
+/// к фоновому refresh_current_view, а не к переходу после dialog.exit().
 pub async fn render_current_view(
     bot: &Bot,
     config: &Arc<AppConfig>,
@@ -2101,9 +2102,6 @@ pub async fn render_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
-    if config.html_ui.input_is_open(user_id, message_id.0) {
-        return Ok(());
-    }
     let decoded = Payload::from_string(context).context("Context decoding failed")?;
     if matches!(
         decoded,
@@ -2555,7 +2553,9 @@ async fn edit_existing_view(
     let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
     if super::html_ui::preferred(config, user_id).await && super::html_ui::eligible(view) {
-        if current_mode != Some(UiMessageMode::Html) {
+        if current_mode != Some(UiMessageMode::Html)
+            || !super::html_ui::renderer_matches(config, user_id, view)
+        {
             return Ok(EditViewResult::ModeChanged);
         }
         return match super::html_ui::deliver(

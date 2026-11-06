@@ -123,15 +123,19 @@ pub async fn render(
             })
         }
     }?;
-    view.html_title = Some(device_name);
+    view.html_title.get_or_insert(device_name);
     view.html_context = Some(room_name.clone());
     view.header = Some(match view.header {
         Some(title) => format!("{room_name} · {title}"),
         None => room_name,
     });
-    let details_index = usize::from(view.kb.inline_keyboard.first().is_some_and(|row| row.iter().any(|button| {
+    let details_index = if view.html_chart.is_some() {
+        view.kb.inline_keyboard.len().saturating_sub(1)
+    } else {
+        usize::from(view.kb.inline_keyboard.first().is_some_and(|row| row.iter().any(|button| {
         matches!(&button.kind, teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if matches!(Payload::from_string(data), Ok(Payload::Control(crate::bot::router::ControlPayload::QuickAction {..}))))
-    })));
+    })))
+    };
     view.kb.inline_keyboard.insert(
         details_index,
         vec![teloxide::types::InlineKeyboardButton::callback(

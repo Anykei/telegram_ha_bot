@@ -2,6 +2,9 @@ use super::*;
 use crate::bot::router::{AdminPayload, CameraPayload, SettingsPayload};
 use crate::ha::HomeAssistantClient;
 
+#[path = "graph_tests.rs"]
+mod graph_tests;
+
 async fn mock_config() -> Result<(Arc<AppConfig>, Arc<crate::ha::mock::MockHa>)> {
     let mut config = crate::test_support::config().await;
     let (tx, _) = tokio::sync::mpsc::channel(100);

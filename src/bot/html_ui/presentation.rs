@@ -35,6 +35,8 @@ pub struct Page {
     pub read: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<crate::charts::widget::WidgetChart>,
     pub prev: Option<String>,
     pub next: Option<String>,
     pub page: usize,
@@ -93,7 +95,7 @@ impl Page {
 }
 
 pub fn supported(view: &View) -> bool {
-    if view.image.is_some() {
+    if view.image.is_some() && view.html_chart.is_none() {
         return false;
     }
     // Every text screen uses the same server-issued callback contract. Access
@@ -201,6 +203,8 @@ fn append_text(
                 || !current.body.is_empty()
                 || !current.alert.is_empty()
                 || !current.notice.is_empty()
+                || current.graph.is_some()
+                || !current.rows.is_empty()
             {
                 parts.push(current);
             }
@@ -293,6 +297,7 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             .last(),
         prev: Some("p9999".into()),
         next: Some("p9999".into()),
+        graph: None,
         page: 9999,
         pages: 9999,
     };
@@ -300,6 +305,8 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     ensure!(empty.json()?.len() <= 600, "Header is too large for HTML");
     let mut parts: Vec<Page> = Vec::new();
     let mut current = empty.clone();
+    current.graph = view.html_chart.clone();
+    current.json()?;
     if view.next_state.is_some() {
         current.hint = if english {
             "Reply with a message in this chat. /cancel to cancel."
@@ -313,6 +320,13 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         // Switching from a classic long screen preserves its source page and pager.
         body.push(view.get_plain_text());
     } else {
+        // The graph renderer keeps its header compact; preserve the full room
+        // context in the detail pages, including names too long for the header.
+        if view.html_chart.is_some() {
+            if let Some(context) = &view.html_context {
+                body.push(context.clone());
+            }
+        }
         for item in &view.notifications {
             body.push(format!(
                 "{} {}: {} · {}",
@@ -353,9 +367,16 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         current = append_text(current, &empty, &mut parts, field, text)?;
     }
     let mut actions = HashMap::new();
-    for row in &view.kb.inline_keyboard {
+    for (row_index, row) in view.kb.inline_keyboard.iter().enumerate() {
         // Preserve every button, including source rows wider than the widget.
-        for buttons in row.chunks(2) {
+        // Graph time navigation (-day / current / +day) fits one 3-button row;
+        // keeping it together leaves both rows of range presets on the first page.
+        let columns = if view.html_chart.is_some() && row_index == 0 {
+            3
+        } else {
+            2
+        };
+        for buttons in row.chunks(columns) {
             let mut rendered = Vec::new();
             for button in buttons {
                 let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
@@ -389,7 +410,7 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 + candidate.notice.chars().count()
                 + candidate.alert.chars().count()
                 + candidate.hint.chars().count();
-            if candidate.rows.len() > 4
+            if candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
                 || candidate.json().is_err()
                 || (candidate.rows.len() > 2 && text_chars > 80)
             {

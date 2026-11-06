@@ -37,6 +37,7 @@
     function install(snapshot, scheme, scenario, all, selected) {
       let state = snapshot, id = selected;
       const handlers = {};
+      const plotId = snapshot.graph ? selected : 'numeric' + (snapshot.lang === 'en' ? '_en' : '');
       const allowed = new Set(all.flatMap(f => [f.page.read, f.page.prev, f.page.next, f.page.back, ...(f.page.b || f.page.rows).flat().map(b => Array.isArray(b) ? b[1] : b.key)]));
       const emit = next => { state = next; api.chatData = JSON.stringify(state); handlers.chatDataChanged?.(); };
       const api = globalThis.TelegramWidget = {
@@ -53,6 +54,7 @@
           let target = {home:'home',rooms:'rooms',room:'room',device:'device',ceiling:'device',settings:'settings',ru:'settings',en:'english'}[key] || key;
           if (key === 'next' && id === 'home') target = 'home_more';
           if (key === 'prev') target = 'home';
+          if (key === 'plot') target = plotId;
           if (state.lang === 'en' && all.some(fixture => fixture.id === target + '_en')) target += '_en';
           const found = all.find(fixture => fixture.id === target);
           const next = structuredClone(found ? found.page : state);
@@ -64,6 +66,12 @@
           }
           next.seq = state.seq + 1; next.rev = next.seq.toString(16).padStart(32, '0');
           if (key !== 'read' && !found) next.notice = state.lang === 'ru' ? 'Действие обработано в предпросмотре.' : 'Action handled in this preview.';
+          if (next.graph && ['p12','p24','p3','p7','shift','now','forward'].includes(key)) {
+            next.notice = '';
+            next.graph.start = {p12:'06.11 12:00',p24:'06.11 00:00',p3:'04.11 00:00',p7:'31.10 00:00',shift:'05.11 00:00',now:'06.11 00:00',forward:'06.11 00:00'}[key];
+            next.graph.end = key === 'shift' ? '06.11 00:00' : '07.11 00:00';
+            if (key.startsWith('p')) next.b = next.b.map(row=>row.map(([text,k,kind])=>k.startsWith('p') ? [(k===key?'✓ ':'')+text.replace('✓ ',''),k,k===key?'selected':'nav'] : [text,k,kind]));
+          }
           setTimeout(() => emit(next), scenario === 'slow' ? 2400 : 250);
           return {result:JSON.stringify({accepted:true})};
         }
