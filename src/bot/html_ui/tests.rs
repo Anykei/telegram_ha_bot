@@ -542,6 +542,69 @@ async fn opaque_keys_are_bound_to_current_message_and_claimed_once() -> Result<(
 }
 
 #[tokio::test]
+async fn background_refresh_resynchronizes_old_buttons_without_denial_or_execution() -> Result<()> {
+    let (config, ha) = config().await?;
+    let fake = FakeTelegram::new().await?;
+    let route = Payload::Control(ControlPayload::RoomDetail { room: 1 });
+    let old = publish(&fake, &config, route.clone()).await?;
+    let view = router(route, 1, config.clone()).await?;
+    deliver(
+        &fake.bot,
+        &config,
+        1,
+        ChatId(1),
+        Some(MessageId(old.message)),
+        &view,
+        None,
+    )
+    .await?;
+    let latest = config.html_ui.sessions.get(&1).unwrap().clone();
+    assert_ne!(latest.pages[0].rev, old.pages[0].rev);
+    // A delayed tap may be navigation, control, or a server-page arrow. None
+    // may execute against a different revision, but access has not been revoked.
+    for key in old
+        .actions
+        .keys()
+        .cloned()
+        .chain(std::iter::once("p0".into()))
+    {
+        fake.clear();
+        assert_eq!(resolve(&fake.bot, &query(&old, &key), &config).await?, None);
+        let calls = fake.calls();
+        let answer: Value = serde_json::from_str(calls[0].1["data"].as_str().unwrap())?;
+        assert_eq!(answer["page"]["rev"], latest.pages[0].rev);
+        assert!(answer.get("denied").is_none());
+        assert_eq!(calls[1].0, "editMessageWidgetData");
+        assert!(!config.html_ui.sessions.get(&1).unwrap().claimed);
+    }
+    assert!(ha.calls.lock().unwrap().is_empty());
+    let latest = config.html_ui.sessions.get(&1).unwrap().clone();
+    let (key, action) = latest
+        .actions
+        .iter()
+        .find(|(_, p)| matches!(p, Payload::Control(ControlPayload::DeviceControl { .. })))
+        .unwrap();
+    assert_eq!(
+        resolve(&fake.bot, &query(&latest, key), &config).await?,
+        Some(action.to_string())
+    );
+    // Resynchronization is not an admission bypass, even for a previously valid
+    // revision: replacing a resource invalidates the rendered source identity.
+    sqlx::query("UPDATE devices SET entity_id='light.replaced' WHERE id=1")
+        .execute(&config.db)
+        .await?;
+    fake.clear();
+    assert_eq!(resolve(&fake.bot, &query(&old, key), &config).await?, None);
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(calls[0].1["data"].as_str().unwrap())?,
+        json!({"denied":true})
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn pagination_is_read_only_and_read_does_not_repeat_an_action() -> Result<()> {
     let (config, ha) = config().await?;
     let fake = FakeTelegram::new().await?;

@@ -278,7 +278,12 @@ pub async fn resolve(
     if data.len() > 64
         || parts.len() != 3
         || parts[0] != "r1"
-        || (parts[1] != snapshot.pages[0].rev && parts[2] != "read")
+        || parts[1].len() != 32
+        || !parts[1].bytes().all(|b| b.is_ascii_hexdigit())
+        || parts[2].is_empty()
+        || !parts[2]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
     {
         answer(bot, query, "denied").await?;
         return Ok(None);
@@ -298,7 +303,15 @@ pub async fn resolve(
         answer(bot, query, "").await?;
         return Ok(None);
     }
-    let page = if refresh_input {
+    // Telegram may deliver a tap just after a background refresh replaced the
+    // revision. Admission and message identity were checked above. Never run
+    // the obsolete key against the new action map, or treat this race as ACL
+    // revocation: return the current page and let the user tap its fresh controls.
+    let stale = parts[1] != snapshot.pages[0].rev;
+    let page = if refresh_input || stale {
+        if stale {
+            log::info!("HTML: resynchronizing a tap after a background refresh");
+        }
         Some(snapshot.index)
     } else {
         parts[2]

@@ -550,6 +550,21 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await evaluate(`${get('r-read')}.click()`); await reply({accepted:true});
   await push({seq:10,rev:'a'.repeat(32)});
   await until(`${disabled('rooms')} === 'false'`);
+  // A delayed tap can refer to a superseded server revision. A bounded current
+  // page reply resynchronizes the widget without an access-denied screen or
+  // automatically retrying the obsolete command. The next tap uses the new key.
+  for (const id of ['room', 'climate', 'admin']) {
+    const page=fixtures.find(f=>f.id===id).page, target=visibleActions(page)[0][0];
+    await reload(id); await controlRequests();
+    await click(target);
+    await reply({page:{...page,seq:page.seq+1,rev:'b'.repeat(32)}});
+    await until(`${disabled(target)} === 'false'`);
+    assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
+    assert.equal(await evaluate(`${get('r-feedback')}.textContent`), '');
+    assert.equal(await evaluate(`${win}.__requests.length`), 1, 'Stale tap is never replayed automatically');
+    await click(target);
+    assert.equal(await evaluate(`${win}.__requests.at(-1).value`), 'r1:'+'b'.repeat(32)+':'+target);
+  }
   // Only one request may be in flight; confirmed content never changes optimistically.
   await reload('home'); await controlRequests();
   await click('rooms'); await click('rooms'); await evaluate(`${get('r-read')}.click()`);
