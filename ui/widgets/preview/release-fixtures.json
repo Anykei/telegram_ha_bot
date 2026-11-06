@@ -2602,5 +2602,313 @@
       ],
       "kind": "room"
     }
+  },
+  {
+    "camera": true,
+    "id": "camera",
+    "label": "Camera controls",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "📸 Снимок",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Видео · 5 с",
+            "a1",
+            "action"
+          ],
+          [
+            "Видео · 10 с",
+            "a2",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Видео · 15 с",
+            "a3",
+            "action"
+          ],
+          [
+            "Видео · 30 с",
+            "a4",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Архив",
+            "a5",
+            "nav"
+          ],
+          [
+            "Подробности",
+            "a6",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В избранное",
+            "a9",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🏠 В главное меню",
+            "a10",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "Фото и видео придут в чат.",
+      "context": "🛋 Гостиная",
+      "kind": "list",
+      "lang": "ru",
+      "next": "p1",
+      "notice": "",
+      "page": 1,
+      "pages": 3,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AwEC",
+      "seq": 1,
+      "title": "USB камера",
+      "v": 1
+    }
+  },
+  {
+    "camera": true,
+    "id": "camera_admin",
+    "label": "Camera controls",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "📸 Снимок",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Видео · 5 с",
+            "a1",
+            "action"
+          ],
+          [
+            "Видео · 10 с",
+            "a2",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Видео · 15 с",
+            "a3",
+            "action"
+          ],
+          [
+            "Видео · 30 с",
+            "a4",
+            "action"
+          ]
+        ],
+        [
+          [
+            "🩺 Диагностика",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🗑 Удалить камеру",
+            "a6",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Фото и видео придут в чат.",
+      "context": "🛋 Гостиная",
+      "kind": "list",
+      "lang": "ru",
+      "next": "p1",
+      "notice": "",
+      "page": 1,
+      "pages": 2,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "BAoCAg",
+      "seq": 1,
+      "title": "USB камера",
+      "v": 1
+    }
+  },
+  {
+    "camera": true,
+    "id": "camera_en",
+    "label": "Camera controls",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "📸 Snapshot",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Video · 5 s",
+            "a1",
+            "action"
+          ],
+          [
+            "Video · 10 s",
+            "a2",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Video · 15 s",
+            "a3",
+            "action"
+          ],
+          [
+            "Video · 30 s",
+            "a4",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Archive",
+            "a5",
+            "nav"
+          ],
+          [
+            "Details",
+            "a6",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add favorite",
+            "a9",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🏠 Main menu",
+            "a10",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "Photos and videos arrive in chat.",
+      "context": "🛋 Гостиная",
+      "kind": "list",
+      "lang": "en",
+      "next": "p1",
+      "notice": "",
+      "page": 1,
+      "pages": 3,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AwEC",
+      "seq": 1,
+      "title": "USB камера",
+      "v": 1
+    }
+  },
+  {
+    "camera": true,
+    "id": "camera_admin_en",
+    "label": "Camera controls",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "📸 Snapshot",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Video · 5 s",
+            "a1",
+            "action"
+          ],
+          [
+            "Video · 10 s",
+            "a2",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Video · 15 s",
+            "a3",
+            "action"
+          ],
+          [
+            "Video · 30 s",
+            "a4",
+            "action"
+          ]
+        ],
+        [
+          [
+            "🩺 Diagnostics",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🗑 Delete camera",
+            "a6",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Photos and videos arrive in chat.",
+      "context": "🛋 Гостиная",
+      "kind": "list",
+      "lang": "en",
+      "next": "p1",
+      "notice": "",
+      "page": 1,
+      "pages": 2,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "BAoCAg",
+      "seq": 1,
+      "title": "USB камера",
+      "v": 1
+    }
   }
 ]

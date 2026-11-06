@@ -40,6 +40,10 @@ pub struct View {
     pub html_details_title: Option<String>,
     #[serde(default)]
     pub html_chart: Option<crate::charts::widget::WidgetChart>,
+    /// This screen offers its media through Telegram attachment actions. Keep
+    /// image for the classic view/fallback while rendering its controls as HTML.
+    #[serde(default)]
+    pub html_media_controls: bool,
     pub notifications: Vec<HeaderItem>,
     pub text: String,
     pub kb: InlineKeyboardMarkup,

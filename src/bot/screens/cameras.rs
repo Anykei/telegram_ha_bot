@@ -226,7 +226,20 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
     )]];
 
     let mut interval_row = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
     for seconds in &ctx.config.camera_clip_intervals_s {
+        html_button_labels.insert(
+            Payload::Camera(CameraPayload::Clip {
+                id: camera.id,
+                seconds: *seconds,
+            })
+            .to_string(),
+            format!(
+                "{} · {seconds} {}",
+                localized(ctx.lang, "Видео", "Video"),
+                localized(ctx.lang, "с", "s")
+            ),
+        );
         interval_row.push(InlineKeyboardButton::callback(
             format!("🎞 {}с", seconds),
             Payload::Camera(CameraPayload::Clip {
@@ -236,7 +249,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
             .to_string(),
         ));
 
-        if interval_row.len() == 3 {
+        if interval_row.len() == 2 {
             rows.push(std::mem::take(&mut interval_row));
         }
     }
@@ -261,15 +274,20 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         }
     }
 
-    rows.push(vec![InlineKeyboardButton::callback(
-        t(ctx.lang, "camera.archive.button"),
+    rows.push(vec![
+        InlineKeyboardButton::callback(
+            t(ctx.lang, "camera.archive.button"),
+            Payload::Camera(CameraPayload::RecordingArchive { camera: camera.id }).to_string(),
+        ),
+        InlineKeyboardButton::callback(
+            localized(ctx.lang, "Подробности", "Details"),
+            Payload::Camera(CameraPayload::CameraDetails { id: camera.id }).to_string(),
+        ),
+    ]);
+    html_button_labels.insert(
         Payload::Camera(CameraPayload::RecordingArchive { camera: camera.id }).to_string(),
-    )]);
-
-    rows.push(vec![InlineKeyboardButton::callback(
-        localized(ctx.lang, "Подробности", "Details"),
-        Payload::Camera(CameraPayload::CameraDetails { id: camera.id }).to_string(),
-    )]);
+        localized(ctx.lang, "Архив", "Archive").into(),
+    );
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Camera(CameraPayload::ListCameras),
@@ -301,9 +319,11 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
         t(ctx.lang, "camera.detail.help"),
         camera.clip_seconds
     );
+    let mut room_context = localized(ctx.lang, "Камеры", "Cameras").to_owned();
     if let Some(room_id) = camera.room_id {
         if let Some(room) = crate::db::rooms::get_room_by_id(room_id, &ctx.config.db).await? {
             ctx.track_room(room.id);
+            room_context = room.display_name();
             text.push_str(&format!(
                 "\n{}: {}",
                 localized(ctx.lang, "Комната", "Room"),
@@ -317,11 +337,25 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.detail.header").to_string()),
+        html_title: Some(camera.name.clone()),
+        html_context: Some(room_context),
+        html_summary: Some(format!(
+            "{}{}",
+            media_delivery_hint(ctx.lang),
+            if active_session.is_some() {
+                format!("\n{}", localized(ctx.lang, "● Идёт запись", "● Recording"))
+            } else {
+                String::new()
+            }
+        )),
+        html_button_labels,
+        html_media_controls: true,
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Camera(CameraPayload::CameraDetail { id: camera.id }),
         image,
+        lang: ctx.lang,
         ..Default::default()
     })
 }
@@ -538,6 +572,8 @@ pub async fn render_recording_archive_page(
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.archive.header").to_string()),
+        html_context: Some(camera.name.clone()),
+        html_media_controls: true,
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -1042,6 +1078,8 @@ pub async fn render_recording_session(
 
     Ok(View {
         header: Some(t(ctx.lang, "camera.recording.header").to_string()),
+        html_context: Some(camera.name.clone()),
+        html_media_controls: true,
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -1050,6 +1088,7 @@ pub async fn render_recording_session(
             session: session_id,
         }),
         image,
+        lang: ctx.lang,
         ..Default::default()
     })
 }
@@ -1095,6 +1134,14 @@ pub(crate) async fn camera_snapshot_preview(
         .bytes
         .unwrap_or_else(|| crate::bot::utils::UI_PLACEHOLDER_BYTES.to_vec());
     (Some(image), text)
+}
+
+pub(crate) fn media_delivery_hint(lang: Language) -> &'static str {
+    localized(
+        lang,
+        "Фото и видео придут в чат.",
+        "Photos and videos arrive in chat.",
+    )
 }
 
 fn snapshot_preview_text(

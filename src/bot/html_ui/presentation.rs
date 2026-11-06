@@ -110,7 +110,7 @@ impl Page {
 }
 
 pub fn supported(view: &View) -> bool {
-    if view.image.is_some() && view.html_chart.is_none() {
+    if view.image.is_some() && view.html_chart.is_none() && !view.html_media_controls {
         return false;
     }
     // Every text screen uses the same server-issued callback contract. Access
@@ -149,7 +149,10 @@ fn kind(payload: &Payload) -> &'static str {
         {
             "action"
         }
-        Payload::Personal(PersonalPayload::SetInterface { .. }) => "action",
+        Payload::Personal(PersonalPayload::SetInterface { .. })
+        | Payload::Admin(
+            AdminPayload::RoomCameraSnapshot { .. } | AdminPayload::RoomCameraClip { .. },
+        ) => "action",
         _ if payload == &payload.for_refresh() => "nav",
         _ => "action",
     }

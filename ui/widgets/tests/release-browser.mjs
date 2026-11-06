@@ -113,6 +113,30 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  // Media stays in Telegram attachments; the camera card preserves its controls
+  // and navigation even at the client's largest reserved timestamp inset.
+  for (const fixture of fixtures.filter(f=>f.camera)) {
+    for (const width of [320,360,430]) {
+      await reload(fixture.id,{width,theme:'dark'});
+      await evaluate(`${win}.previewSetSafeArea(64)`);
+      const visible=await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`);
+      const primary=rows(fixture.page).flat().filter(b=>b.kind==='action').map(b=>b.key);
+      for (const key of primary) assert.ok(visible.includes(key),`${fixture.id}/${width}: media command ${key} fits first part`);
+      if (fixture.id==='camera' || fixture.id==='camera_en') {
+        for (const key of ['a5','a6']) assert.ok(visible.includes(key),`${fixture.id}/${width}: archive and details fit first part`);
+      }
+      await assertPreserved(fixture.page,`${fixture.id}/safe64/${width}`);
+      await controlRequests();
+      await click('a0'); await click('a0');
+      assert.equal(await evaluate(`${win}.__requests.length`),1,'Repeated snapshot tap is blocked while the request is pending');
+      assert.equal(await evaluate(disabled('a0')),'true');
+      await reply({page:{...fixture.page,seq:100,rev:'b'.repeat(32)}});
+      await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      assert.equal(await evaluate(disabled('a0')),'false');
+      await dimensions(`${fixture.id}/after-snapshot/${width}`);
+      if (fixture.id==='camera' && width===360) await capture('release-camera-dark-360');
+    }
+  }
   await reload('six_rows', {width:390});
   await evaluate(`${win}.previewSetSafeArea(24)`);
   assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 6, 'More than five rows fit without another page');

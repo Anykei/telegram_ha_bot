@@ -14,6 +14,9 @@ mod interaction_tests;
 #[path = "pending_tests.rs"]
 mod pending_tests;
 
+#[path = "camera_tests.rs"]
+mod camera_tests;
+
 async fn mock_config() -> Result<(Arc<AppConfig>, Arc<crate::ha::mock::MockHa>)> {
     let mut config = crate::test_support::config().await;
     let (tx, _) = tokio::sync::mpsc::channel(100);

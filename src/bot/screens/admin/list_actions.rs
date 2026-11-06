@@ -478,9 +478,11 @@ pub async fn render_room_camera_detail(
         view.alert = Some("Камера не принадлежит выбранной комнате".to_string());
         return Ok(view);
     }
+    ctx.track_room(room.id);
+    ctx.track_camera(camera.id);
 
     let mut rows = vec![vec![InlineKeyboardButton::callback(
-        "📸 Снимок",
+        t(ctx.lang, "camera.snapshot"),
         Payload::Admin(AdminPayload::RoomCameraSnapshot {
             room: room_id,
             camera: camera.id,
@@ -489,7 +491,20 @@ pub async fn render_room_camera_detail(
     )]];
 
     let mut interval_row = Vec::new();
+    let mut html_button_labels = HashMap::new();
     for seconds in &ctx.config.camera_clip_intervals_s {
+        html_button_labels.insert(
+            Payload::Admin(AdminPayload::RoomCameraClip {
+                room: room_id,
+                camera: camera.id,
+                seconds: *seconds,
+            })
+            .to_string(),
+            match ctx.lang {
+                Language::Ru => format!("Видео · {seconds} с"),
+                Language::En => format!("Video · {seconds} s"),
+            },
+        );
         interval_row.push(InlineKeyboardButton::callback(
             format!("🎞 {}с", seconds),
             Payload::Admin(AdminPayload::RoomCameraClip {
@@ -500,7 +515,7 @@ pub async fn render_room_camera_detail(
             .to_string(),
         ));
 
-        if interval_row.len() == 3 {
+        if interval_row.len() == 2 {
             rows.push(std::mem::take(&mut interval_row));
         }
     }
@@ -517,7 +532,10 @@ pub async fn render_room_camera_detail(
         .to_string(),
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
-        "🗑 Удалить камеру",
+        match ctx.lang {
+            Language::Ru => "🗑 Удалить камеру",
+            Language::En => "🗑 Delete camera",
+        },
         Payload::Admin(AdminPayload::ConfirmDeleteCamera {
             room: room_id,
             camera: camera.id,
@@ -546,6 +564,11 @@ pub async fn render_room_camera_detail(
 
     Ok(View {
         header: Some("📹 Камера".to_string()),
+        html_title: Some(camera.name.clone()),
+        html_context: Some(room.display_name()),
+        html_summary: Some(crate::bot::screens::cameras::media_delivery_hint(ctx.lang).into()),
+        html_button_labels,
+        html_media_controls: true,
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -554,6 +577,7 @@ pub async fn render_room_camera_detail(
             camera: camera_id,
         }),
         image,
+        lang: ctx.lang,
         ..Default::default()
     })
 }
