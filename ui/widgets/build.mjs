@@ -36,7 +36,11 @@ async function build(screen, stylesheet, title) {
   if (r1) body = body.replaceAll(' type="button"', '');
   // r1 is rendered inside Telegram's fixed widget viewport (and a sized preview
   // iframe), so its document needs neither a browser viewport hint nor a title.
-  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8">${r1 ? '' : `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>`}<style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
+  // HTML permits omitted head/body tags and final html end tag. The parser still
+  // creates all three elements; keep the doctype, language and UTF-8 declaration.
+  const html = r1
+    ? `<!doctype html><html lang="ru"><meta charset="utf-8"><style>${css.code.trim()}</style>${body}<script>${script.code.trim()}</script>`
+    : `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);

@@ -2520,5 +2520,87 @@
       ],
       "kind": "room"
     }
+  },
+  {
+    "id": "room_paginated",
+    "label": "Комната · шесть строк и локальное перелистывание",
+    "page": {
+      "v": 1,
+      "rev": "44444444444444444444444444444444",
+      "seq": 4,
+      "lang": "ru",
+      "title": "🍳 Кухня",
+      "context": "Комнаты",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "back": "rooms",
+      "s": "kitchen",
+      "b": [
+        [
+          [
+            "📊 Терморегулятор · Батарея\n97%",
+            "battery",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Люстра\nВЫКЛ",
+            "ceiling",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "ceiling_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка\nВЫКЛ · vykliuchatel_3_right",
+            "strip",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "strip_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка\nВЫКЛ · rele_0",
+            "relay",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "relay_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Терморегулятор\nАвтоматический",
+            "climate",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Датчик\n24°C",
+            "extra_sensor",
+            "nav"
+          ]
+        ]
+      ],
+      "kind": "room"
+    }
   }
 ]

@@ -1,7 +1,7 @@
 {
   "designVersion": "1.0.0",
   "screen": "release",
-  "bytes": 10321,
+  "bytes": 10257,
   "zlibBytes": 4096,
   "limit": 4096,
   "protocol": "r1",

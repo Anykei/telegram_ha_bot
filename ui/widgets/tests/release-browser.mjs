@@ -146,7 +146,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     })`);
     assert.ok(labels.length >= 5);
     for (const label of labels) {
-      assert.equal(label.height, 72, 'Every room button has the same fixed height');
+      assert.equal(label.height, 68, 'Every room button has the same fixed height');
       assert.equal(label.text.split('\n').length, 2, 'Name and state stay on separate authored lines');
       assert.ok(label.labelHeight <= label.lineHeight * 2 + 1, 'Visible label never exceeds two lines');
       assert.equal(label.wrap, 'pre');
@@ -155,6 +155,26 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
     await assertPreserved(fixtures.find(f=>f.id==='room_long_labels').page, 'room labels/'+width);
     if (width === 390) await capture('release-room-long-labels-phone');
+  }
+  // A longer source list must not lose its fifth row just because local paging
+  // appears. Local arrows and refresh share the footer when no server pager is needed.
+  for (const width of [320, 390, 430]) for (const safe of [24, 64]) {
+    await reload('room_paginated', {theme:'dark', width});
+    // Telegram's UA stylesheet applies its own body bottom padding. Our root
+    // handles safe area, so body must reset it rather than reserve it twice.
+    await evaluate(`{const s=${doc}.createElement('style');s.textContent=':where(body){padding-bottom:${safe}px}';${doc}.head.appendChild(s);}`);
+    await evaluate(`${win}.previewSetSafeArea(${safe})`);
+    assert.equal(await evaluate(`${win}.getComputedStyle(${doc}.body).paddingBottom`), '0px');
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5);
+    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), false);
+    assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`), true);
+    const footer = await evaluate(`({local:${get('r-local')}.getBoundingClientRect().toJSON(),read:${get('r-read')}.getBoundingClientRect().toJSON()})`);
+    assert.equal(footer.local.top, footer.read.top, 'Local navigation and refresh occupy one row');
+    assert.ok(footer.local.right <= footer.read.left, 'Navigation cannot overlap refresh');
+    assert.ok(footer.read.bottom <= 600-safe, 'Footer leaves native metadata clear');
+    const content=await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'room local paging/'+width);
+    assert.equal(content.parts, 2);
+    if (width === 390 && safe === 64) await capture('release-room-local-pager-phone');
   }
   // Old snapshots without optional kind/hint still have the default menu presentation.
   await reload('home');

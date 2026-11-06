@@ -1,12 +1,12 @@
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
+body { margin: 0; padding:0; overflow-wrap:anywhere; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
 button { font: inherit; cursor: pointer; }
 .release { min-height: 600px; padding: var(--ha-space-3); }
 .r-context { flex: 1; color: var(--ha-muted); font-size: 12px; }
-h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight: 650; }
+h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight:600; }
 .r-context, h1 { white-space: nowrap; }
 .r-context, h1, .r-button span { text-overflow: ellipsis; overflow: hidden; }
-.r-text { margin: 0 0 var(--ha-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.r-text { margin: 0 0 var(--ha-space-2); white-space: pre-wrap; }
 .r-text { padding: var(--ha-space-3); border-radius: var(--ha-radius-control); }
 .r-body { background: var(--ha-surface-soft); }
 .r-hint { color: var(--ha-muted); border: 1px dashed var(--ha-line); }
@@ -15,19 +15,19 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-notice { color: var(--ha-accent); background: var(--ha-accent-soft); }
 .r-row, .r-statuses { display: flex; gap: var(--ha-space-2); margin-bottom: var(--ha-space-2); }
 .r-button { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; min-height: 60px; border: 1px solid var(--ha-line); border-radius: var(--ha-radius-control); padding: 10px var(--ha-space-3); color: var(--ha-text); background: var(--ha-surface); text-align: left; font-size: 16px; }
-.r-button span { overflow-wrap: anywhere; white-space:pre-line; }
+.r-button span { white-space:pre-line; }
 .r-nav::after { content:"›"; flex-shrink:0; color:var(--ha-muted); }
 .r-action { color: var(--ha-accent); background: var(--ha-accent-soft); border-color: var(--ha-accent-soft); }
 .r-selected { background: var(--ha-accent-soft); border-color: var(--ha-accent); }
 .r-danger { border-color: var(--ha-error); color: var(--ha-error); background: var(--ha-error-soft); }
 .r-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--ha-space-2); margin-top: var(--ha-space-2); }
 .r-top { margin-top: 0; }
-.r-pager span { color: var(--ha-muted); font-size: 11px; text-align: center; overflow-wrap:anywhere; }
+.r-pager span { color: var(--ha-muted); font-size: 11px; text-align: center; }
 .r-pager button, .r-read { min-width: 44px; min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
-.r-footer { display:flex; gap:var(--ha-space-2); margin-top:var(--ha-space-2); justify-content:flex-end; }
-.r-footer .r-pager { flex:1; min-width:0; margin:0; }
-.r-read { font-size:22px; line-height:1; }
-.r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); overflow-wrap: anywhere; }
+.r-footer { display:grid; grid:auto/1fr auto; gap:var(--ha-space-2); margin-top:var(--ha-space-2); }
+.r-footer .r-pager { grid-column:1; min-width:0; margin:0; }
+.r-read { grid-area:1/2; font-size:22px; line-height:1; }
+.r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); }
 [aria-disabled="true"] { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
 .r-wait { position:relative; opacity:1; }
@@ -39,12 +39,13 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 [data-kind="home"] { display:flex; flex-direction:column; }
 [data-kind="home"] > * { flex-shrink:0; }
 [data-kind="home"] #r-content { flex:1; display:flex; flex-direction:column; }
-[data-kind="home"] .r-row, [data-kind="home"] .r-read { flex:1; }
-.r-status { display:block; padding:10px; font-size:15px; overflow-wrap:anywhere; }
+[data-kind="home"] .r-row { flex:1; }
+.r-hidden + .r-hidden + .r-read { grid-column:1/3; }
+.r-status { display:block; padding:10px; font-size:15px; }
 .r-status > * { display:block; }
 .r-status strong { font-size:18px; margin:4px 0; }
 .r-status small { font-size:12px; color:var(--ha-muted); }
 
 /* Room labels have two server-authored lines: identity and current state. */
-[data-kind="room"] .r-button { height:72px; }
+[data-kind="room"] .r-button { height:68px; padding:8px var(--ha-space-3); }
 [data-kind="room"] .r-button span { white-space:pre; }
