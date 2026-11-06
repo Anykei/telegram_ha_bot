@@ -23,7 +23,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && (!GRAPH || validGraph(v.graph))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
-      && Array.isArray(v.rows) && v.rows.length <= (GRAPH ? 4 : 5) && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
+      && Array.isArray(v.rows) && v.rows.length <= (GRAPH ? 4 : 64) && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
         && row.every(b => b && typeof b.text === 'string' && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain']).includes(b.kind)));
   }
   function accept(v) {

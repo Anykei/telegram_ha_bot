@@ -110,6 +110,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  await reload('six_rows', {width:390});
+  await evaluate(`${win}.previewSetSafeArea(24)`);
+  assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 6, 'More than five rows fit without another page');
+  assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
+  await dimensions('six rows');
   // A phone can use the previously empty bottom strip for a fifth control row.
   // Keep real-world wrapping, native clock space and all footer targets visible.
   for (const width of [390, 430]) {

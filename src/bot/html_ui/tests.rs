@@ -395,7 +395,7 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
         for page in &prepared.pages {
             assert!(page.json()?.len() <= 1000);
             assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);
-            assert!(page.rows.len() <= 5);
+            assert!(page.rows.iter().all(|row| row.len() <= 2));
         }
     }
     assert!(ha.calls.lock().unwrap().is_empty());
@@ -403,9 +403,9 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
 }
 
 #[tokio::test]
-async fn five_room_controls_share_a_page_across_command_phases() -> Result<()> {
+async fn more_than_five_room_controls_share_a_page_across_command_phases() -> Result<()> {
     let (config, ha) = config().await?;
-    for index in 1..5 {
+    for index in 1..6 {
         db::devices::sync_device(
             &format!("light.extra_{index}"),
             "living",
@@ -425,7 +425,7 @@ async fn five_room_controls_share_a_page_across_command_phases() -> Result<()> {
     )
     .await?;
     let ready = presentation::prepare(&view, "a".repeat(32), 1)?;
-    assert_eq!(ready.pages[0].rows.len(), 5);
+    assert!(ready.pages[0].rows.len() > 5);
     assert_eq!(
         ready.pages[0]
             .rows
@@ -433,8 +433,8 @@ async fn five_room_controls_share_a_page_across_command_phases() -> Result<()> {
             .flatten()
             .filter(|b| b.kind == "action")
             .count(),
-        5,
-        "All five devices can be controlled from the first server page"
+        6,
+        "All six devices can be controlled from the first server page"
     );
     let keys = |pages: &[presentation::Page]| {
         pages
@@ -492,7 +492,16 @@ async fn opaque_keys_are_bound_to_current_message_and_claimed_once() -> Result<(
 async fn pagination_is_read_only_and_read_does_not_repeat_an_action() -> Result<()> {
     let (config, ha) = config().await?;
     let fake = FakeTelegram::new().await?;
-    let session = publish(&fake, &config, Payload::Personal(PersonalPayload::Settings)).await?;
+    let mut view = router(
+        Payload::Personal(PersonalPayload::Settings),
+        1,
+        config.clone(),
+    )
+    .await?;
+    // Pagination now depends on actual content, not a fixed number of rows.
+    view.text.push_str(&"Дополнительные сведения. ".repeat(30));
+    handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view, config.clone(), None).await?;
+    let session = config.html_ui.sessions.get(&1).unwrap().clone();
     assert!(session.pages.len() > 1);
     fake.clear();
     assert_eq!(

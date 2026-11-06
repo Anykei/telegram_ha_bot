@@ -461,19 +461,12 @@ pub fn prepare_with_pending(
                 + candidate.notice.chars().count()
                 + candidate.alert.chars().count()
                 + candidate.hint.chars().count();
-            // Let phone-sized cards use the space below the fourth row. The
-            // renderer measures actual wrapping and keeps overflow accessible.
-            let row_limit = if current.graph.is_some() {
-                3
-            } else if view.html_chart.is_some() {
-                4
-            } else {
-                5
-            };
-            if candidate.rows.len() > row_limit
-                || candidate.json().is_err()
-                || (candidate.rows.len() > 2 && text_chars > 80)
-            {
+            // Ordinary cards are partitioned by the wire budget here and by
+            // measured height in the client. A fixed row count wastes space.
+            let graph_overflow = view.html_chart.is_some()
+                && (candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
+                    || (candidate.rows.len() > 2 && text_chars > 80));
+            if graph_overflow || candidate.json().is_err() {
                 parts.push(current);
                 current = empty.clone();
                 current.rows.push(rendered);
