@@ -20,6 +20,9 @@ pub struct View {
     pub html_context: Option<String>,
     #[serde(default)]
     pub html_kind: Option<String>,
+    /// Short confirmed state shown with controls; full text stays in details.
+    #[serde(default)]
+    pub html_summary: Option<String>,
     pub notifications: Vec<HeaderItem>,
     pub text: String,
     pub kb: InlineKeyboardMarkup,

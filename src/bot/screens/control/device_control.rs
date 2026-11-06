@@ -104,15 +104,17 @@ pub async fn render(
                 ctx.lang,
                 Payload::Control(ControlPayload::RoomDetail { room: room_id }),
             )]);
+            let text = format!(
+                "{}: {}\n\n{}",
+                crate::bot::personal::words(ctx.lang, "Состояние", "State"),
+                super::labels::state(&ha_ent, ctx.lang, inverted, state_alias.as_deref()),
+                detail
+            );
             Ok(View {
                 compact: true,
                 header: Some(device_name.clone()),
-                text: format!(
-                    "{}: {}\n\n{}",
-                    crate::bot::personal::words(ctx.lang, "Состояние", "State"),
-                    super::labels::state(&ha_ent, ctx.lang, inverted, state_alias.as_deref()),
-                    detail
-                ),
+                html_summary: Some(text.trim().to_owned()),
+                text,
                 notifications: ctx.notifications,
                 kb: InlineKeyboardMarkup::new(rows),
                 payload,

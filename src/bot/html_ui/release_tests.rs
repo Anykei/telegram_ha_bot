@@ -38,20 +38,7 @@ async fn device(config: &AppConfig, id: &str) -> Result<(i64, i64)> {
 }
 
 fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
-    let rendered = prepared
-        .pages
-        .iter()
-        .flat_map(|p| p.rows.iter().flatten())
-        .map(|b| b.text.as_str())
-        .collect::<Vec<_>>();
-    let original = view
-        .kb
-        .inline_keyboard
-        .iter()
-        .flatten()
-        .map(|b| b.text.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(rendered, original);
+    assert_buttons_preserved(view, prepared)?;
     assert!(prepared
         .pages
         .iter()
@@ -215,6 +202,64 @@ async fn pinned_back_returns_from_climate_through_each_parent_level() -> Result<
             .attributes
             .temperature,
         before
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_state_and_primary_controls_fit_the_first_server_page() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    for lang in [crate::i18n::Language::Ru, crate::i18n::Language::En] {
+        db::user::set_user_language(1, lang, &config.db).await?;
+        for entity in ["climate.bedroom", "light.floor_lamp"] {
+            let (room, device) = device(&config, entity).await?;
+            let view = router(
+                Payload::Control(ControlPayload::DeviceControl { room, device }),
+                1,
+                config.clone(),
+            )
+            .await?;
+            let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+            assert_complete(&view, &prepared)?;
+            let first = &prepared.pages[0];
+            assert_eq!(first.body, view.html_summary.as_deref().unwrap());
+            assert!(!first.body.contains("Тестовый дом"));
+            assert!(!first.body.contains("Test home"));
+            for (key, payload) in &prepared.actions {
+                if matches!(
+                    payload,
+                    Payload::TemperatureInput { .. }
+                        | Payload::Control(ControlPayload::QuickAction {
+                            cmd: DeviceCmd::AdjustTemp(_) | DeviceCmd::TurnOn | DeviceCmd::TurnOff,
+                            ..
+                        })
+                ) {
+                    assert!(
+                        first.rows.iter().flatten().any(|b| &b.key == key),
+                        "Primary action moved off first page: {payload:?}"
+                    );
+                }
+            }
+            let wire: Value = serde_json::from_str(&first.json()?)?;
+            assert!(wire.get("rows").is_none());
+            assert!(wire["b"].as_array().unwrap().iter().all(|row| row
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(Value::is_array)));
+            let decoded: presentation::Page = serde_json::from_value(wire)?;
+            assert_eq!(decoded.rows.len(), first.rows.len());
+        }
+    }
+    let fake = FakeTelegram::new().await?;
+    publish(&fake, &config, Payload::Home).await?;
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .find(|(method, _)| method == "sendWidget")
+            .unwrap()
+            .1["width"],
+        0
     );
     Ok(())
 }

@@ -10,6 +10,7 @@
   let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
+  const feedback = value => { text('r-feedback', value); hide('r-feedback', !value); };
   const key = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,28}$/.test(value);
   function valid(v) {
     return v && v.v === 1 && typeof v.rev === 'string' && /^[a-f0-9]{32}$/.test(v.rev) && Number.isSafeInteger(v.seq) && v.seq >= 0
@@ -23,6 +24,10 @@
         && row.every(b => b && typeof b.text === 'string' && key(b.key) && ['action', 'nav', 'danger', 'selected'].includes(b.kind)));
   }
   function accept(v) {
+    if (v && v.b !== undefined) {
+      if (v.rows !== undefined) return false;
+      v.rows = v.b.map(row => row.map(b => Array.isArray(b) && b.length === 3 ? {text:b[0], key:b[1], kind:b[2]} : null));
+    }
     if (!valid(v)) return false;
     if (data && v.seq < data.seq) return true;
     if (!data || v.seq > data.seq) local = 0;
@@ -76,6 +81,8 @@
       }
     }
     data.rows.forEach(row => {
+      row = row.filter(b => b.key !== data.back);
+      if (!row.length) return;
       const node = document.createElement('div'); node.className = 'r-row';
       row.forEach(b => node.appendChild(action(b))); blocks.push(node);
     });
@@ -108,7 +115,7 @@
     text('r-read-label', w(2));
     text('r-back', '‹ ' + w(9));
     hide('r-back', locked || !data.back);
-    text('r-feedback', locked ? w(6) : note);
+    feedback(locked ? w(6) : note);
     card.classList.toggle('r-error', uncertain || denied);
     ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
     ['r-next', 'r-local-next'].forEach(id => el(id).setAttribute('aria-label', w(1)));
@@ -119,7 +126,7 @@
     ['read', 'prev', 'next', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
     if (layout()) {
       mount([]); hide('r-local', true); hide('r-server', true);
-      text('r-feedback', w(6));
+      feedback(w(6));
     }
   }
   function stopWait() { waiting = false; clearTimeout(timer); }

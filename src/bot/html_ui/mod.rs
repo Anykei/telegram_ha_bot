@@ -158,7 +158,7 @@ pub async fn deliver(
         } else {
             "Дом · /ui — вид интерфейса · /classic — кнопки Telegram"
         };
-        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":HTML,"width":360,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
+        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":HTML,"width":0,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
         MessageId(
             sent["message_id"]
                 .as_i64()

@@ -11,11 +11,18 @@ const block = (selector, values) => `${selector} {\n${Object.entries(values).map
 await writeFile(root + 'src/tokens.css', block(':root', { ...tokens.shared, ...tokens.themes.light }) + block(':root[data-theme="dark"]', tokens.themes.dark));
 await mkdir(root + 'dist', { recursive: true });
 async function build(screen, stylesheet, title) {
-  const components = await read('src/' + stylesheet);
+  let components = await read('src/' + stylesheet);
+  // Shared tokens are immutable; keep semantic names in source and inline their values in r1.
+  if (screen === 'release') for (const [key, value] of Object.entries(tokens.shared)) components = components.replaceAll(`var(${key})`, value);
   const used = new Set(components.match(/--ha-[a-z0-9-]+/g));
   const usedTokens = values => Object.fromEntries(Object.entries(values).filter(([key]) => used.has(key)));
   const tokenCSS = `:root{${declarations(usedTokens({ ...tokens.shared, ...tokens.themes.light }))}}:root[data-theme="dark"]{${declarations(usedTokens(tokens.themes.dark))}}`;
-  const css = await transform(tokenCSS + components, { loader: 'css', minify: true, charset: 'utf8' });
+  let styles = tokenCSS + components;
+  if (screen === 'release') {
+    const aliases = [...used];
+    styles = styles.replace(/--ha-[a-z0-9-]+/g, key => '--' + String.fromCharCode(97 + aliases.indexOf(key)));
+  }
+  const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
   const script = await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
   const body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
   const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;

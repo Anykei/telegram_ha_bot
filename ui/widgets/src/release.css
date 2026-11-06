@@ -14,7 +14,7 @@ button { font: inherit; cursor: pointer; }
 .r-alert { color: var(--ha-error); background: var(--ha-error-soft); }
 .r-notice { color: var(--ha-accent); background: var(--ha-accent-soft); }
 .r-row { display: flex; gap: var(--ha-space-2); margin-bottom: var(--ha-space-2); }
-.r-button { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; min-height: 48px; border: 1px solid var(--ha-line); border-radius: var(--ha-radius-control); padding: 10px var(--ha-space-3); color: var(--ha-text); background: var(--ha-surface); text-align: left; }
+.r-button { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; min-height: 52px; border: 1px solid var(--ha-line); border-radius: var(--ha-radius-control); padding: 10px var(--ha-space-3); color: var(--ha-text); background: var(--ha-surface); text-align: left; font-size: 14px; }
 .r-button span:first-child { overflow-wrap: anywhere; }
 .r-mark { flex-shrink: 0; color: var(--ha-muted); }
 .r-action { color: var(--ha-accent); background: var(--ha-accent-soft); border-color: var(--ha-accent-soft); }

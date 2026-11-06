@@ -4,6 +4,8 @@ import { pathToFileURL } from 'node:url';
 
 export async function checkRelease({root, command, evaluate, until, screenshot}) {
   const fixtures = JSON.parse(await readFile(root + 'preview/release-fixtures.json', 'utf8'));
+  const rows = page => page.b ? page.b.map(row=>row.map(([text,key,kind])=>({text,key,kind}))) : page.rows;
+  const visibleActions = page => rows(page).flat().filter(b=>b.key!==page.back).map(b=>[b.key,b.text]);
   const doc = `document.getElementById('release-frame').contentDocument`;
   const win = `document.getElementById('release-frame').contentWindow`;
   const get = id => `${doc}.getElementById('${id}')`;
@@ -66,7 +68,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   async function assertPreserved(page, label) {
     const content = await collectParts(label, page);
     assert.ok(content.text.endsWith(page.alert + page.notice + page.body + (page.hint || '')), `${label}: all body/hint text survives local pagination exactly`);
-    assert.deepEqual(content.actions, page.rows.flat().map(b => [b.key, b.text]), `${label}: every original action survives in order`);
+    assert.deepEqual(content.actions, visibleActions(page), `${label}: every original action survives; duplicate Back is represented by the pinned control`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
     assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), page.kind || 'menu');
     assert.equal(await evaluate(`${get('r-read-label')}.textContent`), page.lang === 'ru' ? 'Обновить' : 'Refresh');
@@ -95,6 +97,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       for (const fixture of fixtures) {
         await reload(fixture.id, {theme, width});
         assert.equal(await evaluate(`${doc}.documentElement.getAttribute('data-theme')`), theme);
+        if (fixture.page.b && ['device','climate'].includes(fixture.page.kind) && fixture.page.page===1 && width>=320) {
+          assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent])`), visibleActions(fixture.page), `${fixture.id}/${theme}/${width}: all primary controls on the first local part`);
+          assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
+          assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0, 'Idle feedback takes no space');
+        }
         const content = await assertPreserved(fixture.page, `${fixture.id}/${theme}/${width}`);
         localPaginationSeen ||= content.parts > 1;
       }
@@ -128,11 +135,32 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await click('device'); await until(`${get('r-title')}.textContent === 'Торшер'`);
   await capture('release-device-dark');
   assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Выключен.');
-  await click('room'); await until(`${get('r-title')}.textContent === 'Гостиная'`);
+  await evaluate(`${get('r-back')}.click()`); await until(`${get('r-title')}.textContent === 'Гостиная'`);
   await click('ceiling'); await until(`${get('r-title')}.textContent === 'Люстра'`);
   assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Включена.');
   for (const [id, theme] of [['scenes','light'],['confirmation','light'],['climate','dark'],['form','light'],['admin','light']]) {
     await reload(id, {theme}); await capture('release-'+id+'-'+theme);
+  }
+  await reload('climate', {width:430}); await capture('release-climate-wide');
+  // Compact controls follow the same request/ACK path as legacy object rows.
+  await reload('climate'); await controlRequests(); await click('temp_up');
+  assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
+  assert.equal(await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`), false);
+  await reply({accepted:true});
+  await push({seq:100,rev:'a'.repeat(32)});
+  await until(`${disabled('temp_up')} === 'false'`);
+  assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+  // Both wire shapes together, malformed tuples and invalid typed values fail closed.
+  for (const shape of [
+    {rows:[],b:[]}, {b:null}, {b:[null]}, {b:[[{}]]}, {b:[[['short','key']]]},
+    {b:[[['extra','key','nav','extra']]]}, {b:[[[4,'key','nav']]]},
+    {b:[[['Label','bad:key','nav']]]}, {b:[[['Label','key','unknown']]]}
+  ]) {
+    await reload('home'); await controlRequests();
+    const bad={...fixtures[0].page}; delete bad.rows; Object.assign(bad,shape);
+    await evaluate(`${win}.previewSetData(${JSON.stringify(bad)})`);
+    assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
+    assert.equal(await evaluate(`${win}.__requests.length`), 0);
   }
   // The thermostat's original Back lives on chunk 2; its persistent control works on both.
   for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
@@ -206,9 +234,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await until(`${get('r-feedback')}.textContent.includes(${JSON.stringify(lang === 'ru' ? 'Нет ответа' : 'No response')})`);
     assert.equal(await evaluate(disabled('run_scene')), 'true');
     await evaluate(`${get('r-read')}.click()`);
-    await until(`${disabled('scenes')} === 'false' && ${get('r-feedback')}.textContent === ''`);
+    await until(`${get('r-back')}.getAttribute('aria-disabled') === 'false' && ${get('r-feedback')}.textContent === ''`);
     await evaluate(`${win}.TelegramWidget.request=async key=>{${win}.__lastRequest=key;return {result:JSON.stringify({accepted:true})}}`);
-    await click('scenes');
+    await evaluate(`${get('r-back')}.click()`);
     assert.ok((await evaluate(`${win}.__lastRequest`)).endsWith(':scenes'));
     const next = {...fixtures.find(f=>f.id === (lang==='ru'?'scenes':'scenes_en')).page,seq:100,rev:'a'.repeat(32)};
     await evaluate(`${win}.previewSetData(${JSON.stringify(next)})`);

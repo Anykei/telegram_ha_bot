@@ -210,34 +210,29 @@
       "body": "Состояние: Выключен.",
       "notice": "",
       "alert": "",
-      "rows": [
-        [
-          {
-            "text": "Включить",
-            "key": "lamp_on",
-            "kind": "action"
-          }
-        ],
-        [
-          {
-            "text": "Назад",
-            "key": "room",
-            "kind": "nav"
-          },
-          {
-            "text": "Дом",
-            "key": "home",
-            "kind": "nav"
-          }
-        ]
-      ],
       "read": "read",
       "prev": null,
-      "next": null,
+      "next": "device_more",
       "page": 1,
-      "pages": 1,
+      "pages": 2,
       "kind": "device",
-      "back": "room"
+      "back": "room",
+      "b": [
+        [
+          [
+            "Включить",
+            "lamp_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Дом",
+            "home",
+            "nav"
+          ]
+        ]
+      ]
     }
   },
   {
@@ -627,33 +622,40 @@
       "body": "Сейчас: 21,4 °C\nЗадано: 22 °C\nРежим: Обогрев",
       "notice": "",
       "alert": "",
-      "rows": [
-        [
-          {
-            "text": "−0,5 °C",
-            "key": "temp_down",
-            "kind": "action"
-          },
-          {
-            "text": "+0,5 °C",
-            "key": "temp_up",
-            "kind": "action"
-          }
-        ],
-        [
-          {
-            "text": "Задать температуру",
-            "key": "form",
-            "kind": "nav"
-          }
-        ]
-      ],
       "read": "read",
       "prev": null,
       "next": "climate_more",
       "page": 1,
       "pages": 2,
-      "back": "room"
+      "back": "room",
+      "b": [
+        [
+          [
+            "−0,5 °C",
+            "temp_down",
+            "action"
+          ],
+          [
+            "+0,5 °C",
+            "temp_up",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Задать температуру",
+            "form",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Дом",
+            "home",
+            "nav"
+          ]
+        ]
+      ]
     }
   },
   {
@@ -670,33 +672,40 @@
       "body": "Current: 21.4 °C\nTarget: 22 °C\nMode: Heating",
       "notice": "",
       "alert": "",
-      "rows": [
-        [
-          {
-            "text": "−0.5 °C",
-            "key": "temp_down",
-            "kind": "action"
-          },
-          {
-            "text": "+0.5 °C",
-            "key": "temp_up",
-            "kind": "action"
-          }
-        ],
-        [
-          {
-            "text": "Set temperature",
-            "key": "form",
-            "kind": "nav"
-          }
-        ]
-      ],
       "read": "read",
       "prev": null,
       "next": "climate_more",
       "page": 1,
       "pages": 2,
-      "back": "room"
+      "back": "room",
+      "b": [
+        [
+          [
+            "−0.5 °C",
+            "temp_down",
+            "action"
+          ],
+          [
+            "+0.5 °C",
+            "temp_up",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Set temperature",
+            "form",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Home",
+            "home",
+            "nav"
+          ]
+        ]
+      ]
     }
   },
   {
@@ -1044,7 +1053,7 @@
       "kind": "climate",
       "title": "Климат",
       "context": "Гостиная · Отопление",
-      "body": "",
+      "body": "Отопление · Гостиная\nТекущая температура: 21,4 °C\nЗаданная температура: 22 °C\nРежим: Обогрев\nДопустимо: 16–28 °C\nШаг: 0,5 °C",
       "notice": "",
       "alert": "",
       "rows": [
@@ -1052,11 +1061,6 @@
           {
             "text": "Назад",
             "key": "room",
-            "kind": "nav"
-          },
-          {
-            "text": "Дом",
-            "key": "home",
             "kind": "nav"
           }
         ]
@@ -1080,7 +1084,7 @@
       "kind": "climate",
       "title": "Climate",
       "context": "Living room · Heating",
-      "body": "",
+      "body": "Heating · Living room\nCurrent temperature: 21.4 °C\nTarget temperature: 22 °C\nMode: Heating\nAllowed range: 16–28 °C\nStep: 0.5 °C",
       "notice": "",
       "alert": "",
       "rows": [
@@ -1088,11 +1092,6 @@
           {
             "text": "Back",
             "key": "room",
-            "kind": "nav"
-          },
-          {
-            "text": "Home",
-            "key": "home",
             "kind": "nav"
           }
         ]
@@ -1164,6 +1163,29 @@
       "page": 1,
       "pages": 1,
       "back": "rooms"
+    }
+  },
+  {
+    "id": "device_more",
+    "label": "Торшер · сведения",
+    "page": {
+      "v": 1,
+      "rev": "0000000000000000000000000000001b",
+      "seq": 27,
+      "lang": "ru",
+      "title": "Торшер",
+      "context": "Гостиная",
+      "body": "Имя: Торшер\nКомната: Гостиная\nСостояние: Выключен.",
+      "notice": "",
+      "alert": "",
+      "rows": [],
+      "read": "read",
+      "prev": "device",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "kind": "device",
+      "back": "room"
     }
   }
 ]

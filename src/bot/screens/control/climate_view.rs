@@ -56,15 +56,18 @@ fn render_view(
     } else {
         temperature(entity.attributes.temperature)
     };
-    let mut text = format!(
-        "{}\n\n{}: {}\n{}: {}\n{}: {}",
-        super::labels::device_name(&dev, &entity, lang),
+    let summary = format!(
+        "{}: {}\n{}: {}\n{}: {}",
         t(lang, "climate.current"),
         temperature(entity.attributes.current_temperature),
         t(lang, "climate.target"),
         target_text,
         t(lang, "climate.mode"),
         mode_label(lang, &entity.state),
+    );
+    let mut text = format!(
+        "{}\n\n{summary}",
+        super::labels::device_name(&dev, &entity, lang)
     );
     if let (Some(min), Some(max)) = (entity.attributes.min_temp, entity.attributes.max_temp) {
         if min.is_finite() && max.is_finite() {
@@ -151,6 +154,7 @@ fn render_view(
     View {
         compact: true,
         html_kind: Some("climate".into()),
+        html_summary: Some(summary),
         header: Some(t(lang, "climate.title").into()),
         notifications,
         text,

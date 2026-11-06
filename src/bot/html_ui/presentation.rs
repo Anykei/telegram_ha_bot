@@ -30,6 +30,7 @@ pub struct Page {
     pub body: String,
     pub notice: String,
     pub alert: String,
+    #[serde(rename = "b", alias = "rows", with = "button_rows")]
     pub rows: Vec<Vec<Button>>,
     pub read: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +39,47 @@ pub struct Page {
     pub next: Option<String>,
     pub page: usize,
     pub pages: usize,
+}
+
+mod button_rows {
+    use super::Button;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        rows: &[Vec<Button>],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        rows.iter()
+            .map(|row| {
+                row.iter()
+                    .map(|b| (&b.text, &b.key, &b.kind))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Vec<Button>>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum WireButton {
+            Compact((String, String, String)),
+            Legacy(Button),
+        }
+        Ok(Vec::<Vec<WireButton>>::deserialize(deserializer)?
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|b| match b {
+                        WireButton::Compact((text, key, kind)) => Button { text, key, kind },
+                        WireButton::Legacy(button) => button,
+                    })
+                    .collect()
+            })
+            .collect())
+    }
 }
 impl Page {
     pub fn json(&self) -> Result<String> {
@@ -133,6 +175,47 @@ fn split_text(text: &str, limit: usize) -> Vec<String> {
         parts.push(part);
     }
     parts
+}
+
+fn append_text(
+    mut current: Page,
+    empty: &Page,
+    parts: &mut Vec<Page>,
+    field: &str,
+    text: &str,
+) -> Result<Page> {
+    for part in split_text(text, 180) {
+        let mut candidate = current.clone();
+        let target = match field {
+            "alert" => &mut candidate.alert,
+            "notice" => &mut candidate.notice,
+            _ => &mut candidate.body,
+        };
+        target.push_str(&part);
+        let characters = candidate.body.chars().count()
+            + candidate.alert.chars().count()
+            + candidate.notice.chars().count()
+            + candidate.hint.chars().count();
+        if candidate.json().is_err() || characters > 200 {
+            if !current.hint.is_empty()
+                || !current.body.is_empty()
+                || !current.alert.is_empty()
+                || !current.notice.is_empty()
+            {
+                parts.push(current);
+            }
+            current = empty.clone();
+            match field {
+                "alert" => current.alert = part,
+                "notice" => current.notice = part,
+                _ => current.body = part,
+            };
+            current.json()?;
+        } else {
+            current = candidate;
+        }
+    }
+    Ok(current)
 }
 
 pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
@@ -243,6 +326,11 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             body.push(view.text.clone());
         }
     }
+    let body = body.join("\n\n");
+    let summary = view
+        .html_summary
+        .as_deref()
+        .filter(|_| view.text_page.is_none() && view.next_state.is_none());
     for (field, text) in [
         (
             "alert",
@@ -260,39 +348,9 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 view.notice.as_deref().unwrap_or("")
             },
         ),
-        ("body", &body.join("\n\n")),
+        ("body", summary.unwrap_or(&body)),
     ] {
-        for part in split_text(text, 180) {
-            let mut candidate = current.clone();
-            let target = match field {
-                "alert" => &mut candidate.alert,
-                "notice" => &mut candidate.notice,
-                _ => &mut candidate.body,
-            };
-            target.push_str(&part);
-            let characters = candidate.body.chars().count()
-                + candidate.alert.chars().count()
-                + candidate.notice.chars().count()
-                + candidate.hint.chars().count();
-            if candidate.json().is_err() || characters > 200 {
-                if !current.hint.is_empty()
-                    || !current.body.is_empty()
-                    || !current.alert.is_empty()
-                    || !current.notice.is_empty()
-                {
-                    parts.push(current);
-                }
-                current = empty.clone();
-                match field {
-                    "alert" => current.alert = part,
-                    "notice" => current.notice = part,
-                    _ => current.body = part,
-                };
-                current.json()?;
-            } else {
-                current = candidate;
-            }
-        }
+        current = append_text(current, &empty, &mut parts, field, text)?;
     }
     let mut actions = HashMap::new();
     for row in &view.kb.inline_keyboard {
@@ -305,17 +363,25 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 };
                 let payload = Payload::from_string(data)?;
                 let key = format!("a{}", actions.len());
-                rendered.push(Button {
-                    text: button.text.clone(),
-                    key: key.clone(),
-                    kind: if button.text.starts_with("✓ ") {
-                        "selected"
-                    } else {
-                        kind(&payload)
-                    }
-                    .into(),
-                });
+                let pinned = empty.back.as_deref() == Some(&key)
+                    || (button.text == t(view.lang, "control.refresh")
+                        && payload == view.payload.for_refresh());
+                if !pinned {
+                    rendered.push(Button {
+                        text: button.text.clone(),
+                        key: key.clone(),
+                        kind: if button.text.starts_with("✓ ") {
+                            "selected"
+                        } else {
+                            kind(&payload)
+                        }
+                        .into(),
+                    });
+                }
                 actions.insert(key, payload);
+            }
+            if rendered.is_empty() {
+                continue;
             }
             let mut candidate = current.clone();
             candidate.rows.push(rendered.clone());
@@ -335,6 +401,10 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 current = candidate;
             }
         }
+    }
+    if summary.is_some() && !body.is_empty() {
+        parts.push(current);
+        current = append_text(empty.clone(), &empty, &mut parts, "body", &body)?;
     }
     parts.push(current);
     ensure!(parts.len() <= 9999, "Too many HTML pages");

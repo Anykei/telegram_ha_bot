@@ -310,6 +310,44 @@ async fn polling_delivers_both_interfaces_and_advances_past_invalid_updates() ->
     Ok(())
 }
 
+fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> Result<()> {
+    let original = view.kb.inline_keyboard.iter().flatten().collect::<Vec<_>>();
+    let rendered = prepared
+        .pages
+        .iter()
+        .flat_map(|p| p.rows.iter().flatten())
+        .collect::<Vec<_>>();
+    assert_eq!(prepared.actions.len(), original.len());
+    let mut order = Vec::new();
+    for (index, button) in original.iter().enumerate() {
+        let key = format!("a{index}");
+        let teloxide::types::InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+            panic!("Unexpected non-callback")
+        };
+        assert_eq!(prepared.actions[&key], Payload::from_string(data)?);
+        if let Some(visible) = rendered.iter().find(|b| b.key == key) {
+            assert_eq!(visible.text, button.text);
+            order.push(key);
+        } else {
+            assert!(
+                prepared
+                    .pages
+                    .iter()
+                    .all(|p| p.back.as_deref() == Some(&key))
+                    || (button.text == crate::i18n::t(view.lang, "control.refresh")
+                        && prepared.actions[&key] == view.payload.for_refresh()),
+                "Missing action: {}",
+                button.text
+            );
+        }
+    }
+    assert_eq!(
+        rendered.iter().map(|b| b.key.clone()).collect::<Vec<_>>(),
+        order
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limits() -> Result<()> {
     let (config, ha) = config().await?;
@@ -323,26 +361,7 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
     ] {
         let view = router(payload, 1, config.clone()).await?;
         let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
-        assert_eq!(
-            prepared.actions.len(),
-            view.kb.inline_keyboard.iter().map(Vec::len).sum::<usize>()
-        );
-        let mut visible = prepared
-            .pages
-            .iter()
-            .flat_map(|p| p.rows.iter().flatten())
-            .map(|b| b.text.clone())
-            .collect::<Vec<_>>();
-        let mut original = view
-            .kb
-            .inline_keyboard
-            .iter()
-            .flatten()
-            .map(|b| b.text.clone())
-            .collect::<Vec<_>>();
-        visible.sort();
-        original.sort();
-        assert_eq!(visible, original);
+        assert_buttons_preserved(&view, &prepared)?;
         let body = prepared
             .pages
             .iter()
