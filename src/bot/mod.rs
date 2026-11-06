@@ -2,6 +2,7 @@ pub(crate) mod command_choices;
 pub(crate) mod confirmations;
 pub(crate) mod format;
 pub(crate) mod handlers;
+pub(crate) mod html_ui;
 pub(crate) mod models;
 pub(crate) mod notification;
 pub(crate) mod personal;
@@ -48,7 +49,7 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         let notice = "Откройте личный чат с ботом / Open a private chat with the bot";
         match update.kind {
             UpdateKind::CallbackQuery(query) => {
-                let _ = bot.answer_callback_query(query.id).text(notice).await;
+                let _ = html_ui::reject(&bot, &query, notice).await;
             }
             UpdateKind::Message(message) => {
                 let _ = bot.send_message(message.chat.id, notice).await;
@@ -78,10 +79,12 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
                 config.sessions.remove(&user_id);
                 drop(_lifecycle);
                 if let UpdateKind::CallbackQuery(query) = &update.kind {
-                    let _ = bot
-                        .answer_callback_query(query.id.clone())
-                        .text("Откройте личный чат с ботом / Open a private chat with the bot")
-                        .await;
+                    let _ = html_ui::reject(
+                        &bot,
+                        query,
+                        "Откройте личный чат с ботом / Open a private chat with the bot",
+                    )
+                    .await;
                 }
                 return None;
             };

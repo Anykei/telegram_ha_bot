@@ -1,0 +1,271 @@
+use super::super::{
+    models::View,
+    personal::PersonalPayload,
+    router::{ControlPayload, Payload},
+};
+use crate::i18n::Language;
+use anyhow::{ensure, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use teloxide::types::InlineKeyboardButtonKind;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Button {
+    pub text: String,
+    pub key: String,
+    pub kind: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Page {
+    pub v: u8,
+    pub rev: String,
+    pub seq: u64,
+    pub lang: String,
+    pub title: String,
+    pub context: String,
+    pub body: String,
+    pub notice: String,
+    pub alert: String,
+    pub rows: Vec<Vec<Button>>,
+    pub read: String,
+    pub prev: Option<String>,
+    pub next: Option<String>,
+    pub page: usize,
+    pub pages: usize,
+}
+impl Page {
+    pub fn json(&self) -> Result<String> {
+        let json = serde_json::to_string(self)?;
+        ensure!(
+            json.len() <= 1000 && !json.contains("\\u0000"),
+            "HTML page exceeds Telegram data budget"
+        );
+        Ok(json)
+    }
+}
+
+pub fn supported(view: &View) -> bool {
+    if view.image.is_some() || view.next_state.is_some() || view.text_page.is_some() {
+        return false;
+    }
+    matches!(
+        &view.payload,
+        Payload::Home
+            | Payload::Help
+            | Payload::Personal(_)
+            | Payload::DeviceDetails { .. }
+            | Payload::Control(
+                ControlPayload::ListRooms
+                    | ControlPayload::RoomsPage { .. }
+                    | ControlPayload::RoomDetail { .. }
+                    | ControlPayload::RoomPage { .. }
+                    | ControlPayload::DeviceControl { .. }
+            )
+    ) && view
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .all(|button| matches!(button.kind, InlineKeyboardButtonKind::CallbackData(_)))
+}
+
+pub struct Prepared {
+    pub pages: Vec<Page>,
+    pub actions: HashMap<String, Payload>,
+}
+fn kind(payload: &Payload) -> &'static str {
+    match payload {
+        Payload::Control(ControlPayload::ConfirmAction { .. }) => "danger",
+        Payload::Control(ControlPayload::QuickAction { cmd, .. })
+            if super::super::router::action_requires_control(cmd) =>
+        {
+            "action"
+        }
+        Payload::Personal(PersonalPayload::SetInterface { .. }) => "action",
+        _ if payload == &payload.for_refresh() => "nav",
+        _ => "action",
+    }
+}
+fn split_text(text: &str, limit: usize) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    for ch in text.chars() {
+        if part.len() + ch.len_utf8() > limit {
+            parts.push(std::mem::take(&mut part));
+        }
+        part.push(ch);
+    }
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    parts
+}
+
+pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
+    ensure!(supported(view), "Screen uses classic presentation");
+    let english = view.lang == Language::En;
+    let title = view.header.clone().unwrap_or_else(|| {
+        match &view.payload {
+            Payload::Home => {
+                if english {
+                    "My home"
+                } else {
+                    "Мой дом"
+                }
+            }
+            Payload::Help => {
+                if english {
+                    "Help"
+                } else {
+                    "Помощь"
+                }
+            }
+            Payload::Personal(PersonalPayload::Interface) => {
+                if english {
+                    "Interface"
+                } else {
+                    "Вид интерфейса"
+                }
+            }
+            Payload::Personal(_) => {
+                if english {
+                    "My settings"
+                } else {
+                    "Мои настройки"
+                }
+            }
+            _ => {
+                if english {
+                    "Home"
+                } else {
+                    "Дом"
+                }
+            }
+        }
+        .into()
+    });
+    let empty = Page {
+        v: 1,
+        rev,
+        seq,
+        lang: if english { "en" } else { "ru" }.into(),
+        title,
+        context: String::new(),
+        body: String::new(),
+        notice: String::new(),
+        alert: String::new(),
+        rows: Vec::new(),
+        read: "read".into(),
+        prev: Some("p9999".into()),
+        next: Some("p9999".into()),
+        page: 9999,
+        pages: 9999,
+    };
+    // Reserve room for non-ASCII labels and pagination; oversized content falls back as a whole.
+    ensure!(empty.json()?.len() <= 600, "Header is too large for HTML");
+    let mut parts: Vec<Page> = Vec::new();
+    let mut current = empty.clone();
+    let mut body = Vec::new();
+    for item in &view.notifications {
+        body.push(format!(
+            "{} {}: {} · {}",
+            item.icon,
+            item.label,
+            item.value,
+            crate::core::presentation::StateFormatter::format_last_update(item.last_update)
+        ));
+    }
+    if !view.text.is_empty() {
+        body.push(view.text.clone());
+    }
+    for (field, text) in [
+        ("alert", view.alert.as_deref().unwrap_or("")),
+        ("notice", view.notice.as_deref().unwrap_or("")),
+        ("body", &body.join("\n\n")),
+    ] {
+        for part in split_text(text, 180) {
+            let mut candidate = current.clone();
+            let target = match field {
+                "alert" => &mut candidate.alert,
+                "notice" => &mut candidate.notice,
+                _ => &mut candidate.body,
+            };
+            target.push_str(&part);
+            let characters = candidate.body.chars().count()
+                + candidate.alert.chars().count()
+                + candidate.notice.chars().count();
+            if candidate.json().is_err() || characters > 200 {
+                if !current.body.is_empty()
+                    || !current.alert.is_empty()
+                    || !current.notice.is_empty()
+                {
+                    parts.push(current);
+                }
+                current = empty.clone();
+                match field {
+                    "alert" => current.alert = part,
+                    "notice" => current.notice = part,
+                    _ => current.body = part,
+                };
+                current.json()?;
+            } else {
+                current = candidate;
+            }
+        }
+    }
+    let mut actions = HashMap::new();
+    for row in &view.kb.inline_keyboard {
+        // Preserve every button, including source rows wider than the widget.
+        for buttons in row.chunks(2) {
+            let mut rendered = Vec::new();
+            for button in buttons {
+                let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                    unreachable!()
+                };
+                let payload = Payload::from_string(data)?;
+                let key = format!("a{}", actions.len());
+                rendered.push(Button {
+                    text: button.text.clone(),
+                    key: key.clone(),
+                    kind: if button.text.starts_with("✓ ") {
+                        "selected"
+                    } else {
+                        kind(&payload)
+                    }
+                    .into(),
+                });
+                actions.insert(key, payload);
+            }
+            let mut candidate = current.clone();
+            candidate.rows.push(rendered.clone());
+            let text_chars = candidate.body.chars().count()
+                + candidate.notice.chars().count()
+                + candidate.alert.chars().count();
+            if candidate.rows.len() > 4
+                || candidate.json().is_err()
+                || (candidate.rows.len() > 2 && text_chars > 80)
+            {
+                parts.push(current);
+                current = empty.clone();
+                current.rows.push(rendered);
+                current.json()?;
+            } else {
+                current = candidate;
+            }
+        }
+    }
+    parts.push(current);
+    ensure!(parts.len() <= 9999, "Too many HTML pages");
+    let pages = parts.len();
+    for (index, page) in parts.iter_mut().enumerate() {
+        page.page = index + 1;
+        page.pages = pages;
+        page.prev = (index > 0).then(|| format!("p{}", index - 1));
+        page.next = (index + 1 < pages).then(|| format!("p{}", index + 1));
+        page.json()?;
+    }
+    Ok(Prepared {
+        pages: parts,
+        actions,
+    })
+}

@@ -1,0 +1,274 @@
+//! HTML is a presentation adapter for existing routes, not a second command engine.
+mod presentation;
+#[cfg(test)]
+mod tests;
+pub(crate) mod transport;
+
+use super::{handlers, models::View, router::Payload};
+use crate::{
+    db,
+    models::{AppConfig, UiMessageMode},
+};
+use anyhow::{Context, Result};
+use dashmap::DashMap;
+use presentation::{Page, Prepared};
+use serde_json::json;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+use teloxide::{
+    prelude::*,
+    types::{CallbackQuery, ChatId, MessageId},
+};
+use tokio_util::sync::CancellationToken;
+
+const HTML: &str = include_str!("../../../ui/widgets/dist/release.html");
+static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+fn sequence() -> u64 {
+    SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone)]
+struct WidgetSession {
+    message: i32,
+    generation: String,
+    view: View,
+    pages: Vec<Page>,
+    actions: HashMap<String, Payload>,
+    index: usize,
+    claimed: bool,
+}
+#[derive(Default)]
+pub struct HtmlUi {
+    pub enabled: bool,
+    sessions: DashMap<u64, WidgetSession>,
+}
+impl HtmlUi {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            ..Default::default()
+        }
+    }
+    pub fn clear(&self, user: u64) {
+        self.sessions.remove(&user);
+    }
+}
+
+pub async fn preferred(config: &AppConfig, user: u64) -> bool {
+    config.html_ui.enabled
+        && db::interface::get(user, &config.db).await.ok()
+            == Some(db::interface::InterfaceMode::Html)
+}
+pub fn eligible(view: &View) -> bool {
+    presentation::prepare(view, "0".repeat(32), 1).is_ok()
+}
+pub async fn reject(bot: &Bot, query: &CallbackQuery, text: &str) -> Result<()> {
+    answer(bot, query, if is_widget(query) { "denied" } else { text }).await
+}
+pub fn is_widget(query: &CallbackQuery) -> bool {
+    query.chat_instance == "html-transport" && query.id.0.starts_with("html:")
+}
+pub async fn answer(bot: &Bot, query: &CallbackQuery, text: &str) -> Result<()> {
+    if is_widget(query) {
+        let body = if text == "denied" {
+            json!({"denied":true})
+        } else {
+            json!({"accepted":true})
+        };
+        transport::call(
+            bot,
+            "answerWidgetQuery",
+            json!({"widget_query_id":&query.id.0[5..],"data":body.to_string()}),
+        )
+        .await?;
+    } else {
+        let reply = bot.answer_callback_query(query.id.clone());
+        if text.is_empty() {
+            reply.await?;
+        } else {
+            reply.text(text).await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn deliver(
+    bot: &Bot,
+    config: &Arc<AppConfig>,
+    user: u64,
+    chat: ChatId,
+    message: Option<MessageId>,
+    view: &View,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Option<MessageId>> {
+    if !presentation::supported(view) {
+        return Ok(None);
+    }
+    let rev: String = sqlx::query_scalar("SELECT lower(hex(randomblob(16)))")
+        .fetch_one(&config.db)
+        .await?;
+    let Prepared { pages, actions } = match presentation::prepare(view, rev, sequence()) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            log::debug!("HTML uses classic fallback: {error}");
+            return Ok(None);
+        }
+    };
+    let index = config
+        .html_ui
+        .sessions
+        .get(&user)
+        .filter(|old| old.view.payload.for_refresh() == view.payload.for_refresh())
+        .map(|old| old.index.min(pages.len() - 1))
+        .unwrap_or(0);
+    let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
+        return Ok(None);
+    };
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(None);
+    }
+    let data = pages[index].json()?;
+    let id = if let Some(message) = message {
+        transport::call(
+            bot,
+            "editMessageWidgetData",
+            json!({"chat_id":chat.0,"message_id":message.0,"chat_data":data}),
+        )
+        .await?;
+        message
+    } else {
+        let caption = if view.lang == crate::i18n::Language::En {
+            "Home · /ui — interface · /classic — Telegram buttons"
+        } else {
+            "Дом · /ui — вид интерфейса · /classic — кнопки Telegram"
+        };
+        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":HTML,"width":360,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
+        MessageId(
+            sent["message_id"]
+                .as_i64()
+                .and_then(|id| i32::try_from(id).ok())
+                .context("Missing widget message ID")?,
+        )
+    };
+    if handlers::view_admission(view, config, user, chat)
+        .await?
+        .is_none()
+    {
+        config.html_ui.clear(user);
+        let _ = transport::call(
+            bot,
+            "editMessageWidgetData",
+            json!({"chat_id":chat.0,"message_id":id.0,"chat_data":"{\"denied\":true}"}),
+        )
+        .await;
+        if message.is_none() {
+            let _ = bot.delete_message(chat, id).await;
+        }
+        return Ok(None);
+    }
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        if message.is_none() {
+            let _ = bot.delete_message(chat, id).await;
+        }
+        return Ok(None);
+    }
+    config.html_ui.sessions.insert(
+        user,
+        WidgetSession {
+            message: id.0,
+            generation,
+            view: view.clone(),
+            pages,
+            actions,
+            index,
+            claimed: false,
+        },
+    );
+    Ok(Some(id))
+}
+
+/// Resolve a server-issued key only after the normal admission middleware.
+/// UI lock serializes claims with delivery, pagination, and view replacement.
+/// Returns None when the widget query has already been answered here.
+pub async fn resolve(
+    bot: &Bot,
+    query: &CallbackQuery,
+    config: &Arc<AppConfig>,
+) -> Result<Option<String>> {
+    let user = query.from.id.0;
+    let Some(message) = query.message.as_ref() else {
+        answer(bot, query, "denied").await?;
+        return Ok(None);
+    };
+    let lock = config.ui_lock_for(user);
+    let _guard = lock.lock().await;
+    let snapshot = config
+        .html_ui
+        .sessions
+        .get(&user)
+        .map(|value| value.clone());
+    let Some(snapshot) = snapshot else {
+        answer(bot, query, "denied").await?;
+        return Ok(None);
+    };
+    let current = config.sessions.get(&user).is_some_and(|session| {
+        session.last_menu_id == message.id().0 && session.ui_message_mode == UiMessageMode::Html
+    });
+    if !config.html_ui.enabled
+        || !current
+        || snapshot.message != message.id().0
+        || !db::user::admission_is_current(user, &snapshot.generation, &config.db).await?
+        || handlers::view_admission(&snapshot.view, config, user, message.chat().id)
+            .await?
+            .is_none()
+    {
+        answer(bot, query, "denied").await?;
+        return Ok(None);
+    }
+    let data = query.data.as_deref().unwrap_or("");
+    let parts: Vec<_> = data.split(':').collect();
+    if data.len() > 64
+        || parts.len() != 3
+        || parts[0] != "r1"
+        || (parts[1] != snapshot.pages[0].rev && parts[2] != "read")
+    {
+        answer(bot, query, "denied").await?;
+        return Ok(None);
+    }
+    if parts[2] == "read" {
+        return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
+    }
+    if snapshot.claimed {
+        answer(bot, query, "").await?;
+        return Ok(None);
+    }
+    if let Some(index) = parts[2]
+        .strip_prefix('p')
+        .and_then(|p| p.parse::<usize>().ok())
+        .filter(|&p| p < snapshot.pages.len())
+    {
+        let mut page = snapshot.pages[index].clone();
+        page.seq = sequence();
+        // Answer contains the same bounded page; no unrelated backend action is executed.
+        transport::call(bot,"answerWidgetQuery",json!({"widget_query_id":&query.id.0[5..],"data":serde_json::to_string(&json!({"page":page}))?})).await?;
+        transport::call(bot,"editMessageWidgetData",json!({"chat_id":message.chat().id.0,"message_id":message.id().0,"chat_data":page.json()?})).await?;
+        if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
+            session.index = index;
+            session.pages[index] = page;
+        }
+        return Ok(None);
+    }
+    let Some(action) = snapshot.actions.get(parts[2]) else {
+        answer(bot, query, "denied").await?;
+        return Ok(None);
+    };
+    if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
+        session.claimed = true;
+    }
+    Ok(Some(action.to_string()))
+}

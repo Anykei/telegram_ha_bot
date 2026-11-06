@@ -6355,6 +6355,7 @@ mod tests {
         let (recording_tx, _recording_rx) =
             tokio::sync::mpsc::channel::<crate::core::camera_recording::RecordingJob>(1);
         let app_config = Arc::new(AppConfig {
+            html_ui: Default::default(),
             ha_client: ha_client.clone(),
             ha_url: paths.ha_url.clone(),
             ha_token: paths.ha_token.clone(),

@@ -25,6 +25,7 @@ pub struct UserSession {
 pub enum UiMessageMode {
     Photo,
     Text,
+    Html,
 }
 
 impl UserSession {
@@ -36,6 +37,7 @@ impl UserSession {
 }
 
 pub struct AppConfig {
+    pub html_ui: crate::bot::html_ui::HtmlUi,
     pub ha_client: Arc<dyn HomeAssistantClient>,
     pub ha_url: String,
     pub ha_token: String,

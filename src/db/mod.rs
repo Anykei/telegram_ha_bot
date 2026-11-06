@@ -11,6 +11,7 @@ pub(crate) mod cameras;
 pub(crate) mod command_choices;
 pub(crate) mod device_event_log;
 pub(crate) mod devices;
+pub(crate) mod interface;
 mod models;
 pub(crate) mod pending_commands;
 pub(crate) mod personal;

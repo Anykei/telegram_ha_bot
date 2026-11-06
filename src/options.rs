@@ -14,6 +14,10 @@ pub struct AppOptions {
     #[serde(default)]
     pub widget_demo_enabled: bool,
 
+    /// Enable HTML presentation in the regular bot, independently of the demo.
+    #[serde(default)]
+    pub html_widgets_enabled: bool,
+
     /// ID владельца бота. Может прийти как число или как строка в кавычках.
     #[serde(deserialize_with = "flexible_u64")]
     pub root_user: u64,

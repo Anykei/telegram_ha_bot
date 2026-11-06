@@ -873,6 +873,7 @@ mod tests {
         let (recording_tx, _recording_rx) =
             tokio::sync::mpsc::channel::<crate::core::camera_recording::RecordingJob>(1);
         Arc::new(AppConfig {
+            html_ui: Default::default(),
             ha_client: Arc::new(FakeHaClient { calls }),
             ha_url: "http://ha".to_string(),
             ha_token: "token".to_string(),

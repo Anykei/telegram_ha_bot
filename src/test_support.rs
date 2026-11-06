@@ -57,6 +57,7 @@ pub async fn config() -> Arc<AppConfig> {
         .unwrap();
     let (camera_recording_tx, _) = tokio::sync::mpsc::channel(32);
     Arc::new(AppConfig {
+        html_ui: Default::default(),
         ha_client: Arc::new(NoNetworkHa),
         ha_url: "http://unused.invalid".into(),
         ha_token: "unused".into(),

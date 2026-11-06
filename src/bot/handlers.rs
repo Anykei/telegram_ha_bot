@@ -47,6 +47,12 @@ pub enum Command {
     Help,
     #[command(description = "Отменить ввод / Cancel input")]
     Cancel,
+    #[command(description = "Выбрать вид интерфейса / Interface")]
+    Ui,
+    #[command(description = "Кнопки Telegram / Classic interface")]
+    Classic,
+    #[command(description = "HTML-интерфейс / HTML interface")]
+    Html,
 }
 
 /// Точка входа для команд. Соответствует Google Standard по очистке ресурсов.
@@ -64,6 +70,46 @@ pub async fn handle_command(
     log::info!("Processing command {:?} for user {}", cmd, user_id);
 
     match cmd {
+        Command::Ui | Command::Classic | Command::Html => {
+            let mut payload = Payload::Personal(super::personal::PersonalPayload::Interface);
+            let unavailable = matches!(cmd, Command::Html) && !config.html_ui.enabled;
+            if !matches!(cmd, Command::Ui) && !unavailable {
+                let mode = if matches!(cmd, Command::Html) {
+                    db::interface::InterfaceMode::Html
+                } else {
+                    db::interface::InterfaceMode::Classic
+                };
+                db::interface::set(user_id, mode, &config.db).await?;
+                payload = config
+                    .sessions
+                    .get(&user_id)
+                    .and_then(|s| Payload::from_string(&s.current_context).ok())
+                    .unwrap_or(Payload::Home)
+                    .for_refresh();
+            } else {
+                dialogue.exit().await?;
+            }
+            let mut view = router(payload, user_id, config.clone()).await?;
+            if unavailable {
+                view.alert = Some(
+                    super::personal::words(
+                        view.lang,
+                        "HTML-интерфейс ещё не включён владельцем бота.",
+                        "HTML interface has not been enabled by the bot owner.",
+                    )
+                    .into(),
+                );
+            }
+            let message = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message) = message {
+                update_view(&bot, chat_id, message, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
         Command::Help => {
             let view = router(Payload::Help, user_id, config.clone()).await?;
             let message_id = config
@@ -625,10 +671,16 @@ async fn apply_command_execution_cancellable(
 /// Основной диспетчер нажатий на кнопки.
 pub async fn handle_callback(
     bot: Bot,
-    q: CallbackQuery,
+    mut q: CallbackQuery,
     config: Arc<AppConfig>,
     dialogue: MyDialogue,
 ) -> Result<()> {
+    if super::html_ui::is_widget(&q) {
+        let Some(data) = super::html_ui::resolve(&bot, &q, &config).await? else {
+            return Ok(());
+        };
+        q.data = Some(data);
+    }
     let data = q.data.as_ref().context("No callback data")?;
     let user_id = q.from.id.0;
     let msg = q.message.as_ref().context("Message missing")?;
@@ -637,10 +689,9 @@ pub async fn handle_callback(
     let payload = match Payload::from_string(data) {
         Ok(payload) => payload,
         Err(_) => {
-            let _ = bot
-                .answer_callback_query(q.id)
-                .text("Кнопка устарела. Откройте меню командой /start.")
-                .await;
+            let _ =
+                super::html_ui::answer(&bot, &q, "Кнопка устарела. Откройте меню командой /start.")
+                    .await;
             return Ok(());
         }
     };
@@ -671,10 +722,8 @@ pub async fn handle_callback(
         {
             Ok(reply) => Some((room, device, reply)),
             Err(_) => {
-                let _ = bot
-                    .answer_callback_query(q.id)
-                    .text(crate::i18n::t(lang, "climate.busy"))
-                    .await;
+                let _ =
+                    super::html_ui::answer(&bot, &q, crate::i18n::t(lang, "climate.busy")).await;
                 return Ok(());
             }
         }
@@ -686,18 +735,19 @@ pub async fn handle_callback(
         || payload.is_device_view()
         || payload.is_navigation_view()
         || temperature_request.is_some();
-    let mut answer = bot.answer_callback_query(q.id);
-    if temperature_request.is_some() {
-        answer = answer.text(crate::i18n::t(lang, "climate.queued"));
+    let answer_text = if temperature_request.is_some() {
+        crate::i18n::t(lang, "climate.queued")
     } else if is_chart {
-        answer = answer.text(crate::i18n::t(lang, "sensor.loading"));
+        crate::i18n::t(lang, "sensor.loading")
     } else if is_background_view {
-        answer = answer.text(crate::i18n::t(lang, "control.loading"));
+        crate::i18n::t(lang, "control.loading")
     } else if matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd))
     {
-        answer = answer.text(crate::i18n::t(lang, "control.accepted"));
-    }
-    let _ = answer.await;
+        crate::i18n::t(lang, "control.accepted")
+    } else {
+        ""
+    };
+    let _ = super::html_ui::answer(&bot, &q, answer_text).await;
 
     if is_background_view {
         dialogue.exit().await?;
@@ -2489,6 +2539,31 @@ async fn edit_existing_view(
     let text = view.get_text();
     let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
+    if super::html_ui::preferred(config, user_id).await && super::html_ui::eligible(view) {
+        if current_mode != Some(UiMessageMode::Html) {
+            return Ok(EditViewResult::ModeChanged);
+        }
+        return match super::html_ui::deliver(
+            bot,
+            config,
+            user_id,
+            chat_id,
+            Some(message_id),
+            view,
+            cancellation,
+        )
+        .await
+        {
+            Ok(Some(_)) => Ok(EditViewResult::Updated(UiMessageMode::Html)),
+            Ok(None) => Ok(EditViewResult::NotModified),
+            Err(error) => Err(error
+                .downcast_ref::<RequestError>()
+                .cloned()
+                .unwrap_or_else(|| {
+                    RequestError::Api(teloxide::ApiError::Unknown(error.to_string()))
+                })),
+        };
+    }
     let edit_mode = if view.text_page.is_some() && view.image.is_none() {
         UiMessageMode::Text
     } else {
@@ -2577,7 +2652,7 @@ async fn reanchor_view_cancellable(
     Ok(())
 }
 
-async fn view_admission(
+pub(super) async fn view_admission(
     view: &View,
     config: &AppConfig,
     user_id: u64,
@@ -2806,8 +2881,45 @@ pub(crate) async fn send_new_view_inner(
     let mut view = view;
     view.admission_generation = Some(generation.clone());
     super::text_pages::prepare(&mut view, user_id, &config).await?;
-    let text = view.get_text();
     let payload_str = view.payload.to_string();
+
+    if super::html_ui::preferred(&config, user_id).await {
+        match super::html_ui::deliver(bot, &config, user_id, chat_id, None, &view, cancellation)
+            .await
+        {
+            Ok(Some(message)) => {
+                crate::core::update_user_state_for_admission(
+                    &config,
+                    user_id,
+                    message.0,
+                    &payload_str,
+                    UiMessageMode::Html,
+                    &generation,
+                )
+                .await;
+                return Ok(true);
+            }
+            Ok(None) => {}
+            Err(error) if error.downcast_ref::<RequestError>().is_some() => return Err(error),
+            Err(error) => log::warn!("HTML delivery failed; using classic view: {error}"),
+        }
+        if view_admission(&view, &config, user_id, chat_id)
+            .await?
+            .is_none()
+            || cancellation.is_some_and(|token| token.is_cancelled())
+        {
+            return Ok(false);
+        }
+        view.notice.get_or_insert_with(|| {
+            super::personal::words(
+                view.lang,
+                "Этот экран открыт обычным видом. Выбор HTML сохранён.",
+                "This screen uses the classic view. Your HTML preference is saved.",
+            )
+            .into()
+        });
+    }
+    let text = view.get_text();
 
     if (view.text_page.is_some() && view.image.is_none())
         || view_mode(&view.get_plain_text()) == UiMessageMode::Text
@@ -2844,6 +2956,7 @@ pub(crate) async fn send_new_view_inner(
             &generation,
         )
         .await;
+        config.html_ui.clear(user_id);
         return Ok(true);
     }
 
@@ -2879,6 +2992,7 @@ pub(crate) async fn send_new_view_inner(
         &generation,
     )
     .await;
+    config.html_ui.clear(user_id);
     Ok(true)
 }
 

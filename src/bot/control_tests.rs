@@ -174,6 +174,7 @@ async fn setup() -> anyhow::Result<(Arc<AppConfig>, Arc<FakeHa>)> {
     });
     let (camera_recording_tx, _) = tokio::sync::mpsc::channel(1);
     let config = Arc::new(AppConfig {
+        html_ui: Default::default(),
         db,
         ha_client: ha.clone(),
         ha_url: "http://unused.invalid".into(),

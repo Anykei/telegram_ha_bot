@@ -199,11 +199,15 @@ pub enum PersonalPayload {
     AddFavorite { action: FavoriteAction },
     RemoveFavorite { id: i64, page: u16 },
     FirstFavorite { id: i64, page: u16 },
+    // Append only: postcard enum positions are encoded in existing Telegram buttons.
+    Interface,
+    SetInterface { mode: db::interface::InterfaceMode },
 }
 impl PersonalPayload {
     pub fn for_refresh(&self) -> Self {
         match self {
             Self::Language { .. } | Self::Quiet { .. } => Self::Settings,
+            Self::SetInterface { .. } => Self::Interface,
             Self::SetSubscription { device, .. } => Self::Subscription { device: *device },
             Self::AddFavorite { .. } => Self::Favorites { page: 0 },
             Self::RemoveFavorite { page, .. } | Self::FirstFavorite { page, .. } => {
@@ -328,6 +332,13 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         );
         match &request {
         PersonalPayload::Language { english } => db::set_user_language(ctx.user_id, if *english { Language::En } else { Language::Ru }, pool).await?,
+        PersonalPayload::SetInterface { mode } => {
+            if *mode == db::interface::InterfaceMode::Classic || ctx.config.html_ui.enabled {
+                db::interface::set(ctx.user_id, *mode, pool).await?;
+            } else {
+                alert = Some(words(ctx.lang, "HTML-интерфейс ещё не включён владельцем бота.", "HTML interface has not been enabled by the bot owner.").into());
+            }
+        },
         PersonalPayload::Quiet { enabled } => db::personal::set_quiet(ctx.user_id, *enabled, pool).await?,
         PersonalPayload::SetSubscription { device, enabled } => {
             match db::personal::set_subscription(ctx.user_id, *device, *enabled, ctx.is_admin, pool).await {
@@ -353,6 +364,28 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     let mut rows = Vec::new();
     let mut next_state = None;
     let text = match &request {
+        PersonalPayload::Interface => {
+            let mode = db::interface::get(ctx.user_id, &ctx.config.db).await?;
+            for (value, name) in [
+                (
+                    db::interface::InterfaceMode::Classic,
+                    w("Обычный", "Classic"),
+                ),
+                (db::interface::InterfaceMode::Html, "HTML"),
+            ] {
+                if value == db::interface::InterfaceMode::Classic || ctx.config.html_ui.enabled {
+                    rows.push(vec![button(
+                        format!("{}{}", if mode == value { "✓ " } else { "" }, name),
+                        PersonalPayload::SetInterface { mode: value },
+                    )]);
+                }
+            }
+            rows.push(vec![button(
+                t(ctx.lang, "common.back"),
+                PersonalPayload::Settings,
+            )]);
+            w("Вид интерфейса\n\nВыбор сохраняется для вашего аккаунта. Разделы, ещё не перенесённые в HTML, открываются обычным видом. /classic — вернуться к кнопкам Telegram.", "Interface\n\nYour preference is saved. Sections without HTML support open in the classic view. /classic returns to Telegram buttons.").into()
+        }
         PersonalPayload::Settings | PersonalPayload::QuietInput => {
             let schedule =
                 db::user_notification_schedule::get(ctx.user_id as i64, &ctx.config.db).await?;
@@ -373,6 +406,13 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 button("Русский", PersonalPayload::Language { english: false }),
                 button("English", PersonalPayload::Language { english: true }),
             ]);
+            rows.insert(
+                0,
+                vec![button(
+                    w("Вид интерфейса", "Interface"),
+                    PersonalPayload::Interface,
+                )],
+            );
             rows.push(vec![button(
                 if enabled {
                     w("Выключить тихие часы", "Disable quiet hours")

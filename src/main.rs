@@ -7,6 +7,7 @@ use teloxide::dispatching::dialogue::InMemStorage;
 use teloxide::dispatching::Dispatcher;
 use teloxide::dptree;
 use teloxide::error_handlers::LoggingErrorHandler;
+use teloxide::prelude::Requester;
 use teloxide::types::{ChatId, MessageId};
 use teloxide::update_listeners::Polling;
 use tokio::sync::mpsc;
@@ -86,6 +87,7 @@ async fn main() -> Result<()> {
     let (recording_tx, recording_rx) = mpsc::channel::<core::camera_recording::RecordingJob>(32);
 
     let app_config = Arc::new(AppConfig {
+        html_ui: crate::bot::html_ui::HtmlUi::new(options.html_widgets_enabled),
         ha_client: ha_client.clone(),
         ha_url: paths.ha_url.clone(),
         ha_token: paths.ha_token.clone(),
@@ -245,15 +247,32 @@ async fn main() -> Result<()> {
     let shutdown_signal_handle =
         spawn_shutdown_signal_handler(main_cancel_token, _bot.clone(), app_config.clone());
 
-    let update_listener = Polling::builder(_bot.clone())
-        .timeout(Duration::from_secs(30))
-        .delete_webhook()
-        .await
-        .build();
-    let bot_task = dispatcher.dispatch_with_listener(
-        update_listener,
-        LoggingErrorHandler::with_custom_text("An error from the update listener"),
-    );
+    let bot_task = async {
+        if app_config.html_ui.enabled {
+            // One polling stream handles both transports; Teloxide cannot decode widget_query.
+            if let Err(error) = _bot.delete_webhook().await {
+                log::warn!("Cannot clear Telegram webhook: {error}");
+            }
+            dispatcher
+                .dispatch_with_listener(
+                    bot::html_ui::transport::listener(_bot.clone()),
+                    LoggingErrorHandler::with_custom_text("HTML update listener error"),
+                )
+                .await;
+        } else {
+            let update_listener = Polling::builder(_bot.clone())
+                .timeout(Duration::from_secs(30))
+                .delete_webhook()
+                .await
+                .build();
+            dispatcher
+                .dispatch_with_listener(
+                    update_listener,
+                    LoggingErrorHandler::with_custom_text("An error from the update listener"),
+                )
+                .await;
+        }
+    };
 
     tokio::select! {
         _ = bot_task => info!("Bot task completed successfully."),
