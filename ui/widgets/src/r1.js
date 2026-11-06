@@ -8,6 +8,7 @@ import { validGraph, renderGraph } from './graph-render.js';
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
+  let frame = 0, painted = 0;
   let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
@@ -52,6 +53,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     node.setAttribute('data-key', b.key);
     if (b.kind === 'selected') node.setAttribute('aria-pressed', 'true');
     const label = document.createElement('span'); label.textContent = b.text; node.appendChild(label);
+    if (!GRAPH && awaiting) node.appendChild(document.createElement('i'));
     disable(node, unavailable || blocked(b.key === data.read));
     node.addEventListener('click', () => !unavailable && send(b.key));
     return node;
@@ -143,7 +145,26 @@ import { validGraph, renderGraph } from './graph-render.js';
       mount([]); hide('r-local', true); hide('r-server', true);
       feedback(w(6));
     }
+    if (!GRAPH && !frame) frame = requestAnimationFrame(spin);
   }
+  // Update a real element so progress does not rely on native CSS animation
+  // playback. One frame loop serves all currently mounted rings.
+  let reduced = false;
+  if (!GRAPH) {
+    const motion = matchMedia('(prefers-reduced-motion:reduce)');
+    reduced = motion.matches;
+    motion.addEventListener('change', event => { reduced = event.matches; });
+  }
+  const spin = GRAPH ? null : now => {
+    frame = 0;
+    const rings = card.querySelectorAll('.r-wait i');
+    if (!rings.length) return;
+    if (now - painted >= 32 && !reduced) {
+      rings.forEach(ring => { ring.style.transform = 'rotate(' + now % 1000 * .36 + 'deg)'; });
+      painted = now;
+    }
+    frame = requestAnimationFrame(spin);
+  };
   function stopWait() { waiting = false; clearTimeout(timer); }
   function complete() { if (pendingRead) uncertain = false; pendingRead = false; stopWait(); note = ''; }
   function fail() { pendingRead = false; stopWait(); uncertain = true; note = w(4); }

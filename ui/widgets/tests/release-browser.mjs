@@ -28,7 +28,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       document.querySelectorAll('[data-width]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.width)===width)));
       document.getElementById('fixture').dispatchEvent(new Event('change'));
     })`);
-    await until(`${get('release')} && ${get('r-feedback')}`);
+    try {
+      await until(`${get('release')} && ${get('r-feedback')} && ${doc}.documentElement.getAttribute('data-theme') === ${JSON.stringify(theme)}`);
+    } catch (error) { throw Error(`${id}/${theme}/${width}: widget did not initialize`, {cause:error}); }
   }
   async function dimensions(label) {
     const result = await evaluate(`({
@@ -96,7 +98,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     for (const width of [200, 320, 360, 430]) {
       for (const fixture of fixtures) {
         await reload(fixture.id, {theme, width});
-        assert.equal(await evaluate(`${doc}.documentElement.getAttribute('data-theme')`), theme);
+        assert.equal(await evaluate(`${doc}.documentElement.getAttribute('data-theme')`), theme, `${fixture.id}/${theme}/${width}: widget initialized`);
         if (fixture.page.b && (['device','climate'].includes(fixture.page.kind) || fixture.home?.primary) && fixture.page.page===1 && width>=320) {
           assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent])`), visibleActions(fixture.page), `${fixture.id}/${theme}/${width}: all primary controls on the first local part`);
           assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
@@ -195,17 +197,36 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   // new revisions and blocks only that device after the transport has completed.
   for (const theme of ['light', 'dark']) for (const width of [200, 360]) {
     await reload('room', {theme, width}); await controlRequests();
+    // Reproduce a client that never paints CSS animations. Progress must still
+    // advance via a real element, using one bounded frame loop and no requests.
+    await evaluate(`(() => {
+      const style=${doc}.createElement('style');
+      style.textContent='*,::before,::after{animation:none!important;transition:none!important}';
+      ${doc}.head.appendChild(style);
+      const w=${win}, raf=w.requestAnimationFrame.bind(w);
+      w.__frames={pending:0,max:0};
+      w.requestAnimationFrame=callback=>{
+        w.__frames.pending++;
+        w.__frames.max=Math.max(w.__frames.max,w.__frames.pending);
+        return raf(time=>{w.__frames.pending--;callback(time)});
+      };
+    })()`);
     const stable = await geometry();
     await click('lamp_on'); await click('lamp_on');
     assert.equal(await evaluate(`${win}.__requests.length`), 1);
     assert.equal(await evaluate(`${button('lamp_on')}.getAttribute('aria-busy')`), 'true');
-    const spinner = `${win}.getComputedStyle(${button('lamp_on')},'::before')`;
-    assert.equal(await evaluate(`${spinner}.animationName`), 'wait');
-    assert.equal(await evaluate(`${spinner}.width`), '24px');
-    assert.equal(await evaluate(`${spinner}.height`), '24px');
+    const ring = `${button('lamp_on')}.querySelector('i')`;
+    const spinner = `${win}.getComputedStyle(${ring})`;
+    assert.equal(await evaluate(`${spinner}.animationName`), 'none');
+    assert.equal(await evaluate(`${spinner}.width`), '28px');
+    assert.equal(await evaluate(`${spinner}.height`), '28px');
     assert.equal(await evaluate(`${win}.getComputedStyle(${button('lamp_on')}.firstChild).opacity`), '0');
-    const rotation = await evaluate(`${spinner}.rotate`);
-    await until(`${spinner}.rotate !== ${JSON.stringify(rotation)}`);
+    const rotation = await evaluate(`${ring}.style.transform`);
+    await until(`${ring}.style.transform !== ${JSON.stringify(rotation)}`);
+    assert.equal(await evaluate(`(() => {
+      const r=${ring}.getBoundingClientRect(), b=${button('lamp_on')}.getBoundingClientRect();
+      return Math.abs(r.x+r.width/2-b.x-b.width/2)<1 && Math.abs(r.y+r.height/2-b.y-b.height/2)<1;
+    })()`), true, 'Ring stays centered while rotating');
     assert.deepEqual(await geometry(), stable, 'Immediate progress keeps button geometry');
     await reply({accepted:true});
     const waiting = rows(fixtures.find(f=>f.id==='room').page).map(row=>row.map(b=>b.key==='lamp_on'?{...b,kind:'wait'}:b));
@@ -217,15 +238,21 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await click('lamp_on');
     assert.equal(await evaluate(`${win}.__requests.length`), 1, 'New revision cannot repeat a pending action');
     await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
-    assert.equal(await evaluate(`${spinner}.animationName`), 'none');
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+    const reducedRotation = await evaluate(`${ring}.style.transform`);
+    await evaluate('new Promise(resolve=>setTimeout(resolve,180))');
+    assert.equal(await evaluate(`${ring}.style.transform`), reducedRotation, 'Reduced motion stops rotation');
     assert.deepEqual(await geometry(), stable, 'Reduced motion also preserves button geometry');
     await command('Emulation.setEmulatedMedia', {features:[]});
+    await until(`${ring}.style.transform !== ${JSON.stringify(reducedRotation)}`);
     if(width===360) await capture('release-pending-'+theme);
     const unknown = waiting.map(row=>row.map(b=>b.key==='lamp_on'?{...b,kind:'uncertain'}:b));
     await push({seq:102,rev:'d'.repeat(32),rows:unknown});
     assert.equal(await evaluate(disabled('lamp_on')), 'true');
     assert.equal(await evaluate(`${button('lamp_on')}.getAttribute('aria-busy')`), 'false');
-    assert.equal(await evaluate(`${spinner}.content`), 'none', 'Timeout removes the spinner');
+    assert.equal(await evaluate(ring), null, 'Timeout removes the spinner');
+    await until(`${win}.__frames.pending === 0`);
+    assert.equal(await evaluate(`${win}.__frames.max`), 1, 'New revisions never create overlapping animation loops');
     assert.equal(await evaluate(`${win}.getComputedStyle(${button('lamp_on')}.firstChild).opacity`), '1');
     assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('Нет ответа')`));
     assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')`), 'false');
@@ -233,7 +260,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.equal(await evaluate(`${win}.__requests.length`), 1, 'Timeout never retries control');
     await push({seq:103,rev:'e'.repeat(32),rows:waiting.map(row=>row.map(b=>b.key==='lamp_on'?{text:'Выключить',key:'lamp_off',kind:'action'}:b))});
     assert.equal(await evaluate(disabled('lamp_off')), 'false', 'Confirmed state enables the new command');
+    await until(`${win}.__frames.pending === 0`);
     assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+    await click('lamp_off'); await reply({accepted:true});
+    await push({seq:104,rev:'f'.repeat(32),rows:waiting.map(row=>row.map(b=>b.key==='lamp_on'?{text:'Выключить',key:'lamp_off',kind:'wait'}:b))});
+    await until(`${button('lamp_off')}.querySelector('i').style.transform !== ''`);
+    await push({seq:105,rev:'a'.repeat(32),rows:rows(fixtures.find(f=>f.id==='room').page)});
+    await until(`${win}.__frames.pending === 0`);
+    assert.equal(await evaluate(disabled('lamp_on')), 'false', 'Direct state confirmation stops progress and enables control');
+    assert.equal(await evaluate(`${win}.__requests.length`), 2, 'Frames and state updates never send extra requests');
     await dimensions('pending/'+theme+'/'+width);
   }
   // Telegram reserves space for native message metadata when there is no caption.
