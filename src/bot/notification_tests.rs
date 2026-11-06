@@ -127,3 +127,123 @@ async fn explicit_zero_keeps_notification_messages() -> Result<()> {
         .is_err());
     Ok(())
 }
+
+async fn subscriber() -> Result<Arc<AppConfig>> {
+    let mut config = crate::test_support::config().await;
+    Arc::get_mut(&mut config).unwrap().html_ui.enabled = true;
+    crate::db::add_user(42, &config.db).await?;
+    crate::db::rooms::sync_rooms_from_ha("hall", "Коридор", &config.db).await?;
+    crate::db::devices::sync_device("light.hall", "hall", "Свет", "light", &config.db).await?;
+    crate::db::subscriptions::toggle_hidden("light.hall", &config.db).await?;
+    crate::db::subscriptions::toggle_subscription(42, "light.hall", &config.db).await?;
+    assert_eq!(
+        crate::db::subscriptions::get_subscribers("light.hall", &config.db).await?,
+        vec![42]
+    );
+    Ok(config)
+}
+
+#[tokio::test]
+async fn delivery_rechecks_html_preference_and_preserves_admission_and_subscription_checks(
+) -> Result<()> {
+    use crate::db::interface::{set, InterfaceMode};
+    use crate::models::NotificationScope;
+    let config = subscriber().await?;
+    let mut api = Telegram::new().await?;
+    let generation = crate::db::admission_generation(42, &config.db)
+        .await?
+        .unwrap();
+    let scope = NotificationScope::Device("light.hall".into());
+
+    // Capture the delivery context in classic mode, then change the preference
+    // before dispatch. Suppression works without an active widget/session too.
+    set(42, InterfaceMode::Html, &config.db).await?;
+    for critical in [false, true] {
+        deliver_notification(
+            api.bot.clone(),
+            config.clone(),
+            42,
+            generation.clone(),
+            "ВКЛ".into(),
+            critical,
+            scope.clone(),
+        )
+        .await?;
+        assert!(api.requests.try_recv().is_err());
+    }
+
+    set(42, InterfaceMode::Classic, &config.db).await?;
+    deliver_notification(
+        api.bot.clone(),
+        config.clone(),
+        42,
+        generation.clone(),
+        "ВЫКЛ".into(),
+        false,
+        scope.clone(),
+    )
+    .await?;
+    assert_eq!(api.request().await?.1["text"], "ВЫКЛ");
+
+    deliver_notification(
+        api.bot.clone(),
+        config.clone(),
+        42,
+        "revoked".into(),
+        "ВКЛ".into(),
+        false,
+        scope.clone(),
+    )
+    .await?;
+    assert!(api.requests.try_recv().is_err());
+    crate::db::subscriptions::toggle_subscription(42, "light.hall", &config.db).await?;
+    deliver_notification(
+        api.bot.clone(),
+        config,
+        42,
+        generation,
+        "ВКЛ".into(),
+        false,
+        scope,
+    )
+    .await?;
+    assert!(api.requests.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn html_state_messages_do_not_occupy_delivery_queue() -> Result<()> {
+    use crate::core::notification_delivery::{enqueue, hold_delivery};
+    use crate::db::interface::{set, InterfaceMode};
+    use crate::models::NotificationScope;
+    let mut config = subscriber().await?;
+    let _held = hold_delivery(&config, 4);
+    set(42, InterfaceMode::Html, &config.db).await?;
+    let mut data = NotificationData {
+        recipients: vec![42],
+        human_state: "ВКЛ".into(),
+        critical: false,
+        scope: NotificationScope::Device("light.hall".into()),
+    };
+    enqueue(&config, data.clone()).await?;
+    data.critical = true;
+    enqueue(&config, data.clone()).await?;
+    assert_eq!(config.runtime_status.read().await.notifications_queued, 0);
+    assert_eq!(config.runtime_status.read().await.notification_overflow, 0);
+
+    data.scope = NotificationScope::Camera(1);
+    enqueue(&config, data.clone()).await?;
+    assert_eq!(config.runtime_status.read().await.notifications_queued, 1);
+
+    data.scope = NotificationScope::Device("light.hall".into());
+    set(42, InterfaceMode::Classic, &config.db).await?;
+    enqueue(&config, data.clone()).await?;
+    assert_eq!(config.runtime_status.read().await.notifications_queued, 2);
+
+    // A stored HTML preference must not silence classic-only deployments.
+    set(42, InterfaceMode::Html, &config.db).await?;
+    Arc::get_mut(&mut config).unwrap().html_ui.enabled = false;
+    enqueue(&config, data).await?;
+    assert_eq!(config.runtime_status.read().await.notifications_queued, 3);
+    Ok(())
+}

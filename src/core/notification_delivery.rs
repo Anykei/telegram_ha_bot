@@ -32,12 +32,28 @@ struct QueuedNotification {
     scope: NotificationScope,
 }
 
+/// Device transitions are visible in Home's status panel in HTML mode. Camera
+/// recording notices have their own lifecycle and are not state duplicates.
+pub(crate) async fn suppress_device_message(
+    config: &AppConfig,
+    user_id: u64,
+    scope: &NotificationScope,
+) -> anyhow::Result<bool> {
+    Ok(config.html_ui.enabled
+        && matches!(scope, NotificationScope::Device(_))
+        && crate::db::interface::get(user_id, &config.db).await?
+            == crate::db::interface::InterfaceMode::Html)
+}
+
 pub async fn enqueue(config: &AppConfig, data: NotificationData) -> anyhow::Result<()> {
     for recipient in data.recipients {
         let user_id = u64::try_from(recipient)?;
         let Some(generation) = crate::db::admission_generation(user_id, &config.db).await? else {
             continue;
         };
+        if suppress_device_message(config, user_id, &data.scope).await? {
+            continue;
+        }
         let item = QueuedNotification {
             user_id,
             generation,

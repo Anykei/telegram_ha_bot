@@ -418,6 +418,43 @@ mod tests {
     use std::collections::HashSet;
 
     #[tokio::test]
+    async fn html_state_events_keep_home_status_and_refresh_without_chat_messages(
+    ) -> anyhow::Result<()> {
+        let mut config = crate::test_support::config().await;
+        Arc::get_mut(&mut config).unwrap().html_ui.enabled = true;
+        db::add_user(42, &config.db).await?;
+        db::interface::set(42, db::interface::InterfaceMode::Html, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("hall", "Коридор", &config.db).await?;
+        db::devices::sync_device("light.hall", "hall", "Свет", "light", &config.db).await?;
+        db::subscriptions::toggle_hidden("light.hall", &config.db).await?;
+        db::subscriptions::toggle_subscription(42, "light.hall", &config.db).await?;
+        config.sessions.insert(42, session_for(Payload::Home));
+        let _held = super::super::notification_delivery::hold_delivery(&config, 4);
+        let refreshes = LatestRefreshes::default();
+        process_and_dispatch(
+            config.clone(),
+            NotifyEvent {
+                received_at: Utc::now(),
+                entity_id: "light.hall".into(),
+                old_state: "off".into(),
+                new_state: "on".into(),
+                friendly_name: "Свет".into(),
+                device_class: None,
+            },
+            &refreshes,
+        )
+        .await?;
+        let alerts =
+            db::device_event_log::EventLogger::fetch_active_alerts(42, 5, &config.db).await?;
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].last_state, "on");
+        assert_eq!(refreshes.len(), 1);
+        assert_eq!(config.runtime_status.read().await.notifications_queued, 0);
+        assert_eq!(config.runtime_status.read().await.notification_overflow, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn blocked_telegram_does_not_delay_thousand_event_transitions() {
         let config = crate::test_support::config().await;
         db::add_user(42, &config.db).await.unwrap();

@@ -58,9 +58,9 @@ pub(crate) async fn deliver_notification(
         return Ok(());
     }
 
-    let allowed = match scope {
+    let allowed = match &scope {
         crate::models::NotificationScope::Device(entity) => {
-            crate::db::subscriptions::get_subscribers(&entity, &config.db)
+            crate::db::subscriptions::get_subscribers(entity, &config.db)
                 .await?
                 .contains(&user_id)
         }
@@ -68,14 +68,17 @@ pub(crate) async fn deliver_notification(
             crate::db::cameras::get_accessible_camera(
                 user_id as u64,
                 user_id as u64 == config.root_user,
-                camera,
+                *camera,
                 &config.db,
             )
             .await?
             .is_some()
         }
     };
-    if !allowed || !crate::db::admission_is_current(user_id as u64, &generation, &config.db).await?
+    if !allowed
+        || !crate::db::admission_is_current(user_id as u64, &generation, &config.db).await?
+        // A queued message may outlive a switch from classic to HTML.
+        || crate::core::notification_delivery::suppress_device_message(&config, user_id as u64, &scope).await?
     {
         return Ok(());
     }
