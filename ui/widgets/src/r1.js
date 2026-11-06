@@ -3,7 +3,7 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновляем экран…', 'Нет ответа. Нажмите «Обновить».', 'Доступ закрыт', 'Откройте /classic в личном чате с ботом.', 'Страница', 'Часть', 'Назад'],
+    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Нажмите «Обновить».', 'Доступ закрыт', 'Откройте /classic в личном чате с ботом.', 'Страница', 'Часть', 'Назад'],
     en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Press Refresh.', 'Access denied', 'Open /classic in your private chat with the bot.', 'Page', 'Part', 'Back']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
@@ -32,7 +32,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     }
     if (!valid(v)) return false;
     if (data && v.seq < data.seq) return true;
-    if (!data || v.seq > data.seq) local = 0;
+    if (!data || !v.s || v.s !== data.s || v.page !== data.page) local = 0;
     data = v; lang = v.lang;
     return true;
   }

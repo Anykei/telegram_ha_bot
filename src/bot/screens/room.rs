@@ -219,6 +219,7 @@ pub async fn render_page(
         header: Some(format!("{header_label} · {room_display}")),
         html_title: Some(room_display),
         html_context: Some(crate::bot::personal::words(ctx.lang, "Комнаты", "Rooms").into()),
+        html_summary: Some(String::new()),
         alert: failed.then(|| t(ctx.lang, "control.ha_unavailable").into()),
         text: if empty {
             t(ctx.lang, "control.empty_room").into()

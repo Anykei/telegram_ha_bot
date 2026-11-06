@@ -20,6 +20,9 @@ pub struct Page {
     pub v: u8,
     pub rev: String,
     pub seq: u64,
+    /// Stable screen identity; a new revision does not imply navigation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub s: String,
     pub lang: String,
     pub title: String,
     pub context: String,
@@ -273,6 +276,7 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         v: 1,
         rev,
         seq,
+        s: view.payload.for_refresh().to_string(),
         lang: if english { "en" } else { "ru" }.into(),
         title,
         context: view.html_context.clone().unwrap_or_default(),
@@ -345,6 +349,13 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         .html_summary
         .as_deref()
         .filter(|_| view.text_page.is_none() && view.next_state.is_none());
+    // Room controls must not move when a short command receipt appears. Reserve
+    // its bytes on every control page, then attach it after partitioning rows.
+    let room_notice = matches!(
+        view.payload,
+        Payload::Control(ControlPayload::RoomDetail { .. } | ControlPayload::RoomPage { .. })
+    ) && view.text_page.is_none()
+        && serde_json::to_string(view.notice.as_deref().unwrap_or(""))?.len() <= 122;
     for (field, text) in [
         (
             "alert",
@@ -356,7 +367,7 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         ),
         (
             "notice",
-            if view.text_page.is_some() {
+            if view.text_page.is_some() || room_notice {
                 ""
             } else {
                 view.notice.as_deref().unwrap_or("")
@@ -425,6 +436,7 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 + candidate.hint.chars().count();
             if candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
                 || candidate.json().is_err()
+                || (room_notice && candidate.json()?.len() > 880)
                 || (candidate.rows.len() > 2 && text_chars > 80)
             {
                 parts.push(current);
@@ -448,6 +460,9 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     ensure!(parts.len() <= 9999, "Too many HTML pages");
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
+        if room_notice && !page.rows.is_empty() {
+            page.notice = view.notice.clone().unwrap_or_default();
+        }
         page.page = index + 1;
         page.pages = pages;
         page.prev = (index > 0).then(|| format!("p{}", index - 1));

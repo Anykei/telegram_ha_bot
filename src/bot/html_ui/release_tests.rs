@@ -8,6 +8,9 @@ mod graph_tests;
 #[path = "home_tests.rs"]
 mod home_tests;
 
+#[path = "interaction_tests.rs"]
+mod interaction_tests;
+
 async fn mock_config() -> Result<(Arc<AppConfig>, Arc<crate::ha::mock::MockHa>)> {
     let mut config = crate::test_support::config().await;
     let (tx, _) = tokio::sync::mpsc::channel(100);

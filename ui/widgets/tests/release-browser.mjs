@@ -183,6 +183,22 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await push({seq:100,rev:'a'.repeat(32)});
   await until(`${disabled('temp_up')} === 'false'`);
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+  // A newer state of the same server page keeps the user's local part.
+  // Changing the screen or the server page still starts at the first part.
+  await reload('long', {width:200});
+  await push({s:'room-1',seq:100});
+  await evaluate(`${get('r-local-next')}.click()`);
+  const partBefore = await evaluate(`${get('r-local-count')}.textContent`);
+  const textBefore = await evaluate(`${get('r-content')}.textContent`);
+  assert.ok(partBefore.includes(' 2/'));
+  await push({s:'room-1',seq:101,rev:'b'.repeat(32)});
+  assert.equal(await evaluate(`${get('r-local-count')}.textContent`),partBefore);
+  assert.equal(await evaluate(`${get('r-content')}.textContent`),textBefore);
+  await push({s:'room-2',seq:102,rev:'c'.repeat(32)});
+  assert.ok(await evaluate(`${get('r-local-count')}.textContent.includes(' 1/')`));
+  await evaluate(`${get('r-local-next')}.click()`);
+  await push({s:'room-2',seq:103,page:2,pages:2});
+  assert.ok(await evaluate(`${get('r-local-count')}.textContent.includes(' 1/')`));
   // Both wire shapes together, malformed tuples and invalid typed values fail closed.
   for (const shape of [
     {rows:[],b:[]}, {b:null}, {b:[null]}, {b:[[{}]]}, {b:[[['short','key']]]},

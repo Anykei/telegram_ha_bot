@@ -42,6 +42,7 @@ struct WidgetSession {
     actions: HashMap<String, Payload>,
     index: usize,
     claimed: bool,
+    anchor: Option<Payload>,
 }
 #[derive(Default)]
 pub struct HtmlUi {
@@ -137,7 +138,19 @@ pub async fn deliver(
         .sessions
         .get(&user)
         .filter(|old| old.view.payload.for_refresh() == view.payload.for_refresh())
-        .map(|old| old.index.min(pages.len() - 1))
+        .map(|old| {
+            old.anchor
+                .as_ref()
+                .and_then(|anchor| {
+                    pages.iter().position(|page| {
+                        page.rows
+                            .iter()
+                            .flatten()
+                            .any(|button| actions.get(&button.key) == Some(anchor))
+                    })
+                })
+                .unwrap_or_else(|| old.index.min(pages.len() - 1))
+        })
         .unwrap_or(0);
     let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
         return Ok(None);
@@ -211,6 +224,7 @@ pub async fn deliver(
             actions,
             index,
             claimed: false,
+            anchor: None,
         },
     );
     Ok(Some(id))
@@ -300,6 +314,18 @@ pub async fn resolve(
     };
     if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
         session.claimed = true;
+        if let Payload::Control(super::router::ControlPayload::QuickAction { room, device, cmd }) =
+            action
+        {
+            if super::router::action_requires_control(cmd) {
+                session.anchor = Some(Payload::Control(
+                    super::router::ControlPayload::DeviceControl {
+                        room: *room,
+                        device: *device,
+                    },
+                ));
+            }
+        }
     }
     // Acknowledge before handing off to handlers that may wait for HA. A failed
     // ACK keeps the claim consumed; recovery must read state, never retry a write.
