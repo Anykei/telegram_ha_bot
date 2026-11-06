@@ -232,6 +232,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload('long', {width});
     await evaluate(`${win}.previewSetSafeArea(64)`);
     assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`), '64px');
+    assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingLeft`), width === 200 ? '12px' : '16px');
     await assertPreserved(fixtures.find(f=>f.id==='long').page, `safe-area/${width}`);
     const lastBottom = await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))`);
     assert.ok(lastBottom <= 536, 'Native metadata does not cover buttons');
