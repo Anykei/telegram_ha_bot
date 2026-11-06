@@ -52,11 +52,31 @@ async fn main() -> Result<()> {
     info!("🚀 Starting Home Assistant Telegram Bot v{}.", APP_VERSION);
 
     let paths = EnvPaths::load();
-    let options = AppOptions::load(&paths.options).context("Error load options.json.")?;
+    let mut options = AppOptions::load(&paths.options).context("Error load options.json.")?;
+    anyhow::ensure!(
+        !(options.widget_demo_enabled && options.ha_mock_enabled),
+        "Use widget_demo_enabled=false for the regular bot with ha_mock_enabled=true"
+    );
     if options.widget_demo_enabled {
         return widget_demo::run(&options, &paths.options).await;
     }
-    let paths = paths.validate().context("Error checking env variables.")?;
+    let paths = if options.ha_mock_enabled {
+        let paths = paths.with_mock_ha()?;
+        // Voice recognition needs a real HA pipeline; typed commands still work.
+        options.voice_enabled = false;
+        options.voice_command_engine = options::VoiceCommandEngine::LocalParser;
+        options.camera_recording_storage_root = paths
+            .database
+            .with_extension("recordings")
+            .to_string_lossy()
+            .into_owned();
+        info!("HA MOCK: regular bot, virtual devices, no connection to Home Assistant");
+        paths
+    } else {
+        paths
+    }
+    .validate()
+    .context("Error checking env variables.")?;
     info!(
         "Startup config: db={}, migrations={}, ha_url={}, default_language={:?}, voice_enabled={}, recording_storage={}, recording_parallel_jobs={}",
         paths.db_url(),
@@ -77,12 +97,27 @@ async fn main() -> Result<()> {
     )
     .await
     .context("Error initializing database pool.")?;
+    let new_root = !db::user_exists(options.root_user, &db_pool).await;
     db::add_user(options.root_user, &db_pool)
         .await
         .context("Error initializing root admission")?;
 
-    let ha_client: Arc<dyn ha::HomeAssistantClient> =
-        Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()));
+    if options.ha_mock_enabled && options.html_widgets_enabled && new_root {
+        db::interface::set(
+            options.root_user,
+            db::interface::InterfaceMode::Html,
+            &db_pool,
+        )
+        .await?;
+    }
+    let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
+    let ha_client: Arc<dyn ha::HomeAssistantClient> = if options.ha_mock_enabled {
+        let mock = ha::mock::MockHa::open(db_pool.clone(), tx.clone()).await?;
+        mock.seed_inventory().await?;
+        Arc::new(mock)
+    } else {
+        Arc::new(ha::init(paths.ha_url.clone(), paths.ha_token.clone()))
+    };
 
     let (recording_tx, recording_rx) = mpsc::channel::<core::camera_recording::RecordingJob>(32);
 
@@ -188,13 +223,18 @@ async fn main() -> Result<()> {
             }
         };
 
-    let (tx, rx) = mpsc::channel::<ha::NotifyEvent>(100);
-    let event_listener_handle = ha::spawn_event_listener(
-        paths.ha_url.clone(),
-        paths.ha_token.clone(),
-        cancel_token.clone(),
-        tx,
-    );
+    let event_listener_handle = if options.ha_mock_enabled {
+        // Mock mutations feed the same notification/live-refresh pipeline directly.
+        drop(tx);
+        tokio::spawn(async {})
+    } else {
+        ha::spawn_event_listener(
+            paths.ha_url.clone(),
+            paths.ha_token.clone(),
+            cancel_token.clone(),
+            tx,
+        )
+    };
 
     info!("✅ Run Dispatcher...");
 

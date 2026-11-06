@@ -50,6 +50,26 @@ impl AppConfig {
             .flatten()
             .unwrap_or(self.default_language);
 
+        if self.ha_client.is_mock() {
+            items.push(HeaderItem {
+                icon: "🧪".into(),
+                label: if lang == crate::i18n::Language::Ru {
+                    "Тестовый дом"
+                } else {
+                    "Test home"
+                }
+                .into(),
+                value: if lang == crate::i18n::Language::Ru {
+                    "Устройства виртуальные"
+                } else {
+                    "Virtual devices"
+                }
+                .into(),
+                last_update: Utc::now(),
+                ..Default::default()
+            });
+        }
+
         let window_mins = self.ttl_notifications;
 
         let runtime_status = self.runtime_status.read().await.clone();

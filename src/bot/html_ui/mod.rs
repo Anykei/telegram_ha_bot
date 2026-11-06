@@ -142,7 +142,13 @@ pub async fn deliver(
         .await?;
         message
     } else {
-        let caption = if view.lang == crate::i18n::Language::En {
+        let caption = if config.ha_client.is_mock() {
+            if view.lang == crate::i18n::Language::En {
+                "Test home · Virtual devices · /ui — interface"
+            } else {
+                "Тестовый дом · Устройства виртуальные · /ui — вид интерфейса"
+            }
+        } else if view.lang == crate::i18n::Language::En {
             "Home · /ui — interface · /classic — Telegram buttons"
         } else {
             "Дом · /ui — вид интерфейса · /classic — кнопки Telegram"

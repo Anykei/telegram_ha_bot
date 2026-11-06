@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Entity {
     pub entity_id: String,
     #[serde(default)]
@@ -13,7 +13,7 @@ pub struct Entity {
     pub attributes: EntityAttributes,
 }
 
-#[derive(Default, Deserialize, Debug, Clone)]
+#[derive(Default, Deserialize, Serialize, Debug, Clone)]
 pub struct EntityAttributes {
     pub current_temperature: Option<f32>,
     pub temperature: Option<f32>,

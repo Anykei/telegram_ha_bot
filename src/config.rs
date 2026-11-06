@@ -12,6 +12,20 @@ pub struct EnvPaths {
 }
 
 impl EnvPaths {
+    /// Mock runs cannot inherit real HA credentials, inventory, cameras or schedules.
+    pub fn with_mock_ha(mut self) -> Result<Self> {
+        let mut name = self
+            .database
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_PATH must name a database file"))?
+            .to_os_string();
+        name.push(".mock.sqlite3");
+        self.database.set_file_name(name);
+        self.ha_url = "mock://home-assistant".into();
+        self.ha_token.clear();
+        Ok(self)
+    }
+
     pub fn load() -> Self {
         dotenvy::dotenv().ok();
 
@@ -43,7 +57,7 @@ impl EnvPaths {
         info!("🔗 HA URL: {}", self.ha_url);
 
         ensure!(
-            !self.ha_token.is_empty(),
+            self.ha_url == "mock://home-assistant" || !self.ha_token.is_empty(),
             "Critical Error: HA_TOKEN not set!"
         );
 
@@ -56,5 +70,39 @@ impl EnvPaths {
 
     pub fn db_url(&self) -> String {
         format!("sqlite://{}", self.database.to_string_lossy())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths() -> EnvPaths {
+        EnvPaths {
+            options: "data/options.json".into(),
+            database: "data/bot_data.db".into(),
+            migrations: "migrations".into(),
+            ha_url: "https://real-home.invalid".into(),
+            ha_token: "secret".into(),
+        }
+    }
+
+    #[test]
+    fn mock_isolates_storage_and_removes_real_endpoint_and_credentials() -> Result<()> {
+        let mock = paths().with_mock_ha()?.validate()?;
+        assert_eq!(
+            mock.database,
+            PathBuf::from("data/bot_data.db.mock.sqlite3")
+        );
+        assert_eq!(mock.ha_url, "mock://home-assistant");
+        assert!(mock.ha_token.is_empty());
+        assert_eq!(mock.options, paths().options);
+        let mut live = paths();
+        live.ha_token.clear();
+        assert!(live.validate().is_err());
+        let live = paths().validate()?;
+        assert_eq!(live.database, paths().database);
+        assert_eq!(live.ha_url, paths().ha_url);
+        Ok(())
     }
 }

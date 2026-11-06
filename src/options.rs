@@ -18,6 +18,10 @@ pub struct AppOptions {
     #[serde(default)]
     pub html_widgets_enabled: bool,
 
+    /// Run the regular bot against a persistent local HA mock and isolated database.
+    #[serde(default)]
+    pub ha_mock_enabled: bool,
+
     /// ID владельца бота. Может прийти как число или как строка в кавычках.
     #[serde(deserialize_with = "flexible_u64")]
     pub root_user: u64,
@@ -401,6 +405,7 @@ mod tests {
         assert_eq!(options.camera_recording_max_parallel_jobs, 4);
         assert_eq!(options.camera_recording_storage_root, "data/recordings");
         assert!(!options.voice_enabled);
+        assert!(!options.ha_mock_enabled);
         assert_eq!(options.voice_stt_provider, VoiceSttProvider::HaPipeline);
         assert_eq!(
             options.voice_command_engine,

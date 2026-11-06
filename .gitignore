@@ -14,3 +14,7 @@ sqlite:
 __pycache__/
 widget-demo-interface-*.json
 widget-demo-interface-*.json.tmp
+*.mock.sqlite3
+*.mock.sqlite3-wal
+*.mock.sqlite3-shm
+*.mock.recordings/

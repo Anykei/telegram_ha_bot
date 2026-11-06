@@ -26,6 +26,10 @@ pub struct HistoryResult {
 
 #[async_trait::async_trait]
 pub trait HomeAssistantClient: Send + Sync {
+    fn is_mock(&self) -> bool {
+        false
+    }
+
     async fn health_check(&self) -> Result<()>;
 
     async fn fetch_rooms(&self) -> Result<Vec<Room>>;
