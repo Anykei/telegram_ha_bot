@@ -38,7 +38,7 @@
       let state = snapshot, id = selected;
       const handlers = {};
       const homeProfile = all.find(f=>f.id===selected)?.home || {owner:selected.startsWith('admin'),filled:true};
-      const homeId = () => 'home' + (homeProfile.owner?'_admin':'') + (homeProfile.filled?'':'_empty');
+      const homeId = () => homeProfile.statuses ? 'home_statuses' : 'home' + (homeProfile.owner?'_admin':'') + (homeProfile.filled?'':'_empty');
       const plotId = snapshot.graph ? selected : 'numeric' + (snapshot.lang === 'en' ? '_en' : '');
       const allowed = new Set(all.flatMap(f => [f.page.read, f.page.prev, f.page.next, f.page.back, ...(f.page.b || f.page.rows).flat().map(b => Array.isArray(b) ? b[1] : b.key)]));
       const emit = next => { state = next; api.chatData = JSON.stringify(state); handlers.chatDataChanged?.(); };
@@ -57,8 +57,8 @@
           let target = {home:'home',rooms:'rooms',room:'room',device:'device',ceiling:'device',settings:'settings',ru:'settings',en:'english'}[key] || key;
           if (key === 'prev') target = 'home';
           if (key === 'home' || key === 'p0') target = homeId();
-          if (key === 'home_next') target = state.page===1 && homeProfile.filled ? 'home_favorites' : 'home_summary'+(homeProfile.filled?'':'_empty');
-          if (key === 'home_prev') target = state.page===3 ? 'home_favorites' : homeId();
+          if (key === 'home_next') target = 'home_favorites';
+          if (key === 'home_prev') target = homeId();
           if (key === 'plot') target = plotId;
           if (state.lang === 'en' && all.some(fixture => fixture.id === target + '_en')) target += '_en';
           const found = all.find(fixture => fixture.id === target);

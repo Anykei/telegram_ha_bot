@@ -143,12 +143,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent === '2/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${get('r-count')}.textContent === '2/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'Избранное');
   assert.ok(await evaluate(`${button('device')} && ${button('climate')}`));
   await capture('release-home-favorites');
   await evaluate(`${get('r-prev')}.click()`);
-  await until(`${get('r-count')}.textContent === '1/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${get('r-count')}.textContent === '1/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.ok(await evaluate(`${button('rooms')}`));
   // Role and favorites never move the six primary sections off the first page.
   const primaryKeys=['rooms','scenes','cameras','favorites','settings','help'];
@@ -157,27 +157,44 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload(fixture.id,{width:320});
     assert.deepEqual(fixture.page.b.slice(0,3).map(row=>row.map(b=>b[1])),[['rooms','scenes'],['cameras','favorites'],['settings','help']]);
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
-    assert.equal(await evaluate(`${doc}.querySelector('.r-text')`),null,'Home begins with sections, without teaching or notification text');
+    assert.equal(await evaluate(`${doc}.querySelector('.r-body').textContent`),fixture.page.body,'Status is visible with the main sections');
     await click('favorites');
     await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':favorites')`),'Full favorites retains its own callback');
     await reload(fixture.id,{width:320});
-    await evaluate(`${get('r-next')}.click()`);
-    await until(`${get('r-count')}.textContent.endsWith('2/${filled?3:2}') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
-    assert.equal(await evaluate(`${get('r-title')}.textContent`),filled?(ru?'Избранное':'Favorites'):(ru?'Сводка дома':'Home overview'));
     if(filled) {
-      assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith('3/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-count')}.textContent === '2/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      assert.equal(await evaluate(`${get('r-title')}.textContent`),ru?'Избранное':'Favorites');
+      assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
+      await evaluate(`${get('r-back')}.click()`);
+      await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':p0')`));
+    } else {
+      assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),true,'No separate page for a short status');
     }
-    const summary=fixtures.find(f=>f.id==='home_summary'+(filled?'':'_empty')+(ru?'':'_en'));
-    assert.equal(await evaluate(`${get('r-title')}.textContent`),summary.page.title);
-    assert.equal(await evaluate(`Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join('')`),summary.page.body);
-    await evaluate(`${get('r-back')}.click()`);
-    await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
-    assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':p0')`));
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
   }
+  for (const suffix of ['', '_en']) for (const width of [320,390]) {
+    for (const id of ['home_two_statuses','home_statuses']) {
+      const fixture=fixtures.find(f=>f.id===id+suffix);
+      await reload(fixture.id,{width,theme:'dark'});
+      await evaluate(`${win}.previewSetSafeArea(64)`);
+      assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true,'Status never pushes primary sections to a local continuation');
+      assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),(id==='home_statuses'?['all_statuses']:[]).concat(primaryKeys,'admin'));
+      await dimensions(fixture.id+'/'+width);
+      if (id==='home_statuses') {
+        await click('all_statuses');
+        const target=fixtures.find(f=>f.id==='all_statuses'+suffix);
+        await until(`${get('r-title')}.textContent === ${JSON.stringify(target.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+        await assertPreserved(target.page,'all statuses/'+width);
+        await evaluate(`${get('r-back')}.click()`);
+        await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      }
+    }
+  }
+  await reload('home_admin_empty',{theme:'dark',width:390}); await capture('release-home-status');
+  await reload('home_statuses',{theme:'dark',width:390}); await capture('release-home-statuses');
   await reload('home_admin',{theme:'dark',width:360}); await capture('release-home-admin-dark');
   await reload('home_en',{width:320}); await capture('release-home-en-light');
   await reload('home_summary_empty',{width:320}); await capture('release-home-overview-empty');

@@ -341,6 +341,25 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         .iter()
         .flat_map(|p| p.rows.iter().flatten())
         .collect::<Vec<_>>();
+    for button in rendered
+        .iter()
+        .filter(|b| !prepared.actions.contains_key(&b.key))
+    {
+        let index: usize = button
+            .key
+            .strip_prefix('p')
+            .context("Non-page synthetic action")?
+            .parse()?;
+        assert!(index < prepared.pages.len());
+        assert_eq!(
+            button.kind, "nav",
+            "Synthetic page links must remain read-only"
+        );
+    }
+    let rendered = rendered
+        .into_iter()
+        .filter(|b| prepared.actions.contains_key(&b.key))
+        .collect::<Vec<_>>();
     assert_eq!(prepared.actions.len(), original.len());
     let mut order = Vec::new();
     for (index, button) in original.iter().enumerate() {

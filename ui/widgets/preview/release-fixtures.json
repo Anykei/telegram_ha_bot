@@ -14,14 +14,14 @@
       "lang": "ru",
       "title": "Мой дом",
       "context": "",
-      "body": "",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
       "next": "home_next",
       "page": 1,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -77,14 +77,14 @@
       "lang": "ru",
       "title": "Мой дом",
       "context": "",
-      "body": "",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "home_next",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "b": [
         [
           [
@@ -140,14 +140,14 @@
       "lang": "ru",
       "title": "Мой дом",
       "context": "",
-      "body": "",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
       "next": "home_next",
       "page": 1,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -210,14 +210,14 @@
       "lang": "ru",
       "title": "Мой дом",
       "context": "",
-      "body": "",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "home_next",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "b": [
         [
           [
@@ -280,14 +280,14 @@
       "lang": "en",
       "title": "My home",
       "context": "",
-      "body": "",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
       "next": "home_next",
       "page": 1,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -343,14 +343,14 @@
       "lang": "en",
       "title": "My home",
       "context": "",
-      "body": "",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "home_next",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "b": [
         [
           [
@@ -406,14 +406,14 @@
       "lang": "en",
       "title": "My home",
       "context": "",
-      "body": "",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
       "next": "home_next",
       "page": 1,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -476,14 +476,14 @@
       "lang": "en",
       "title": "My home",
       "context": "",
-      "body": "",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "home_next",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "b": [
         [
           [
@@ -550,9 +550,9 @@
       "alert": "",
       "read": "read",
       "prev": "home_prev",
-      "next": "home_next",
+      "next": null,
       "page": 2,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -657,9 +657,9 @@
       "alert": "",
       "read": "read",
       "prev": "home_prev",
-      "next": "home_next",
+      "next": null,
       "page": 2,
-      "pages": 3,
+      "pages": 2,
       "b": [
         [
           [
@@ -1985,6 +1985,356 @@
           ]
         ]
       ]
+    }
+  },
+  {
+    "id": "home_two_statuses",
+    "label": "Дом · два статуса",
+    "home": {
+      "primary": false,
+      "owner": true,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000035",
+      "seq": 53,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад\n\n💡 Кухня\nСвет включён · 1м назад",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "b": [
+        [
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Администрирование",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_statuses",
+    "label": "Дом · много статусов",
+    "home": {
+      "primary": false,
+      "owner": true,
+      "filled": false,
+      "statuses": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000035",
+      "seq": 53,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "all_statuses",
+      "page": 1,
+      "pages": 2,
+      "b": [
+        [
+          [
+            "🔕 Коридор · Замок · Закрыта [x4] · 5м назад\nВсе статусы: 4",
+            "all_statuses",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Администрирование",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "all_statuses",
+    "label": "Все статусы",
+    "home": {
+      "owner": true,
+      "filled": false,
+      "statuses": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000046",
+      "seq": 70,
+      "lang": "ru",
+      "title": "Сводка дома",
+      "context": "Мой дом",
+      "body": "🔕 Коридор · Замок\nЗакрыта [x4] · 5м назад\n\n💡 Кухня\nСвет включён · 1м назад\n\n📹 Вход\nИдёт запись · только что\n\n🌡 Спальня\n22 °C · 2м назад",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "b": [],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_two_statuses_en",
+    "label": "Дом · два статуса_en",
+    "home": {
+      "primary": false,
+      "owner": true,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000039",
+      "seq": 57,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago\n\n💡 Kitchen\nLight on · 1m ago",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "b": [
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Administration",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_statuses_en",
+    "label": "Дом · много статусов_en",
+    "home": {
+      "primary": false,
+      "owner": true,
+      "filled": false,
+      "statuses": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000039",
+      "seq": 57,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "all_statuses",
+      "page": 1,
+      "pages": 2,
+      "b": [
+        [
+          [
+            "🔕 Hall · Lock · Closed [x4] · 5m ago\nAll statuses: 4",
+            "all_statuses",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Administration",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "all_statuses_en",
+    "label": "Все статусы_en",
+    "home": {
+      "owner": true,
+      "filled": false,
+      "statuses": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000049",
+      "seq": 73,
+      "lang": "en",
+      "title": "Home overview",
+      "context": "My home",
+      "body": "🔕 Hall · Lock\nClosed [x4] · 5m ago\n\n💡 Kitchen\nLight on · 1m ago\n\n📹 Entrance\nRecording · just now\n\n🌡 Bedroom\n22 °C · 2m ago",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "b": [],
+      "back": "p0"
     }
   }
 ]

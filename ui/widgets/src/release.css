@@ -14,7 +14,7 @@ button { font: inherit; cursor: pointer; }
 .r-notice { color: var(--ha-accent); background: var(--ha-accent-soft); }
 .r-row { display: flex; gap: var(--ha-space-2); margin-bottom: var(--ha-space-2); }
 .r-button { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; min-height: 60px; border: 1px solid var(--ha-line); border-radius: var(--ha-radius-control); padding: 10px var(--ha-space-3); color: var(--ha-text); background: var(--ha-surface); text-align: left; font-size: 16px; }
-.r-button span { overflow-wrap: anywhere; }
+.r-button span { overflow-wrap: anywhere; white-space:pre-line; }
 .r-nav::after { content:"›"; flex-shrink:0; color:var(--ha-muted); }
 .r-action { color: var(--ha-accent); background: var(--ha-accent-soft); border-color: var(--ha-accent-soft); }
 .r-selected { background: var(--ha-accent-soft); border-color: var(--ha-accent); }
@@ -33,5 +33,5 @@ button { font: inherit; cursor: pointer; }
 .r-wait { position:relative; opacity:1; }
 .r-wait span { opacity:0; }
 .r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
-@media (max-width: 260px) { .release { padding: var(--ha-space-3); } .release h1 { font-size: 26px; } .r-button { min-height: 56px; padding: 9px var(--ha-space-2); font-size: 14px; } }
+@media (max-width: 260px) { .release h1 { font-size: 26px; } .r-button { min-height: 56px; padding: 9px var(--ha-space-2); font-size: 14px; } }
 .release { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }

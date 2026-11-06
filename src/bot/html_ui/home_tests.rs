@@ -48,7 +48,7 @@ async fn home_keeps_main_sections_on_first_page_with_or_without_favorites() -> R
                 assert_complete(&view, &prepared)?;
                 let first = &prepared.pages[0];
                 assert_eq!(first.title, words(lang, "Мой дом", "My home"));
-                assert!(first.body.is_empty() && first.context.is_empty() && first.back.is_none());
+                assert!(!first.body.is_empty() && first.context.is_empty() && first.back.is_none());
                 let mut expected = main.clone();
                 if user == 1 {
                     expected.push(Payload::Admin(AdminPayload::ListActions));
@@ -83,20 +83,13 @@ async fn home_keeps_main_sections_on_first_page_with_or_without_favorites() -> R
                     assert_eq!(page.context, first.title);
                     assert_eq!(page.back.as_deref(), Some("p0"));
                 }
-                let summary = prepared
-                    .pages
-                    .iter()
-                    .filter(|p| !p.body.is_empty())
-                    .collect::<Vec<_>>();
-                assert!(!summary.is_empty());
-                for page in &summary {
-                    assert_eq!(page.title, words(lang, "Сводка дома", "Home overview"));
-                    assert_eq!(page.context, first.title);
-                    assert_eq!(page.back.as_deref(), Some("p0"));
-                }
-                let text = summary.iter().map(|p| p.body.as_str()).collect::<String>();
+                assert_eq!(
+                    prepared.pages.len(),
+                    if filled { 2 } else { 1 },
+                    "Short statuses need no extra page"
+                );
                 for item in &view.notifications {
-                    assert!(text.contains(&item.label) && text.contains(&item.value));
+                    assert!(first.body.contains(&item.label) && first.body.contains(&item.value));
                 }
                 // Classic mode still exposes the same complete keyboard and home status.
                 assert!(view.get_plain_text().contains(&first.title));
@@ -108,6 +101,72 @@ async fn home_keeps_main_sections_on_first_page_with_or_without_favorites() -> R
         ha.fetch_states_by_ids(&["light.floor_lamp".into()]).await?[0].state,
         before
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_shows_states_counts_and_age_without_hiding_navigation() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    for lang in [Language::Ru, Language::En] {
+        db::user::set_user_language(1, lang, &config.db).await?;
+        let mut view = router(Payload::Home, 1, config.clone()).await?;
+        view.notifications = vec![crate::core::HeaderItem {
+            icon: "🔕".into(),
+            label: words(lang, "Коридор · Замок", "Hall · Lock").into(),
+            value: words(lang, "Закрыта [x4]", "Closed [x4]").into(),
+            last_update: chrono::Utc::now() - chrono::Duration::minutes(5),
+            ..Default::default()
+        }];
+        let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+        assert_complete(&view, &prepared)?;
+        assert_eq!(prepared.pages.len(), 1);
+        assert_eq!(prepared.pages[0].rows.iter().flatten().count(), 7);
+        let status = &view.notifications[0];
+        let body = &prepared.pages[0].body;
+        assert!(body.contains(&status.label) && body.contains(&status.value));
+        assert!(body.contains(
+            &crate::core::presentation::StateFormatter::format_last_update(status.last_update)
+        ));
+
+        view.notifications[0].value = words(lang, "Открыта [x5]", "Open [x5]").into();
+        let updated = presentation::prepare(&view, "b".repeat(32), 2)?;
+        assert!(updated.pages[0].body.contains(&view.notifications[0].value));
+        assert!(!updated.pages[0].body.contains("[x4]"));
+        assert_eq!(updated.pages.len(), 1);
+
+        for index in 1..12 {
+            let mut item = view.notifications[0].clone();
+            item.label = format!("Датчик {index}");
+            item.value = format!("Состояние {index}");
+            view.notifications.push(item);
+        }
+        let expanded = presentation::prepare(&view, "c".repeat(32), 3)?;
+        assert_complete(&view, &expanded)?;
+        let first = &expanded.pages[0];
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .flatten()
+                .filter(|b| expanded.actions.contains_key(&b.key))
+                .count(),
+            7
+        );
+        let link = &first.rows[0][0];
+        assert!(link.text.contains(&format!(
+            "{}: 12",
+            words(lang, "Все статусы", "All statuses")
+        )));
+        let index: usize = link.key.strip_prefix('p').unwrap().parse()?;
+        assert_eq!(expanded.pages[index].back.as_deref(), Some("p0"));
+        let full = expanded.pages[index..]
+            .iter()
+            .map(|p| p.body.as_str())
+            .collect::<String>();
+        for item in &view.notifications {
+            assert!(full.contains(&item.label) && full.contains(&item.value));
+        }
+    }
     Ok(())
 }
 
@@ -132,7 +191,20 @@ async fn home_continuations_return_to_menu_without_replaying_favorite_actions() 
         handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view, config.clone(), None).await?
     );
     let initial = current(&config);
-    assert_eq!(initial.pages[0].rows.len(), 4);
+    assert_eq!(initial.pages[0].rows.len(), 5);
+    let status_link = &initial.pages[0].rows[0][0];
+    assert!(status_link.text.contains("Все статусы: 2"));
+    assert!(status_link.key.starts_with('p'));
+    assert!(
+        resolve(&fake.bot, &query(&initial, &status_link.key), &config)
+            .await?
+            .is_none()
+    );
+    let details = current(&config);
+    assert_eq!(details.pages[details.index].title, "Сводка дома");
+    assert!(resolve(&fake.bot, &query(&details, "p0"), &config)
+        .await?
+        .is_none());
     assert!(initial
         .pages
         .iter()

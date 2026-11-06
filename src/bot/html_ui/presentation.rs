@@ -191,6 +191,33 @@ fn split_text(text: &str, limit: usize) -> Vec<String> {
     parts
 }
 
+fn home_status_preview(view: &View) -> String {
+    fn short(value: &str, limit: usize) -> String {
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if value.chars().count() <= limit {
+            value
+        } else {
+            format!("{}…", value.chars().take(limit - 1).collect::<String>())
+        }
+    }
+    let heading = if view.lang == Language::En {
+        "All statuses"
+    } else {
+        "Все статусы"
+    };
+    let count = view.notifications.len();
+    let Some(item) = view.notifications.first() else {
+        return heading.into();
+    };
+    format!(
+        "{} {} · {} · {}\n{heading}: {count}",
+        item.icon,
+        short(&item.label, 26),
+        short(&item.value, 24),
+        crate::core::presentation::StateFormatter::format_last_update(item.last_update),
+    )
+}
+
 fn append_text(
     mut current: Page,
     empty: &Page,
@@ -351,9 +378,14 @@ pub fn prepare_with_pending(
         }
         for item in &view.notifications {
             body.push(format!(
-                "{} {}: {} · {}",
+                "{} {}{}{} · {}",
                 item.icon,
                 item.label,
+                if matches!(view.payload, Payload::Home) {
+                    "\n"
+                } else {
+                    ": "
+                },
                 item.value,
                 crate::core::presentation::StateFormatter::format_last_update(item.last_update)
             ));
@@ -476,11 +508,33 @@ pub fn prepare_with_pending(
             }
         }
     }
+    // Attach status after reserving the home sections, so notifications cannot
+    // evict Settings/Admin/etc. A short status needs no separate summary page.
+    let home_status =
+        matches!(view.payload, Payload::Home) && summary.is_some() && !body.is_empty();
+    let inline_status = home_status && {
+        let first = parts.first_mut().unwrap_or(&mut current);
+        let mut candidate = first.clone();
+        candidate.body = body.clone();
+        let fits = view.notifications.len() <= 2
+            && body.chars().count() <= 100
+            && body.lines().count() <= 5
+            && candidate.json().is_ok();
+        if fits {
+            *first = candidate;
+        }
+        fits
+    };
+    let mut home_details = None;
     if summary.is_some()
+        && !inline_status
         && (!body.is_empty()
             || (room_notice && view.notice.as_ref().is_some_and(|s| !s.is_empty())))
     {
         parts.push(current);
+        if home_status {
+            home_details = Some(parts.len());
+        }
         empty = match &view.html_details_title {
             Some(title) => continuation(&root, title)?,
             None => root,
@@ -498,6 +552,26 @@ pub fn prepare_with_pending(
         current = append_text(current, &empty, &mut parts, "body", &body)?;
     }
     parts.push(current);
+    if let Some(index) = home_details {
+        // A read-only link to the complete, unabridged statuses. It is a page
+        // key, not a device action, and works like the existing pinned p0 Back.
+        parts[0].rows.insert(
+            0,
+            vec![Button {
+                text: home_status_preview(view),
+                key: format!("p{index}"),
+                kind: "nav".into(),
+            }],
+        );
+        if parts[0].json().is_err() {
+            parts[0].rows[0][0].text = if english {
+                format!("All statuses: {}", view.notifications.len())
+            } else {
+                format!("Все статусы: {}", view.notifications.len())
+            };
+        }
+        parts[0].json()?;
+    }
     ensure!(parts.len() <= 9999, "Too many HTML pages");
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
