@@ -18,6 +18,8 @@ pub struct View {
     pub html_title: Option<String>,
     #[serde(default)]
     pub html_context: Option<String>,
+    #[serde(default)]
+    pub html_kind: Option<String>,
     pub notifications: Vec<HeaderItem>,
     pub text: String,
     pub kb: InlineKeyboardMarkup,

@@ -1,7 +1,7 @@
 use super::super::{
     models::View,
     personal::PersonalPayload,
-    router::{ControlPayload, Payload},
+    router::{AdminPayload, CameraPayload, CommandPayload, ControlPayload, Payload},
 };
 use crate::i18n::Language;
 use anyhow::{ensure, Result};
@@ -23,6 +23,10 @@ pub struct Page {
     pub lang: String,
     pub title: String,
     pub context: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
     pub body: String,
     pub notice: String,
     pub alert: String,
@@ -48,21 +52,9 @@ pub fn supported(view: &View) -> bool {
     if view.image.is_some() || view.next_state.is_some() || view.text_page.is_some() {
         return false;
     }
-    matches!(
-        &view.payload,
-        Payload::Home
-            | Payload::Help
-            | Payload::Personal(_)
-            | Payload::DeviceDetails { .. }
-            | Payload::Control(
-                ControlPayload::ListRooms
-                    | ControlPayload::RoomsPage { .. }
-                    | ControlPayload::RoomDetail { .. }
-                    | ControlPayload::RoomPage { .. }
-                    | ControlPayload::DeviceControl { .. }
-            )
-    ) && view
-        .kb
+    // Every text screen uses the same server-issued callback contract. Access
+    // control and command semantics belong to the existing router, not a UI whitelist.
+    view.kb
         .inline_keyboard
         .iter()
         .flatten()
@@ -75,7 +67,22 @@ pub struct Prepared {
 }
 fn kind(payload: &Payload) -> &'static str {
     match payload {
-        Payload::Control(ControlPayload::ConfirmAction { .. }) => "danger",
+        Payload::Control(ControlPayload::ConfirmAction { .. })
+        | Payload::Command(CommandPayload::Confirm { .. })
+        | Payload::Camera(CameraPayload::DeleteRecording { .. })
+        | Payload::Admin(
+            AdminPayload::DeleteCamera { .. }
+            | AdminPayload::DeleteUser { .. }
+            | AdminPayload::DeleteRecordingRule { .. }
+            | AdminPayload::DeleteRecordingRuleGroup { .. }
+            | AdminPayload::DeleteRecordingRuleGroupForRoom { .. }
+            | AdminPayload::DeleteActionGroup { .. }
+            | AdminPayload::DeleteActionSchedule { .. },
+        ) => "danger",
+        Payload::Control(ControlPayload::CancelAction { .. })
+        | Payload::Command(CommandPayload::Cancel { .. } | CommandPayload::CancelChoice { .. }) => {
+            "nav"
+        }
         Payload::Control(ControlPayload::QuickAction { cmd, .. })
             if super::super::router::action_requires_control(cmd) =>
         {
@@ -84,6 +91,31 @@ fn kind(payload: &Payload) -> &'static str {
         Payload::Personal(PersonalPayload::SetInterface { .. }) => "action",
         _ if payload == &payload.for_refresh() => "nav",
         _ => "action",
+    }
+}
+
+fn screen_kind(view: &View) -> &str {
+    if view.next_state.is_some() {
+        return "form";
+    }
+    if view.kb.inline_keyboard.iter().flatten().any(|button| {
+        matches!(&button.kind, InlineKeyboardButtonKind::CallbackData(data)
+            if matches!(Payload::from_string(data), Ok(Payload::Control(ControlPayload::ConfirmAction { .. }) | Payload::Command(CommandPayload::Confirm { .. }))))
+    }) {
+        return "confirmation";
+    }
+    if let Some(kind @ ("menu" | "device" | "climate" | "confirmation" | "list")) =
+        view.html_kind.as_deref()
+    {
+        return kind;
+    }
+    match view.payload {
+        Payload::Home | Payload::Personal(_) | Payload::Admin(AdminPayload::ListActions) => "menu",
+        Payload::DeviceDetails { .. } | Payload::Control(ControlPayload::DeviceControl { .. }) => {
+            "device"
+        }
+        Payload::Control(ControlPayload::ReviewAction { .. }) => "confirmation",
+        _ => "list",
     }
 }
 fn split_text(text: &str, limit: usize) -> Vec<String> {
@@ -155,6 +187,8 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         lang: if english { "en" } else { "ru" }.into(),
         title,
         context: view.html_context.clone().unwrap_or_default(),
+        kind: screen_kind(view).into(),
+        hint: String::new(),
         body: String::new(),
         notice: String::new(),
         alert: String::new(),

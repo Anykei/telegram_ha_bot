@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+#[path = "release_tests.rs"]
+mod release_tests;
+
 #[derive(Default)]
 struct FakeHa {
     calls: Mutex<Vec<String>>,

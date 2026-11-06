@@ -150,6 +150,7 @@ fn render_view(
     )]);
     View {
         compact: true,
+        html_kind: Some("climate".into()),
         header: Some(t(lang, "climate.title").into()),
         notifications,
         text,
