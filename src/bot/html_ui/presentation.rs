@@ -393,7 +393,7 @@ pub fn prepare_with_pending(
                 body.push(context.clone());
             }
         }
-        for item in &view.notifications {
+        for item in view.visible_notifications() {
             body.push(format!(
                 "{} {}{}{} · {}",
                 item.icon,

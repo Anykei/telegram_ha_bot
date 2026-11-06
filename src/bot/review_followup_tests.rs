@@ -78,14 +78,7 @@ async fn paginated_name_form_saves_and_preserves_admin_settings_origin() -> anyh
     else {
         panic!("Expected name form")
     };
-    view.notifications.push(crate::core::HeaderItem {
-        source: None,
-        additional_sources: Vec::new(),
-        icon: "🔔".into(),
-        label: "Статус".repeat(1500),
-        value: "on".into(),
-        last_update: Utc::now(),
-    });
+    view.notice = Some("Подробное пояснение формы\n".repeat(400));
     crate::bot::text_pages::prepare(&mut view, 1, &config).await?;
     assert!(matches!(view.payload, Payload::TextPage { .. }));
     let dialogue = teloxide::dispatching::dialogue::Dialogue::new(

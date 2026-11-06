@@ -14,6 +14,9 @@ const PAGE_RESERVE: usize = 80;
 pub struct TextPage {
     pub screen: i64,
     pub page: u16,
+    /// Preserve Home's status visibility after its route becomes TextPage.
+    #[serde(default)]
+    pub from_home: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,7 +88,7 @@ fn layout(view: &View) -> (String, Vec<String>) {
     let limit = content_limit(view);
     let status = View {
         header: view.header.clone(),
-        notifications: view.notifications.clone(),
+        notifications: view.visible_notifications().to_vec(),
         alert: view.alert.clone(),
         notice: view.notice.clone(),
         lang: view.lang,
@@ -103,7 +106,7 @@ fn layout(view: &View) -> (String, Vec<String>) {
     let summary = format!(
         "{}: {}",
         t(view.lang, "common.status_items"),
-        view.notifications.len()
+        view.visible_notifications().len()
     );
     let budget = limit - text_len(&summary) - PAGE_RESERVE;
     (summary, split_text(&view.get_full_plain_text(), budget))
@@ -162,7 +165,12 @@ fn select_page(view: &mut View, screen: i64, requested: u16) {
         ));
     }
     view.kb.inline_keyboard.push(row);
-    view.text_page = Some(TextPage { screen, page });
+    view.text_page = Some(TextPage {
+        screen,
+        page,
+        from_home: matches!(view.payload, Payload::Home)
+            || view.text_page.is_some_and(|page| page.from_home),
+    });
     view.payload = payload;
 }
 
@@ -319,5 +327,29 @@ mod tests {
         assert_eq!(parts.concat(), view.get_full_plain_text());
         assert!(parts.len() > 1);
         assert!(text_len(&page_text(&view, u16::MAX)) <= TEXT_LIMIT);
+    }
+
+    #[test]
+    fn continuation_preserves_home_status_policy() {
+        for payload in [Payload::Home, Payload::Help] {
+            let home = matches!(payload, Payload::Home);
+            let mut view = View {
+                payload,
+                text: "Подробности устройства\n".repeat(600),
+                notifications: vec![crate::core::HeaderItem {
+                    label: "Дом".into(),
+                    value: "Событие дома".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            select_page(&mut view, 1, 0);
+            assert!(matches!(view.payload, Payload::TextPage { .. }));
+            for page in 0..layout(&view).1.len() {
+                select_page(&mut view, 1, page as u16);
+                assert_eq!(view.get_plain_text().contains("Событие дома"), home);
+            }
+            assert_eq!(view.notifications.len(), 1);
+        }
     }
 }

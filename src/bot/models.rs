@@ -55,6 +55,18 @@ pub struct View {
 }
 
 impl View {
+    /// House-wide events belong on Home and its status continuation. Keep the
+    /// original sources on View for admission checks even when they are hidden.
+    pub(crate) fn visible_notifications(&self) -> &[HeaderItem] {
+        if matches!(self.payload, Payload::Home)
+            || self.text_page.is_some_and(|page| page.from_home)
+        {
+            &self.notifications
+        } else {
+            &[]
+        }
+    }
+
     pub fn get_text(&self) -> String {
         if self.text_page.is_some() {
             return super::utils::md::plain(&self.get_plain_text());
@@ -70,7 +82,7 @@ impl View {
         let separator = "────────────────────";
 
         let mut status_lines = Vec::new();
-        for item in &self.notifications {
+        for item in self.visible_notifications() {
             // Используем &, чтобы не перемещать данные
             let safe_label = super::utils::md::plain(&item.label);
             let time_ago =
@@ -156,7 +168,7 @@ impl View {
         let separator = "────────────────────";
 
         let mut status_lines = Vec::new();
-        for item in &self.notifications {
+        for item in self.visible_notifications() {
             let time_ago =
                 crate::core::presentation::StateFormatter::format_last_update(item.last_update);
 
@@ -224,7 +236,7 @@ impl View {
         if let Some(header) = &self.header {
             parts.push(header.clone());
         }
-        for item in &self.notifications {
+        for item in self.visible_notifications() {
             let time_ago =
                 crate::core::presentation::StateFormatter::format_last_update(item.last_update);
             parts.push(format!(
@@ -259,6 +271,40 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn house_status_is_home_only_in_all_text_presentations() {
+        for payload in [Payload::Home, Payload::Help, Payload::InDev] {
+            let home = matches!(payload, Payload::Home);
+            for compact in [false, true] {
+                let view = View {
+                    payload: payload.clone(),
+                    compact,
+                    notifications: vec![HeaderItem {
+                        label: "Общий статус".into(),
+                        value: "Событие дома".into(),
+                        ..Default::default()
+                    }],
+                    text: "Люстра включена".into(),
+                    alert: Some("Ошибка устройства".into()),
+                    notice: Some("Команда принята".into()),
+                    ..Default::default()
+                };
+                for text in [view.get_text(), view.get_plain_text()] {
+                    assert_eq!(text.contains("Событие дома"), home);
+                    for item in ["Люстра включена", "Ошибка устройства", "Команда принята"]
+                    {
+                        assert!(text.contains(item));
+                    }
+                }
+                assert_eq!(
+                    view.notifications.len(),
+                    1,
+                    "Keep sources for admission checks"
+                );
+            }
+        }
+    }
 
     #[test]
     fn compact_view_keeps_system_status_and_alerts_without_separators() {

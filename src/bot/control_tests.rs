@@ -537,12 +537,18 @@ async fn paginated_prompt_keeps_dialogue_state_and_its_cancel_button() -> anyhow
         status.shutdown_reason = Some("Подробный статус системы\n".repeat(400));
     }
     let group = db::action_groups::create_action_group("Свет", &config.db).await?;
-    let first = router(
+    let mut first = router(
         Payload::Admin(AdminPayload::PromptRenameActionGroup { group }),
         1,
         config.clone(),
     )
     .await?;
+    // House-wide status no longer paginates unrelated forms. Exercise paging
+    // with a visible form receipt, which persists through PageContext instead.
+    assert!(!matches!(first.payload, Payload::TextPage { .. }));
+    assert!(!first.get_plain_text().contains("Подробный статус системы"));
+    first.notice = Some("Подробное пояснение формы\n".repeat(400));
+    crate::bot::text_pages::prepare(&mut first, 1, &config).await?;
     let Payload::TextPage { screen, .. } = first.payload else {
         panic!("Expected pages")
     };

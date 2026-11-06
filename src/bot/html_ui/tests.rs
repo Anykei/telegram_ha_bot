@@ -1,5 +1,5 @@
 use super::super::personal::PersonalPayload;
-use super::super::router::{router, ControlPayload, DeviceCmd};
+use super::super::router::{router, AdminPayload, CameraPayload, ControlPayload, DeviceCmd};
 use super::*;
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -401,8 +401,17 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
         Payload::Personal(PersonalPayload::Settings),
         Payload::Personal(PersonalPayload::Interface),
         Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 }),
+        Payload::Help,
+        Payload::Admin(AdminPayload::ListActions),
+        Payload::Camera(CameraPayload::ListCameras),
     ] {
-        let view = router(payload, 1, config.clone()).await?;
+        let home = matches!(payload, Payload::Home);
+        let mut view = router(payload, 1, config.clone()).await?;
+        view.notifications = vec![crate::core::HeaderItem {
+            label: "Общие события".into(),
+            value: "Маркер статуса дома".into(),
+            ..Default::default()
+        }];
         let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
         assert_buttons_preserved(&view, &prepared)?;
         let body = prepared
@@ -411,6 +420,9 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
             .map(|p| p.body.as_str())
             .collect::<String>();
         assert!(body.contains(&view.text));
+        let rendered = serde_json::to_string(&prepared.pages)?;
+        assert_eq!(rendered.contains("Маркер статуса дома"), home);
+        assert_eq!(view.notifications.len(), 1);
         for page in &prepared.pages {
             assert!(page.json()?.len() <= 1000);
             assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);
