@@ -1,23 +1,33 @@
-//! Isolated HTML-widget pilot. All state is synthetic; this module has no HA/DB access.
+//! Isolated migration playground. Both presentations use synthetic data only.
+mod model;
+mod preferences;
+#[cfg(test)]
+mod tests;
+
 use crate::options::AppOptions;
 use anyhow::{bail, ensure, Context, Result};
-use serde::Serialize;
+use model::{InterfaceMode, Model, Page, Screen};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-const HTML: &str = include_str!("../ui/widgets/dist/switch.html");
-const API: &str = "https://api.telegram.org/beta";
+const HTML: &str = include_str!("../ui/widgets/dist/panel.html");
+const CAPTION: &str = "Демо · виртуальный дом. Home Assistant не подключён. /ui — выбор вида; /classic — обычные кнопки. Работает, пока запущен cargo run.";
 
 struct Telegram {
     client: reqwest::Client,
     token: String,
+    endpoint: String,
 }
-
 impl Telegram {
     async fn call(&self, method: &str, body: Value) -> Result<Value> {
+        let timeout = if method == "getUpdates" { 35 } else { 8 };
         let response = self
             .client
-            .post(format!("{API}/bot{}/{method}", self.token))
+            .post(format!("{}/bot{}/{method}", self.endpoint, self.token))
+            .timeout(Duration::from_secs(timeout))
             .json(&body)
             .send()
             .await
@@ -39,131 +49,277 @@ impl Telegram {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct DemoState {
-    v: u8,
-    id: &'static str,
-    rev: u64,
-    name: &'static str,
-    room: &'static str,
-    state: &'static str,
-    access: &'static str,
-    critical: bool,
+struct Session {
+    user: u64,
+    message: i64,
+    preference: PathBuf,
+    model: Model,
 }
-
-impl Default for DemoState {
-    fn default() -> Self {
-        Self {
-            v: 1,
-            id: "42",
-            rev: 1,
-            name: "Торшер · демо",
-            room: "Гостиная",
-            state: "off",
-            access: "control",
-            critical: false,
-        }
-    }
-}
-
-impl DemoState {
-    /// Explicit desired states + a revision make double taps and stale requests harmless.
-    fn apply(&mut self, request: &str) -> Result<()> {
-        ensure!(request.len() <= 64, "Widget request is too long");
-        let parts: Vec<_> = request.split(':').collect();
-        ensure!(
-            parts.len() == 4 && parts[0] == "w1" && parts[1] == self.id,
-            "Invalid demo target"
-        );
-        let revision = parts[2].parse::<u64>().context("Invalid revision")?;
-        ensure!(
-            matches!(parts[3], "on" | "off" | "read"),
-            "Unsupported action"
-        );
-        if parts[3] == "read" || revision != self.rev {
-            return Ok(());
-        }
-        self.state = if parts[3] == "on" { "on" } else { "off" };
-        self.rev += 1;
-        Ok(())
-    }
-}
-
-fn owns_query(query: &Value, user: u64, message: i64) -> bool {
+fn owns_widget(query: &Value, user: u64, message: i64) -> bool {
     query["from"]["id"].as_u64() == Some(user)
         && query["chat"]["id"].as_u64() == Some(user)
         && query["chat"]["type"] == "private"
         && query["message_id"].as_i64() == Some(message)
         && query["inline_message_id"].is_null()
 }
-
-async fn answer(api: &Telegram, query: &Value, state: &DemoState) -> Result<()> {
+fn owns_message(message: &Value, user: u64) -> bool {
+    message["from"]["id"].as_u64() == Some(user)
+        && message["chat"]["id"].as_u64() == Some(user)
+        && message["chat"]["type"] == "private"
+}
+fn owns_callback(query: &Value, user: u64, message: i64) -> bool {
+    query["from"]["id"].as_u64() == Some(user)
+        && query["message"]["chat"]["id"].as_u64() == Some(user)
+        && query["message"]["chat"]["type"] == "private"
+        && query["message"]["message_id"].as_i64() == Some(message)
+        && query["inline_message_id"].is_null()
+}
+fn classic(page: &Page) -> Value {
+    let mut lines = vec![page.eyebrow.to_string(), page.title.to_string()];
+    if !page.description.is_empty() {
+        lines.push(page.description.to_string());
+    }
+    if let Some(hero) = &page.hero {
+        lines.push(format!("{}: {}", hero.label, hero.value));
+    }
+    for item in &page.items {
+        if !item.detail.is_empty() {
+            lines.push(format!("{} · {}", item.label, item.detail));
+        }
+    }
+    lines.push(CAPTION.into());
+    let button = |label: String, action: &str| {
+        json!({
+            "text": label, "callback_data": format!("p1:{}:{action}", page.rev)
+        })
+    };
+    let mut rows: Vec<Vec<Value>> = page
+        .items
+        .iter()
+        .map(|item| {
+            vec![button(
+                format!("{}{}", if item.selected { "✓ " } else { "" }, item.label),
+                item.action,
+            )]
+        })
+        .collect();
+    rows.push(vec![button("Обновить".into(), "read")]);
+    if !page.nav.is_empty() {
+        rows.push(
+            page.nav
+                .iter()
+                .map(|item| button(item.label.into(), item.action))
+                .collect(),
+        );
+    }
+    json!({"text": lines.join("\n\n"), "reply_markup": {"inline_keyboard": rows}})
+}
+async fn send(api: &Telegram, user: u64, model: &Model) -> Result<i64> {
+    let page = model.page();
+    let (method, mut body) = match model.mode {
+        InterfaceMode::Classic => ("sendMessage", classic(&page)),
+        InterfaceMode::Html => (
+            "sendWidget",
+            json!({
+                "html": HTML, "width": 360, "allow_queries": true,
+                "chat_data": serde_json::to_string(&page)?, "caption": CAPTION,
+            }),
+        ),
+    };
+    body["chat_id"] = json!(user);
+    api.call(method, body).await?["message_id"]
+        .as_i64()
+        .context("Telegram returned no message_id")
+}
+async fn answer_widget(api: &Telegram, query: &Value, data: Value) -> Result<()> {
     api.call(
         "answerWidgetQuery",
-        json!({ "widget_query_id": query["id"], "data": serde_json::to_string(&json!({"state": state}))? }),
+        json!({
+            "widget_query_id": query["id"], "data": serde_json::to_string(&data)?
+        }),
     )
     .await?;
     Ok(())
 }
-
-async fn handle(
-    api: &Telegram,
-    query: &Value,
-    user: u64,
-    message: i64,
-    state: &mut DemoState,
-) -> Result<()> {
-    if !owns_query(query, user, message) {
-        let denied = DemoState {
-            access: "denied",
-            name: "Устройство",
-            room: "",
-            ..state.clone()
-        };
-        return answer(api, query, &denied).await;
-    }
-    let request = query["data"].as_str().context("Missing widget data")?;
-    let previous = state.rev;
-    if state.apply(request).is_err() {
-        // Malformed/stale inputs never become device operations.
-        return answer(api, query, state).await;
-    }
-    // Answer even if the state edit fails: an accepted command must not time out silently.
-    if state.rev != previous {
-        if let Err(error) = api
-            .call(
+impl Session {
+    async fn edit(&self, api: &Telegram) -> Result<()> {
+        let (method, mut body) = match self.model.mode {
+            InterfaceMode::Classic => ("editMessageText", classic(&self.model.page())),
+            InterfaceMode::Html => (
                 "editMessageWidgetData",
                 json!({
-                    "chat_id": user, "message_id": message,
-                    "chat_data": serde_json::to_string(state)?
+                    "chat_data": serde_json::to_string(&self.model.page())?
                 }),
+            ),
+        };
+        body["chat_id"] = json!(self.user);
+        body["message_id"] = json!(self.message);
+        api.call(method, body).await?;
+        Ok(())
+    }
+    async fn switch(&mut self, api: &Telegram, mode: InterfaceMode) -> Result<()> {
+        let mut next = self.model.clone();
+        next.mode = mode;
+        next.rev += 1;
+        // Keep the old controls and preference until the new message is delivered AND saved.
+        let message = send(api, self.user, &next).await?;
+        if let Err(error) = preferences::save(&self.preference, mode).await {
+            let _ = api
+                .call(
+                    "deleteMessage",
+                    json!({"chat_id": self.user, "message_id": message}),
+                )
+                .await;
+            return Err(error);
+        }
+        let old = self.message;
+        self.message = message;
+        self.model = next;
+        // Reject old message IDs even if Telegram cannot delete them.
+        if let Err(error) = api
+            .call(
+                "deleteMessage",
+                json!({"chat_id": self.user, "message_id": old}),
             )
             .await
         {
-            log::warn!("Widget demo state edit: {error}");
+            log::warn!("Could not remove previous demo view: {error}");
+        }
+        Ok(())
+    }
+    async fn apply(&mut self, api: &Telegram, action: &str) -> Result<()> {
+        let mode = match action {
+            "classic" => Some(InterfaceMode::Classic),
+            "html" => Some(InterfaceMode::Html),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            if mode != self.model.mode {
+                return self.switch(api, mode).await;
+            }
+            preferences::save(&self.preference, mode).await?;
+        }
+        self.model.apply(action)?;
+        self.edit(api).await
+    }
+    async fn widget(&mut self, api: &Telegram, query: &Value) -> Result<()> {
+        if self.model.mode != InterfaceMode::Html || !owns_widget(query, self.user, self.message) {
+            return answer_widget(api, query, json!({"denied": true})).await;
+        }
+        let action = match self.model.action(query["data"].as_str().unwrap_or("")) {
+            Ok(Some(action)) => action,
+            _ => return answer_widget(api, query, json!({"page": self.model.page()})).await,
+        };
+        if action == "classic" {
+            // Answer before extra API calls: a widget has a short response deadline.
+            answer_widget(api, query, json!({"transition": true})).await?;
+            if let Err(error) = self.apply(api, action).await {
+                self.model.rev += 1;
+                let _ = self.edit(api).await;
+                return Err(error);
+            }
+            return Ok(());
+        }
+        if action == "html" {
+            preferences::save(&self.preference, InterfaceMode::Html).await?;
+        }
+        self.model.apply(action)?;
+        let answered = answer_widget(api, query, json!({"page": self.model.page()})).await;
+        // Persist confirmed state even if answering timed out.
+        let edited = self.edit(api).await;
+        answered.and(edited)
+    }
+    async fn callback(&mut self, api: &Telegram, query: &Value) -> Result<()> {
+        let valid = self.model.mode == InterfaceMode::Classic
+            && owns_callback(query, self.user, self.message);
+        let action = valid
+            .then(|| self.model.action(query["data"].as_str().unwrap_or("")))
+            .and_then(Result::ok)
+            .flatten();
+        api.call(
+            "answerCallbackQuery",
+            json!({
+                "callback_query_id": query["id"],
+                "text": if action.is_some() { "" } else { "Откройте актуальный пульт: /start" }
+            }),
+        )
+        .await?;
+        if let Some(action) = action {
+            self.apply(api, action).await?;
+        }
+        Ok(())
+    }
+    async fn notice(&self, api: &Telegram, text: &str) {
+        let _ = api
+            .call("sendMessage", json!({"chat_id": self.user, "text": text}))
+            .await;
+    }
+    async fn command(&mut self, api: &Telegram, message: &Value) -> Result<()> {
+        if !owns_message(message, self.user) {
+            return Ok(());
+        }
+        let command = message["text"]
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("");
+        match command {
+            "/classic" => self.switch(api, InterfaceMode::Classic).await,
+            "/html" => self.switch(api, InterfaceMode::Html).await,
+            "/ui" | "/start" | "/demo" => {
+                // Commands recover a deleted card and never replay its action.
+                let mut next = self.model.clone();
+                next.screen = if command == "/ui" {
+                    Screen::Settings
+                } else {
+                    Screen::Home
+                };
+                next.rev += 1;
+                let message = send(api, self.user, &next).await?;
+                let old = self.message;
+                self.message = message;
+                self.model = next;
+                let _ = api
+                    .call(
+                        "deleteMessage",
+                        json!({"chat_id": self.user, "message_id": old}),
+                    )
+                    .await;
+                Ok(())
+            }
+            _ => {
+                self.notice(api, "Демонстрационный пульт: /start — дом, /ui — выбор вида, /classic — кнопки Telegram, /html — HTML. Home Assistant не подключён.").await;
+                Ok(())
+            }
         }
     }
-    answer(api, query, state).await?;
-    log::info!(
-        "Widget demo: action={}, state={}, revision={}",
-        request.rsplit(':').next().unwrap_or("?"),
-        state.state,
-        state.rev
-    );
-    Ok(())
+    async fn update(&mut self, api: &Telegram, update: &Value) -> Result<()> {
+        if let Some(query) = update.get("widget_query") {
+            return self.widget(api, query).await;
+        }
+        if let Some(query) = update.get("callback_query") {
+            return self.callback(api, query).await;
+        }
+        if let Some(message) = update.get("message") {
+            return self.command(api, message).await;
+        }
+        Ok(())
+    }
 }
 
-pub async fn run(options: &AppOptions) -> Result<()> {
-    println!(
-        "HTML widget DEMO: виртуальное устройство; Home Assistant и основная БД не подключаются."
-    );
+pub async fn run(options: &AppOptions, options_path: &Path) -> Result<()> {
+    println!("HTML migration DEMO: виртуальный дом; Home Assistant и основная БД не подключаются.");
     let api = Telegram {
         client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(40))
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
         token: options.bot_token.clone(),
+        endpoint: "https://api.telegram.org/beta".into(),
     };
     let identity = api.call("getMe", json!({})).await?;
     let webhook = api.call("getWebhookInfo", json!({})).await?;
@@ -173,26 +329,41 @@ pub async fn run(options: &AppOptions) -> Result<()> {
     );
     let allowed_before = webhook.get("allowed_updates").cloned().unwrap_or(json!([]));
     let user = options.root_user;
-    let mut state = DemoState::default();
-    let sent = api.call("sendWidget", json!({
-        "chat_id": user,
-        "html": HTML,
-        "width": 360,
-        "allow_queries": true,
-        "chat_data": serde_json::to_string(&state)?,
-        "caption": "Демонстрационный пульт. Торшер виртуальный; Home Assistant не подключён. Работает, пока запущен cargo run."
-    })).await.context("Cannot send HTML widget through Telegram beta API")?;
-    let message = sent["message_id"]
-        .as_i64()
-        .context("sendWidget returned no message_id")?;
-    println!("HTML demo sent: @{}, chat={}, message={}. Keep cargo run running to use the switch. Ctrl+C stops the demo.", identity["username"].as_str().unwrap_or("?"), user, message);
+    let preference = preferences::path(
+        options_path,
+        identity["id"].as_u64().context("Missing bot ID")?,
+        user,
+    );
+    let mode = preferences::load(&preference).await?;
+    let mut model = Model {
+        mode,
+        rev: 1,
+        ..Default::default()
+    };
+    let message = match send(&api, user, &model).await {
+        Ok(message) => message,
+        Err(error) if mode == InterfaceMode::Html => {
+            log::warn!("HTML unavailable, opening classic demo: {error}");
+            model.mode = InterfaceMode::Classic;
+            // Temporary fallback preserves the user's saved preference.
+            send(&api, user, &model).await?
+        }
+        Err(error) => return Err(error),
+    };
+    let mut session = Session {
+        user,
+        message,
+        preference,
+        model,
+    };
+    println!("Demo sent: @{}, chat={}, message={}. /ui — выбор вида; /classic — обычный; /html — новый. Keep cargo run running. Ctrl+C stops the demo.", identity["username"].as_str().unwrap_or("?"), user, message);
     let stop = crate::wait_for_shutdown_signal();
     tokio::pin!(stop);
     let mut offset = 0_i64;
     let outcome: Result<()> = loop {
         let result = tokio::select! {
             _ = &mut stop => break Ok(()),
-            result = api.call("getUpdates", json!({ "offset": offset, "timeout": 25, "allowed_updates": ["widget_query"] })) => result,
+            result = api.call("getUpdates", json!({ "offset": offset, "timeout": 25, "allowed_updates": ["widget_query", "callback_query", "message"] })) => result,
         };
         let updates = match result {
             Ok(updates) => updates,
@@ -200,16 +371,19 @@ pub async fn run(options: &AppOptions) -> Result<()> {
                 break Err(error.context("Demo polling stopped; run only one bot instance"))
             }
         };
-        for update in updates.as_array().context("Invalid getUpdates result")? {
-            offset = update["update_id"].as_i64().context("Missing update_id")? + 1;
-            if let Some(query) = update.get("widget_query") {
-                if let Err(error) = handle(&api, query, user, message, &mut state).await {
-                    log::warn!("Widget demo request: {error}");
-                }
+        let Some(updates) = updates.as_array() else {
+            break Err(anyhow::anyhow!("Invalid getUpdates result"));
+        };
+        for update in updates {
+            if let Some(id) = update["update_id"].as_i64() {
+                offset = id + 1;
+            }
+            if let Err(error) = session.update(&api, update).await {
+                log::warn!("Demo request: {error}");
+                session.notice(&api, "Не удалось обновить пульт. /start — открыть заново; /classic — обычный вид.").await;
             }
         }
     };
-    // Restore update selection so the regular Teloxide bot can be started afterwards.
     if let Err(error) = api
         .call(
             "getUpdates",
@@ -219,67 +393,6 @@ pub async fn run(options: &AppOptions) -> Result<()> {
     {
         log::warn!("Could not restore Telegram update selection: {error}");
     }
-    log::info!("HTML widget demo stopped.");
+    println!("Демо остановлено. Запустите cargo run, чтобы снова пользоваться пультом.");
     outcome
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_and_old_commands_do_not_repeat_or_reverse_state() -> Result<()> {
-        let mut state = DemoState::default();
-        state.apply("w1:42:1:on")?;
-        state.apply("w1:42:1:on")?;
-        state.apply("w1:42:1:off")?;
-        assert_eq!((state.state, state.rev), ("on", 2));
-        state.apply("w1:42:2:off")?;
-        assert_eq!((state.state, state.rev), ("off", 3));
-        Ok(())
-    }
-
-    #[test]
-    fn reads_and_invalid_targets_do_not_mutate() -> Result<()> {
-        let mut state = DemoState::default();
-        state.apply("w1:42:1:read")?;
-        for value in [
-            "w1:43:1:on",
-            "w1:42:1:toggle",
-            "w1:42:no:on",
-            "w1:42:1:on:extra",
-        ] {
-            assert!(state.apply(value).is_err());
-        }
-        assert_eq!((state.state, state.rev), ("off", 1));
-        Ok(())
-    }
-
-    #[test]
-    fn only_owner_in_the_original_private_message_is_accepted() {
-        let original =
-            json!({ "from": {"id": 7}, "chat": {"id": 7, "type": "private"}, "message_id": 12 });
-        assert!(owns_query(&original, 7, 12));
-        assert!(!owns_query(&original, 8, 12));
-        assert!(!owns_query(&original, 7, 13));
-        assert!(!owns_query(
-            &json!({"from": {"id": 7}, "widget_id": 1}),
-            7,
-            12
-        ));
-        let mut group = original;
-        group["chat"]["type"] = json!("group");
-        assert!(!owns_query(&group, 7, 12));
-    }
-
-    #[test]
-    fn demo_is_opt_in_and_payload_is_embedded() -> Result<()> {
-        let options: AppOptions =
-            serde_json::from_value(json!({"bot_token": "test", "root_user": 7}))?;
-        assert!(!options.widget_demo_enabled);
-        assert!(HTML.contains("TelegramWidget"));
-        assert!(!HTML.contains("mock-telegram"));
-        assert!(HTML.len() <= 32768);
-        Ok(())
-    }
 }

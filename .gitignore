@@ -12,3 +12,5 @@ sqlite:
 /docks/*SPEC*.md
 /docks/**/SPEC.md
 __pycache__/
+widget-demo-interface-*.json
+widget-demo-interface-*.json.tmp

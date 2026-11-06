@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     let paths = EnvPaths::load();
     let options = AppOptions::load(&paths.options).context("Error load options.json.")?;
     if options.widget_demo_enabled {
-        return widget_demo::run(&options).await;
+        return widget_demo::run(&options, &paths.options).await;
     }
     let paths = paths.validate().context("Error checking env variables.")?;
     info!(
