@@ -1,0 +1,25 @@
+<div class="card" id="widget" data-state="offline">
+  <div class="kicker">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3V10Z"/><path d="M9 20v-7h6v7"/></svg>
+    <span id="room">Комната</span>
+  </div>
+  <h1 id="name">Устройство</h1>
+  <div class="hero">
+    <div class="reading"><span class="caption">Текущее состояние</span><h2 id="state">Нет данных</h2></div>
+    <svg class="lamp" viewBox="0 0 80 120" aria-hidden="true">
+      <circle class="halo" cx="40" cy="45" r="34"/>
+      <path class="shade" d="M25 17h30l12 36H13Z"/>
+      <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M25 17h30l12 36H13ZM40 53v48M25 102h30M47 54v12"/><path d="M36 58h8"/></g>
+    </svg>
+  </div>
+  <button id="power" class="primary is-disabled" type="button" aria-disabled="true" aria-pressed="false">
+    <span id="power-label">Включить свет</span><span class="toggle" aria-hidden="true"><span class="knob"></span></span>
+  </button>
+  <div id="confirm-panel" class="confirm-box is-hidden">
+    <p id="confirm-title">Подтвердите действие с устройством.</p>
+    <div class="confirm-actions"><button id="cancel" class="secondary" type="button">Отмена</button><button id="confirm" class="primary" type="button">Подтвердить</button></div>
+  </div>
+  <p id="status" class="feedback" role="status" aria-live="polite">Обновите состояние устройства.</p>
+  <button id="refresh" class="secondary" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10a8 8 0 1 0-2 8M20 4v6h-6"/></svg><span>Обновить</span></button>
+  <details id="details"><summary>Об устройстве</summary><p class="identifier">Идентификатор<span id="device-id">—</span></p></details>
+</div>

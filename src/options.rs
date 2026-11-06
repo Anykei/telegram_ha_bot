@@ -10,6 +10,10 @@ use std::path::Path;
 pub struct AppOptions {
     pub bot_token: String,
 
+    /// Isolated Telegram HTML demo; never initializes HA or the application database.
+    #[serde(default)]
+    pub widget_demo_enabled: bool,
+
     /// ID владельца бота. Может прийти как число или как строка в кавычках.
     #[serde(deserialize_with = "flexible_u64")]
     pub root_user: u64,

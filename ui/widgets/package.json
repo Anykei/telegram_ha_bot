@@ -1,0 +1,15 @@
+{
+  "name": "telegram-ha-widgets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline preview and compact Telegram HTML widget assets",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check:browser": "node tests/browser.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

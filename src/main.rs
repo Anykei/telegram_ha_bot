@@ -34,6 +34,7 @@ mod models;
 mod options;
 #[cfg(test)]
 mod test_support;
+mod widget_demo;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(12);
@@ -49,11 +50,12 @@ async fn main() -> Result<()> {
 
     info!("🚀 Starting Home Assistant Telegram Bot v{}.", APP_VERSION);
 
-    let paths = EnvPaths::load()
-        .validate()
-        .context("Error checking env variables.")?;
-
+    let paths = EnvPaths::load();
     let options = AppOptions::load(&paths.options).context("Error load options.json.")?;
+    if options.widget_demo_enabled {
+        return widget_demo::run(&options).await;
+    }
+    let paths = paths.validate().context("Error checking env variables.")?;
     info!(
         "Startup config: db={}, migrations={}, ha_url={}, default_language={:?}, voice_enabled={}, recording_storage={}, recording_parallel_jobs={}",
         paths.db_url(),
