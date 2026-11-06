@@ -3,28 +3,34 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Страница' : '', 'Часть', 'Назад'],
-    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'Page' : '', 'Part', 'Back']
+    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Страница' : '', 'Часть'],
+    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'Page' : '', 'Part']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
   let frame = 0, painted = 0;
   let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
+  const node = (tag, style = '', value = '') => {
+    const n = document.createElement(tag); n.className = style; n.textContent = value; return n;
+  };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
   const feedback = value => { text('r-feedback', value); hide('r-feedback', !value); };
-  const key = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,28}$/.test(value);
+  const string = value => typeof value === 'string';
+  const list = (value, max, test) => Array.isArray(value) && value.length <= max && value.every(test);
+  const key = value => string(value) && /^[A-Za-z0-9_-]{1,28}$/.test(value);
   function valid(v) {
-    return v && v.v === 1 && typeof v.rev === 'string' && /^[a-f0-9]{32}$/.test(v.rev) && Number.isSafeInteger(v.seq) && v.seq >= 0
-      && ['ru', 'en'].includes(v.lang) && ['title', 'context', 'body', 'notice', 'alert'].every(k => typeof v[k] === 'string')
-      && (v.kind === undefined || (GRAPH ? v.kind === 'list' : ['menu', 'device', 'climate', 'confirmation', 'form', 'list'].includes(v.kind)))
-      && (v.hint === undefined || typeof v.hint === 'string')
+    return v && v.v === 1 && string(v.rev) && /^[a-f0-9]{32}$/.test(v.rev) && Number.isSafeInteger(v.seq) && v.seq >= 0
+      && ['ru', 'en'].includes(v.lang) && ['title', 'context', 'body', 'notice', 'alert'].every(k => string(v[k]))
+      && (v.kind === undefined || (GRAPH ? v.kind === 'list' : string(v.kind)))
+      && (GRAPH || v.status === undefined || list(v.status, 2, s => list(s, 3, string) && s.length === 3))
+      && (v.hint === undefined || string(v.hint))
       && (v.back == null || key(v.back))
       && (!GRAPH || validGraph(v.graph))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
-      && Array.isArray(v.rows) && v.rows.length <= (GRAPH ? 4 : 64) && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
-        && row.every(b => b && typeof b.text === 'string' && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain']).includes(b.kind)));
+      && list(v.rows, GRAPH ? 4 : 64, row => list(row, GRAPH ? 3 : 2,
+        b => b && string(b.text) && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain', 'status']).includes(b.kind)) && row.length > 0);
   }
   function accept(v) {
     if (v && v.b !== undefined) {
@@ -38,69 +44,71 @@ import { validGraph, renderGraph } from './graph-render.js';
     return true;
   }
   function disable(node, value) {
-    node.classList.toggle('r-disabled', value);
     node.setAttribute('aria-disabled', String(value));
   }
   const blocked = read => denied || !data || !api || busy || waiting || (!read && uncertain);
   function action(b) {
-    const node = document.createElement('button');
     const awaiting = !GRAPH && (b.kind === 'wait' || b.key === activeKey && (busy || waiting));
     const unavailable = !GRAPH && (awaiting || b.kind === 'uncertain');
-    node.className = 'r-button r-' + b.kind + (awaiting ? ' r-wait' : '');
+    const button = node('button', 'r-button r-' + b.kind + (awaiting ? ' r-wait' : ''));
     if (!GRAPH) {
-      node.setAttribute('aria-busy', String(awaiting));
+      button.setAttribute('aria-busy', String(awaiting));
     }
-    node.setAttribute('data-key', b.key);
-    if (b.kind === 'selected') node.setAttribute('aria-pressed', 'true');
-    const label = document.createElement('span'); label.textContent = b.text; node.appendChild(label);
-    if (!GRAPH && awaiting) node.appendChild(document.createElement('i'));
-    disable(node, unavailable || blocked(b.key === data.read));
-    node.addEventListener('click', () => !unavailable && send(b.key));
-    return node;
+    button.setAttribute('data-key', b.key);
+    if (b.kind === 'selected') button.setAttribute('aria-pressed', 'true');
+    button.appendChild(node('span', '', b.text));
+    if (!GRAPH && awaiting) button.appendChild(node('i'));
+    disable(button, unavailable || blocked(b.key === data.read));
+    button.addEventListener('click', () => !unavailable && send(b.key));
+    return button;
   }
   function mount(nodes) {
     el('r-content').textContent = '';
     if (GRAPH) nodes.forEach(node => el('r-content').appendChild(node));
     else {
       let previous;
-      nodes.forEach(node => {
-      if (node.tagName === 'P') {
-        if (!previous || previous.className !== node.className) {
-          previous = document.createElement('p'); previous.className = node.className;
+      nodes.forEach(block => {
+      if (block.tagName === 'P') {
+        if (!previous || previous.className !== block.className) {
+          previous = node('p', block.className);
           el('r-content').appendChild(previous);
         }
-        previous.textContent += node.textContent;
-      } else { previous = null; el('r-content').appendChild(node); }
+        previous.textContent += block.textContent;
+      } else { previous = null; el('r-content').appendChild(block); }
       });
     }
   }
   function layout() {
     const blocks = [];
+    let statuses;
     const paragraphs = [[data.alert, 'r-alert'], [data.notice, 'r-notice'], [data.body, 'r-body'], [data.hint || '', 'r-hint']];
     if (!GRAPH) for (const id of ['r-title', 'r-context']) {
       if (el(id).scrollWidth > el(id).clientWidth) paragraphs.unshift([el(id).textContent, id + '-full']);
     }
     for (const [value, style] of paragraphs) {
-      if (GRAPH) {
-        if (value) {
-          const node = document.createElement('p'); node.className = 'r-text ' + style;
-          node.textContent = value; blocks.push(node);
-        }
-        continue;
+      // Bounded, Unicode-aware fragments prefer whitespace near the end. Mount
+      // joins adjacent fragments again; pagination never drops source text.
+      for (const part of GRAPH ? [value].filter(Boolean) : value.match(/[\s\S]{60,99}\s|[\s\S]{1,100}/gu) || []) {
+        blocks.push(node('p', 'r-text ' + style, part));
       }
-      const chars = Array.from(value);
-      while (chars.length) {
-        const node = document.createElement('p'); node.className = 'r-text ' + style;
-        let end = Math.min(100, chars.length);
-        while (end > 60 && end < chars.length && !/\s/.test(chars[end - 1])) end--;
-        node.textContent = chars.splice(0, end).join(''); blocks.push(node);
-      }
+    }
+    if (!GRAPH && data.status?.length) {
+      statuses = node('div', 'r-statuses');
+      data.status.forEach(status => {
+        const tile = node('div', 'r-button r-status');
+        status.forEach((value, i) => tile.appendChild(node(['span', 'strong', 'small'][i], '', value)));
+        statuses.appendChild(tile);
+      });
+      blocks.push(statuses);
     }
     data.rows.forEach(row => {
       row = row.filter(b => b.key !== data.back);
       if (!row.length) return;
-      const node = document.createElement('div'); node.className = 'r-row';
-      row.forEach(b => node.appendChild(action(b))); blocks.push(node);
+      if (!GRAPH && statuses && row[0].kind === 'status') {
+        row.forEach(b => statuses.appendChild(action(b))); return;
+      }
+      const group = node('div', 'r-row');
+      row.forEach(b => group.appendChild(action(b))); blocks.push(group);
     });
     mount(blocks); hide('r-local', true);
     if (card.scrollHeight <= 600) { deck = [blocks]; local = 0; return; }
@@ -130,11 +138,10 @@ import { validGraph, renderGraph } from './graph-render.js';
     text('r-title', locked ? w(5) : data.title);
     el('r-read').setAttribute('aria-label', w(!GRAPH && (busy || waiting) ? 3 : 2));
     if (!GRAPH) text('r-read', busy || waiting ? '…' : '↻');
-    text('r-back', '‹ ' + w(9));
+    text('r-back', '‹ ' + w(0));
     hide('r-back', locked || !data.back);
     feedback(locked ? w(6) : note || (!GRAPH && data.rows.flat().some(b => b.kind === 'uncertain') ? w(4) : ''));
     if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
-    card.classList.toggle('r-error', uncertain || denied);
     ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
     ['r-next', 'r-local-next'].forEach(id => el(id).setAttribute('aria-label', w(1)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);

@@ -351,8 +351,8 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
             .context("Non-page synthetic action")?
             .parse()?;
         assert!(index < prepared.pages.len());
-        assert_eq!(
-            button.kind, "nav",
+        assert!(
+            matches!(button.kind.as_str(), "nav" | "status"),
             "Synthetic page links must remain read-only"
         );
     }

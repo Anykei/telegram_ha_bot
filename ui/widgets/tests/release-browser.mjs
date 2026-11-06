@@ -37,7 +37,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       height:${doc}.body.scrollHeight,
       width:${doc}.documentElement.scrollWidth,
       available:${doc}.documentElement.clientWidth,
-      textFits:Array.from(${doc}.querySelectorAll('.r-text')).every(p=>p.scrollWidth<=p.clientWidth),
+      textFits:Array.from(${doc}.querySelectorAll('.r-text,.r-status')).every(p=>p.scrollWidth<=p.clientWidth),
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))
     })`);
     assert.equal(result.height, 600, `${label}: fixed card height`);
@@ -46,7 +46,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
   }
   async function collectParts(label, page) {
-    let text = '', actions = [], part = 0;
+    let text = '', actions = [], status = [], part = 0;
     while (true) {
       assert.ok(++part <= 40, `${label}: finite local pagination`);
       await dimensions(`${label}/part${part}`);
@@ -58,19 +58,21 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       const content = await evaluate(`({
         text:Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join(''),
         actions:Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent]),
+        status:Array.from(${doc}.querySelectorAll('div.r-status')).map(s=>Array.from(s.children,n=>n.textContent)),
         last:${get('r-local')}.classList.contains('r-hidden') || ${get('r-local-next')}.getAttribute('aria-disabled')==='true'
       })`);
-      text += content.text; actions.push(...content.actions);
+      text += content.text; actions.push(...content.actions); status.push(...content.status);
       if (content.last) break;
       await evaluate(`${get('r-local-next')}.click()`);
     }
     for (let i = 1; i < part; i++) await evaluate(`${get('r-local-prev')}.click()`);
-    return {text, actions, parts: part};
+    return {text, actions, status, parts: part};
   }
   async function assertPreserved(page, label) {
     const content = await collectParts(label, page);
     assert.ok(content.text.endsWith(page.alert + page.notice + page.body + (page.hint || '')), `${label}: all body/hint text survives local pagination exactly`);
     assert.deepEqual(content.actions, visibleActions(page), `${label}: every original action survives; duplicate Back is represented by the pinned control`);
+    assert.deepEqual(content.status, page.status || [], `${label}: every status field survives local pagination`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
     assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), page.kind || 'menu');
     assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), page.lang === 'ru' ? 'Обновить' : 'Refresh');
@@ -91,6 +93,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.equal(await evaluate(disabled('rooms')), 'true');
   }
   await command('Emulation.setDeviceMetricsOverride', {width:1280,height:1080,deviceScaleFactor:1,mobile:false});
+  await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   await command('Page.navigate', {url:pathToFileURL(root+'dist/release-preview.html').href});
   await until(`${get('r-title')} && ${get('r-title')}.textContent === 'Мой дом'`);
   let localPaginationSeen = false;
@@ -135,6 +138,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   // Old snapshots without optional kind/hint still have the default menu presentation.
   await reload('home');
+  await evaluate(`{const page=${state};delete page.kind;delete page.status;${win}.previewSetData(page);}`);
   assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
   assert.equal(await evaluate(`${doc}.querySelector('.r-hint')`), null);
   assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
@@ -157,7 +161,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload(fixture.id,{width:320});
     assert.deepEqual(fixture.page.b.slice(0,3).map(row=>row.map(b=>b[1])),[['rooms','scenes'],['cameras','favorites'],['settings','help']]);
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
-    assert.equal(await evaluate(`${doc}.querySelector('.r-body').textContent`),fixture.page.body,'Status is visible with the main sections');
+    assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('div.r-status')).map(s=>Array.from(s.children,n=>n.textContent))`),fixture.page.status,'Status is visible with the main sections');
     await click('favorites');
     await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':favorites')`),'Full favorites retains its own callback');
@@ -194,9 +198,27 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   await reload('home_admin_empty',{theme:'dark',width:390}); await capture('release-home-status');
+  await reload('home_two_statuses',{theme:'dark',width:390}); await capture('release-home-two-statuses');
   await reload('home_statuses',{theme:'dark',width:390}); await capture('release-home-statuses');
   await reload('home_admin',{theme:'dark',width:360}); await capture('release-home-admin-dark');
   await reload('home_en',{width:320}); await capture('release-home-en-light');
+  // Home distributes spare height to its menu, with the footer above native
+  // message metadata. Status length and number of sections can vary independently.
+  for (const id of ['home_empty','home_admin_empty','home_two_statuses','home_statuses']) {
+    for (const width of [320,390,430]) for (const safe of [0,24,64]) {
+      await reload(id,{width}); await evaluate(`${win}.previewSetSafeArea(${safe})`);
+      const geometry=await evaluate(`(() => {
+        const d=${doc}, rows=Array.from(d.querySelectorAll('.r-row'),n=>n.getBoundingClientRect());
+        return {footer:d.querySelector('.r-footer').getBoundingClientRect().toJSON(),last:rows.at(-1).toJSON(),
+          heights:rows.map(r=>r.height),parts:${get('r-local')}.classList.contains('r-hidden')};
+      })()`);
+      assert.equal(geometry.parts,true,`${id}/${width}/${safe}: main sections fit`);
+      assert.equal(geometry.footer.bottom,600-Math.max(16,safe),`${id}/${width}/${safe}: footer above the native clock`);
+      assert.ok(geometry.footer.top-geometry.last.bottom<=20,'No empty strip between menu and footer');
+      assert.ok(geometry.heights.every(h=>h>=60),'Menu retains comfortable touch targets');
+      await dimensions(`${id}/${width}/${safe}`);
+    }
+  }
   await reload('home_summary_empty',{width:320}); await capture('release-home-overview-empty');
   // Language changes use the same server-issued action path.
   await reload('settings'); await capture('release-settings');
@@ -241,7 +263,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     // advance via a real element, using one bounded frame loop and no requests.
     await evaluate(`(() => {
       const style=${doc}.createElement('style');
-      style.textContent='*,::before,::after{animation:none!important;transition:none!important}';
+      // A CSS dependency makes headless CDP invalidate styles when emulated
+      // motion returns to no-preference, so Chromium emits the change event.
+      style.textContent='*,::before,::after{animation:none!important;transition:none!important}@media(prefers-reduced-motion:reduce){html{--test-motion:1}}';
       ${doc}.head.appendChild(style);
       const w=${win}, raf=w.requestAnimationFrame.bind(w);
       w.__frames={pending:0,max:0};
@@ -283,7 +307,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await evaluate('new Promise(resolve=>setTimeout(resolve,180))');
     assert.equal(await evaluate(`${ring}.style.transform`), reducedRotation, 'Reduced motion stops rotation');
     assert.deepEqual(await geometry(), stable, 'Reduced motion also preserves button geometry');
-    await command('Emulation.setEmulatedMedia', {features:[]});
+    await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
     await until(`${ring}.style.transform !== ${JSON.stringify(reducedRotation)}`);
     if(width===360) await capture('release-pending-'+theme);
     const unknown = waiting.map(row=>row.map(b=>b.key==='lamp_on'?{...b,kind:'uncertain'}:b));

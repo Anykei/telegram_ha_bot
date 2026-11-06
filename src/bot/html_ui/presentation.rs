@@ -31,6 +31,9 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hint: String,
     pub body: String,
+    /// Home status tiles: source, state, event count/age. All fields are plain text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<[String; 3]>,
     pub notice: String,
     pub alert: String,
     #[serde(rename = "b", alias = "rows", with = "button_rows")]
@@ -191,7 +194,7 @@ fn split_text(text: &str, limit: usize) -> Vec<String> {
     parts
 }
 
-fn home_status_preview(view: &View) -> String {
+fn home_status_tile(item: &crate::core::HeaderItem, preview: bool) -> [String; 3] {
     fn short(value: &str, limit: usize) -> String {
         let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
         if value.chars().count() <= limit {
@@ -200,22 +203,35 @@ fn home_status_preview(view: &View) -> String {
             format!("{}…", value.chars().take(limit - 1).collect::<String>())
         }
     }
-    let heading = if view.lang == Language::En {
-        "All statuses"
-    } else {
-        "Все статусы"
-    };
-    let count = view.notifications.len();
-    let Some(item) = view.notifications.first() else {
-        return heading.into();
-    };
-    format!(
-        "{} {} · {} · {}\n{heading}: {count}",
-        item.icon,
-        short(&item.label, 26),
-        short(&item.value, 24),
-        crate::core::presentation::StateFormatter::format_last_update(item.last_update),
-    )
+    let age = crate::core::presentation::StateFormatter::format_last_update(item.last_update);
+    // The existing header producer appends a canonical event counter. Keep
+    // arbitrary device values intact if they do not have that exact suffix.
+    let (value, meta) = item
+        .value
+        .rsplit_once(" [x")
+        .and_then(|(value, count)| {
+            let count = count.strip_suffix(']')?;
+            (count.bytes().all(|c| c.is_ascii_digit()) && count.parse::<u64>().ok()? > 0)
+                .then(|| (value, format!("×{count} · {age}")))
+        })
+        .unwrap_or((&item.value, age));
+    [
+        format!(
+            "{} {}",
+            item.icon,
+            if preview {
+                short(&item.label, 26)
+            } else {
+                item.label.clone()
+            }
+        ),
+        if preview {
+            short(value, 24)
+        } else {
+            value.into()
+        },
+        meta,
+    ]
 }
 
 fn append_text(
@@ -328,6 +344,7 @@ pub fn prepare_with_pending(
         kind: screen_kind(view).into(),
         hint: String::new(),
         body: String::new(),
+        status: Vec::new(),
         notice: String::new(),
         alert: String::new(),
         rows: Vec::new(),
@@ -515,8 +532,13 @@ pub fn prepare_with_pending(
     let inline_status = home_status && {
         let first = parts.first_mut().unwrap_or(&mut current);
         let mut candidate = first.clone();
-        candidate.body = body.clone();
+        candidate.status = view
+            .notifications
+            .iter()
+            .map(|item| home_status_tile(item, false))
+            .collect();
         let fits = view.notifications.len() <= 2
+            && view.text.is_empty()
             && body.chars().count() <= 100
             && body.lines().count() <= 5
             && candidate.json().is_ok();
@@ -558,23 +580,32 @@ pub fn prepare_with_pending(
         parts[0].rows.insert(
             0,
             vec![Button {
-                text: home_status_preview(view),
+                text: if english {
+                    format!("All statuses: {}", view.notifications.len())
+                } else {
+                    format!("Все статусы: {}", view.notifications.len())
+                },
                 key: format!("p{index}"),
                 kind: "nav".into(),
             }],
         );
-        if parts[0].json().is_err() {
-            parts[0].rows[0][0].text = if english {
-                format!("All statuses: {}", view.notifications.len())
-            } else {
-                format!("Все статусы: {}", view.notifications.len())
-            };
+        if let Some(item) = view.notifications.first() {
+            let mut candidate = parts[0].clone();
+            candidate.status.push(home_status_tile(item, true));
+            candidate.rows[0][0].kind = "status".into();
+            candidate.rows[0][0].text.push_str(" ›");
+            if candidate.json().is_ok() {
+                parts[0] = candidate;
+            }
         }
         parts[0].json()?;
     }
     ensure!(parts.len() <= 9999, "Too many HTML pages");
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
+        if index == 0 && matches!(view.payload, Payload::Home) {
+            page.kind = "home".into();
+        }
         page.page = index + 1;
         page.pages = pages;
         page.prev = (index > 0).then(|| format!("p{}", index - 1));

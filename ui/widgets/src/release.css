@@ -12,7 +12,7 @@ button { font: inherit; cursor: pointer; }
 [data-kind="device"] .r-body, [data-kind="climate"] .r-body { font-size: 18px; }
 .r-alert { color: var(--ha-error); background: var(--ha-error-soft); }
 .r-notice { color: var(--ha-accent); background: var(--ha-accent-soft); }
-.r-row { display: flex; gap: var(--ha-space-2); margin-bottom: var(--ha-space-2); }
+.r-row, .r-statuses { display: flex; gap: var(--ha-space-2); margin-bottom: var(--ha-space-2); }
 .r-button { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; min-height: 60px; border: 1px solid var(--ha-line); border-radius: var(--ha-radius-control); padding: 10px var(--ha-space-3); color: var(--ha-text); background: var(--ha-surface); text-align: left; font-size: 16px; }
 .r-button span { overflow-wrap: anywhere; white-space:pre-line; }
 .r-nav::after { content:"›"; flex-shrink:0; color:var(--ha-muted); }
@@ -26,12 +26,20 @@ button { font: inherit; cursor: pointer; }
 .r-footer { display:flex; gap:var(--ha-space-2); margin-top:var(--ha-space-2); justify-content:flex-end; }
 .r-footer .r-pager { flex:1; min-width:0; margin:0; }
 .r-read { font-size:22px; line-height:1; }
-.r-feedback { min-height: 34px; margin: var(--ha-space-2) 0 0; color: var(--ha-muted); font-size: 14px; overflow-wrap: anywhere; }
-.r-error .r-feedback { color: var(--ha-error); }
-.r-disabled { opacity: .45; cursor: auto; }
+.r-feedback { min-height: 34px; margin: var(--ha-space-2) 0 0; color: var(--ha-error); font-size: 14px; overflow-wrap: anywhere; }
+[aria-disabled="true"] { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
 .r-wait { position:relative; opacity:1; }
 .r-wait span { opacity:0; }
 .r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
-@media (max-width: 260px) { .release h1 { font-size: 26px; } .r-button { min-height: 56px; padding: 9px var(--ha-space-2); font-size: 14px; } }
 .release { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }
+
+/* The home menu shares the same immutable widget with every ordinary screen. */
+[data-kind="home"] { display:flex; flex-direction:column; }
+[data-kind="home"] > * { flex-shrink:0; }
+[data-kind="home"] #r-content { flex:1; display:flex; flex-direction:column; }
+[data-kind="home"] .r-row, [data-kind="home"] .r-read { flex:1; }
+.r-status { display:block; padding:10px; font-size:15px; overflow-wrap:anywhere; }
+.r-status > * { display:block; }
+.r-status strong { font-size:18px; margin:4px 0; }
+.r-status small { font-size:12px; color:var(--ha-muted); }

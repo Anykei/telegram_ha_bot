@@ -48,7 +48,10 @@ async fn home_keeps_main_sections_on_first_page_with_or_without_favorites() -> R
                 assert_complete(&view, &prepared)?;
                 let first = &prepared.pages[0];
                 assert_eq!(first.title, words(lang, "Мой дом", "My home"));
-                assert!(!first.body.is_empty() && first.context.is_empty() && first.back.is_none());
+                assert!(
+                    !first.status.is_empty() && first.context.is_empty() && first.back.is_none()
+                );
+                assert_eq!(first.kind, "home");
                 let mut expected = main.clone();
                 if user == 1 {
                     expected.push(Payload::Admin(AdminPayload::ListActions));
@@ -89,7 +92,10 @@ async fn home_keeps_main_sections_on_first_page_with_or_without_favorites() -> R
                     "Short statuses need no extra page"
                 );
                 for item in &view.notifications {
-                    assert!(first.body.contains(&item.label) && first.body.contains(&item.value));
+                    assert!(first
+                        .status
+                        .iter()
+                        .any(|status| status[0].contains(&item.label) && status[1] == item.value));
                 }
                 // Classic mode still exposes the same complete keyboard and home status.
                 assert!(view.get_plain_text().contains(&first.title));
@@ -122,17 +128,38 @@ async fn home_shows_states_counts_and_age_without_hiding_navigation() -> Result<
         assert_eq!(prepared.pages.len(), 1);
         assert_eq!(prepared.pages[0].rows.iter().flatten().count(), 7);
         let status = &view.notifications[0];
-        let body = &prepared.pages[0].body;
-        assert!(body.contains(&status.label) && body.contains(&status.value));
-        assert!(body.contains(
+        let tile = &prepared.pages[0].status[0];
+        assert!(tile[0].contains(&status.label));
+        assert_eq!(tile[1], words(lang, "Закрыта", "Closed"));
+        assert!(tile[2].starts_with("×4 · "));
+        assert!(tile[2].contains(
             &crate::core::presentation::StateFormatter::format_last_update(status.last_update)
         ));
 
         view.notifications[0].value = words(lang, "Открыта [x5]", "Open [x5]").into();
         let updated = presentation::prepare(&view, "b".repeat(32), 2)?;
-        assert!(updated.pages[0].body.contains(&view.notifications[0].value));
-        assert!(!updated.pages[0].body.contains("[x4]"));
+        assert_eq!(
+            updated.pages[0].status[0][1],
+            words(lang, "Открыта", "Open")
+        );
+        assert!(updated.pages[0].status[0][2].starts_with("×5 · "));
         assert_eq!(updated.pages.len(), 1);
+
+        view.notifications[0].value = "Режим [xunknown]".into();
+        let literal = presentation::prepare(&view, "b".repeat(32), 2)?;
+        assert_eq!(literal.pages[0].status[0][1], "Режим [xunknown]");
+
+        view.notifications[0].value = "ВЫКЛ [x2]".into();
+        let mut second = view.notifications[0].clone();
+        second.label = "Коридор · Свет".into();
+        second.value = "Неактивно [x2]".into();
+        view.notifications.push(second);
+        let pair = presentation::prepare(&view, "b".repeat(32), 2)?;
+        assert_eq!(pair.pages.len(), 1);
+        assert_eq!(pair.pages[0].status.len(), 2);
+        assert_eq!(pair.pages[0].rows.iter().flatten().count(), 7);
+        assert_complete(&view, &pair)?;
+        view.notifications.pop();
 
         for index in 1..12 {
             let mut item = view.notifications[0].clone();
