@@ -1,0 +1,375 @@
+[
+  {
+    "id": "home",
+    "label": "Дом",
+    "page": {
+      "v": 1,
+      "rev": "11111111111111111111111111111111",
+      "seq": 1,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "Дом",
+      "body": "Выберите раздел.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Комнаты",
+            "key": "rooms",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Сценарии",
+            "key": "scenes",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Камеры",
+            "key": "cameras",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Мои настройки",
+            "key": "settings",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 2
+    }
+  },
+  {
+    "id": "home_more",
+    "label": "Дом · продолжение",
+    "page": {
+      "v": 1,
+      "rev": "22222222222222222222222222222222",
+      "seq": 2,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "Дом",
+      "body": "Остальные разделы.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Помощь",
+            "key": "help",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Админка",
+            "key": "admin",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "prev",
+      "next": null,
+      "page": 2,
+      "pages": 2
+    }
+  },
+  {
+    "id": "rooms",
+    "label": "Комнаты",
+    "page": {
+      "v": 1,
+      "rev": "33333333333333333333333333333333",
+      "seq": 3,
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Гостиная",
+            "key": "room",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Кухня",
+            "key": "room",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Спальня",
+            "key": "room",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Прихожая",
+            "key": "room",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 2
+    }
+  },
+  {
+    "id": "room",
+    "label": "Комната",
+    "page": {
+      "v": 1,
+      "rev": "44444444444444444444444444444444",
+      "seq": 4,
+      "lang": "ru",
+      "title": "Гостиная",
+      "context": "Управление",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "💡 Выключить: Торшер · Включён",
+            "key": "lamp_off",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "💡 Включить: Люстра · Выключена",
+            "key": "lamp_on",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Климат: Отопление · 22 °C",
+            "key": "climate",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "История: Температура · 22,4 °C",
+            "key": "sensor",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "home",
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "settings",
+    "label": "Мои настройки",
+    "page": {
+      "v": 1,
+      "rev": "55555555555555555555555555555555",
+      "seq": 5,
+      "lang": "ru",
+      "title": "Мои настройки",
+      "context": "Мой дом",
+      "body": "Тихие часы выключены.\n23:00–07:00 · время сервера.\nКритические уведомления приходят и в тихие часы.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Русский",
+            "key": "ru",
+            "kind": "selected"
+          },
+          {
+            "text": "English",
+            "key": "en",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Включить тихие часы",
+            "key": "quiet",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Изменить интервал",
+            "key": "interval",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Мои уведомления",
+            "key": "notifications",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 2
+    }
+  },
+  {
+    "id": "english",
+    "label": "Settings · English",
+    "page": {
+      "v": 1,
+      "rev": "66666666666666666666666666666666",
+      "seq": 6,
+      "lang": "en",
+      "title": "My settings",
+      "context": "My home",
+      "body": "Quiet hours are off.\n23:00–07:00 · server time.\nCritical notifications are delivered during quiet hours.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Русский",
+            "key": "ru",
+            "kind": "action"
+          },
+          {
+            "text": "English",
+            "key": "en",
+            "kind": "selected"
+          }
+        ],
+        [
+          {
+            "text": "Enable quiet hours",
+            "key": "quiet",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Change interval",
+            "key": "interval",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "My notifications",
+            "key": "notifications",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 2
+    }
+  },
+  {
+    "id": "unavailable",
+    "label": "Нет связи с HA",
+    "page": {
+      "v": 1,
+      "rev": "77777777777777777777777777777777",
+      "seq": 7,
+      "lang": "ru",
+      "title": "Гостиная",
+      "context": "Управление",
+      "body": "",
+      "notice": "",
+      "alert": "Home Assistant недоступен. Обновите состояние позже.",
+      "rows": [
+        [
+          {
+            "text": "Торшер · Недоступен",
+            "key": "sensor",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Отопление · Недоступно",
+            "key": "climate",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "Назад",
+            "key": "rooms",
+            "kind": "nav"
+          },
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "long",
+    "label": "Длинные сведения",
+    "page": {
+      "v": 1,
+      "rev": "88888888888888888888888888888888",
+      "seq": 8,
+      "lang": "en",
+      "title": "System information",
+      "context": "Read-only example",
+      "body": "This page demonstrates readable text pagination inside a Telegram message. Every paragraph remains available at a narrow width. There is no internal vertical scrolling.\n\nStatus values, device names and timestamps come from the bot. The widget does not create device data or decide whether a user may control a device.\n\nThe same rule applies to notices and warnings: their complete text must remain readable. Moving between local parts changes only presentation. Refresh asks the bot for the current page and never repeats a physical command.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Home",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  }
+]

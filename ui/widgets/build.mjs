@@ -23,7 +23,7 @@ async function build(screen, stylesheet, title) {
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);
   if (bytes > 32768 || size > 4096) throw Error(`Widget too large: ${bytes} raw / ${size} zlib bytes`);
-  const manifest = { designVersion: tokens.version, screen, bytes, zlibBytes: size, limit: 4096, protocol: screen === 'panel' ? 'p1' : 'w1', transport: 'TelegramWidget', liveIntegrationVerified: false };
+  const manifest = { designVersion: tokens.version, screen, bytes, zlibBytes: size, limit: 4096, protocol: screen === 'release' ? 'r1' : screen === 'panel' ? 'p1' : 'w1', transport: 'TelegramWidget', liveIntegrationVerified: false };
   await writeFile(root + `dist/${screen}.html`, html);
   console.log(`${screen}.html: ${bytes} bytes, zlib ${size}/4096.`);
   return {html, manifest};
@@ -44,3 +44,11 @@ const panelPreview = (await read('preview/panel.html'))
 await writeFile(root + 'dist/panel-preview.html', panelPreview);
 await writeFile(root + 'dist/panel-manifest.json', JSON.stringify(panel.manifest, null, 2) + '\n');
 console.log('Previews: ui/widgets/dist/{preview,panel-preview}.html');
+
+const release = await build('release', 'release.css', 'Дом');
+await writeFile(root + 'dist/release-manifest.json', JSON.stringify(release.manifest, null, 2) + '\n');
+const releasePreview = (await read('preview/release.html'))
+  .replace('__PAYLOAD__', escaped(release.html))
+  .replace('__FIXTURES__', escaped(JSON.parse(await read('preview/release-fixtures.json'))))
+  .replace('__MANIFEST__', escaped(release.manifest));
+await writeFile(root + 'dist/release-preview.html', releasePreview);

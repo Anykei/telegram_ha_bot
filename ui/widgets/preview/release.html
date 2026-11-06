@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-src about:; connect-src 'none'">
+  <title>Дом · релизные экраны</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f7f8f5;color:#263b32;font:14px/1.5 system-ui,sans-serif}button,select{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible{outline:3px solid #33785e;outline-offset:3px}header,main,footer{max-width:1120px;margin:auto}header{display:flex;justify-content:space-between;align-items:center;padding:27px 32px;border-bottom:1px solid #dfe6dc}header strong{font-size:20px;letter-spacing:-.6px}header small{color:#718270}main{display:grid;grid-template-columns:280px 1fr;gap:64px;padding:48px 32px}h1{font-size:35px;line-height:1.15;letter-spacing:-1px;margin:12px 0 18px}p{color:#718270}.eyebrow{font-size:10px;letter-spacing:1.8px;color:#47715a;text-transform:uppercase}.group{margin-top:25px}.group label,.group>span{display:block;margin-bottom:8px;font-size:12px;color:#4f6857}select{width:100%;padding:12px;border:1px solid #d6e1d4;border-radius:12px;background:#fff;color:#314c3c}.segments{display:flex;gap:4px;padding:4px;background:#e7eee4;border-radius:12px}.segments button{flex:1;min-height:36px;border:0;border-radius:9px;background:none;font-size:12px;color:#637c67}.segments button[aria-pressed=true]{background:#fff;color:#24583e}.context{font-size:11px;border-top:1px solid #dce4d8;padding-top:16px;margin-top:28px}.chat{min-width:0;background:#e7eee2;border:1px solid #d7e1d2;border-radius:24px;overflow:hidden}.chat-head{padding:18px 24px;background:#ffffffb5;border-bottom:1px solid #d7e1d2}.chat-head strong{display:block;font-weight:550}.chat-head small{font-size:11px;color:#84927f}.conversation{padding:24px;min-height:620px}.bubble{width:360px;max-width:100%;border-radius:18px;overflow:hidden;background:#fff}iframe{display:block;width:100%;height:500px;border:0}.caption{font-size:10px;color:#7d8c76;border-top:1px solid #e4ebdf;padding:9px 16px;margin:0}.chat.dark{background:#111e17;border-color:#334e3b}.dark .chat-head{background:#1c2c21;color:#e6efe6;border-color:#334e3b}.dark .bubble{background:#192420}.dark .caption{border-color:#354a3c;color:#98ad9b}.meta{font-size:10px;letter-spacing:.2px;color:#80917a;margin:12px 4px}.log{border:1px solid #dce5d6;border-radius:12px;padding:12px 16px;background:#fff;color:#60775f;font-size:12px;min-height:46px}footer{padding:24px 32px;border-top:1px solid #dfe6dc;font-size:11px;color:#81917a}footer a{color:#4b7054}@media(max-width:760px){main{display:block;padding:28px 18px}.controls{margin-bottom:30px}h1{font-size:30px}.group{margin-top:18px}.context{margin-top:18px}.conversation{padding:16px;min-height:0}.chat{max-width:540px;margin:auto}header{padding:20px 18px}header small{font-size:10px}footer{padding:20px 18px}}
+  </style>
+</head>
+<body>
+  <header><strong>⌂ Дом</strong><small>Релизные экраны · система оформления 1.x</small></header>
+  <main>
+    <section class="controls">
+      <div class="eyebrow">Один интерфейс · все действия</div>
+      <h1>Ваш дом.<br>Знакомые действия.</h1>
+      <p>Главная, комнаты и настройки в общем оформлении. Содержимое и действия передаёт бот.</p>
+      <div class="group"><label for="fixture">Экран</label><select id="fixture"></select></div>
+      <div class="group"><span>Тема Telegram</span><div class="segments" id="themes"><button data-theme="light" aria-pressed="true">Светлая</button><button data-theme="dark" aria-pressed="false">Тёмная</button></div></div>
+      <div class="group"><span>Ширина карточки</span><div class="segments" id="widths"><button data-width="200">200</button><button data-width="320">320</button><button data-width="360" aria-pressed="true">360</button><button data-width="430">430</button></div></div>
+      <div class="group"><label for="scenario">Ответ сервера</label><select id="scenario"><option value="ok">Обычный</option><option value="slow">Задержка обновления</option><option value="error">Ошибка команды, обновление доступно</option><option value="denied">Доступ отозван</option><option value="forward">Пересланная карточка</option></select></div>
+      <p class="context">Данные на этой странице вымышлены. Предпросмотр работает автономно: соединений с Home Assistant и Telegram нет. Файл виджета содержит только реальный компонент отображения; симулятор остаётся в этой оболочке.</p>
+    </section>
+    <section>
+      <div class="chat" id="chat"><div class="chat-head"><strong>Мой дом</strong><small>Предпросмотр сообщения</small></div><div class="conversation"><div class="bubble" id="bubble"><iframe id="release-frame" title="Релизный экран на примерах данных" sandbox="allow-scripts allow-same-origin"></iframe><p class="caption">Пример данных · реальный дом не подключён</p></div></div></div>
+      <div class="meta" id="size"></div><div class="log" id="log">Выберите экран и попробуйте действия внутри карточки.</div>
+    </section>
+  </main>
+  <footer><a href="../../../docks/html-widgets/DESIGN.md">Правила оформления</a> · <a href="../../../docks/html-widgets/SCREENS.md">Карта экранов</a></footer>
+  <script>
+    const payload = __PAYLOAD__, fixtures = __FIXTURES__, manifest = __MANIFEST__;
+    const select = document.getElementById('fixture'), frame = document.getElementById('release-frame');
+    let theme = 'light', width = 360;
+    fixtures.forEach(fixture => { const option = document.createElement('option'); option.value = fixture.id; option.textContent = fixture.label; select.appendChild(option); });
+    document.getElementById('size').textContent = `${manifest.zlibBytes} / 4096 байт · HTML + CSS + JS · внешних ресурсов нет`;
+    function install(snapshot, scheme, scenario, all, selected) {
+      let state = snapshot, id = selected;
+      const handlers = {};
+      const emit = next => { state = next; api.chatData = JSON.stringify(state); handlers.chatDataChanged?.(); };
+      const api = globalThis.TelegramWidget = {
+        chatData: JSON.stringify(state), colorScheme: scheme, isForward: scenario === 'forward',
+        onEvent(name, handler) { handlers[name] = handler; }, ready() {},
+        async request(raw) {
+          const parts = raw.split(':');
+          if (parts[0] !== 'r1' || parts[1] !== state.rev) throw Error('stale');
+          const key = parts[2];
+          parent.postMessage({type:'release-preview',text:raw}, '*');
+          if (scenario === 'denied') return {result:JSON.stringify({denied:true})};
+          if (scenario === 'error' && key !== 'read') { await new Promise(resolve => setTimeout(resolve, 300)); throw Error('timeout'); }
+          let target = {home:'home',rooms:'rooms',room:'room',settings:'settings',ru:'settings',en:'english'}[key];
+          if (key === 'next' && id === 'home') target = 'home_more';
+          if (key === 'prev') target = 'home';
+          const found = all.find(fixture => fixture.id === target);
+          const next = structuredClone(found ? found.page : state);
+          if (found) id = found.id;
+          next.seq = state.seq + 1; next.rev = next.seq.toString(16).padStart(32, '0');
+          if (key !== 'read' && !found) next.notice = state.lang === 'ru' ? 'Действие обработано в предпросмотре.' : 'Action handled in this preview.';
+          setTimeout(() => emit(next), scenario === 'slow' ? 2400 : 250);
+          return {result:JSON.stringify({accepted:true})};
+        }
+      };
+      globalThis.previewSetData = emit;
+    }
+    function load() {
+      const fixture = fixtures.find(value => value.id === select.value);
+      const bootstrap = `(${install.toString()})(${JSON.stringify(fixture.page)},${JSON.stringify(theme)},${JSON.stringify(document.getElementById('scenario').value)},${JSON.stringify(fixtures)},${JSON.stringify(fixture.id)});`;
+      frame.srcdoc = payload.replace('<head>', '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'">').replace('<script>', '<script>' + bootstrap + '</' + 'script><script>');
+      document.getElementById('bubble').style.width = width + 'px';
+      document.getElementById('chat').classList.toggle('dark', theme === 'dark');
+    }
+    document.getElementById('themes').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; theme = button.dataset.theme; document.querySelectorAll('[data-theme]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); load(); });
+    document.getElementById('widths').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; width = Number(button.dataset.width); document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); load(); });
+    select.addEventListener('change', load); document.getElementById('scenario').addEventListener('change', load);
+    addEventListener('message', event => { if (event.source === frame.contentWindow && event.data?.type === 'release-preview') document.getElementById('log').textContent = 'Симуляция запроса · ' + event.data.text; });
+    setInterval(() => { if (frame.contentDocument?.body) frame.style.height = Math.min(600, frame.contentDocument.body.scrollHeight) + 'px'; }, 150);
+    load();
+  </script>
+</body>
+</html>
