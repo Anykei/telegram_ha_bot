@@ -33,17 +33,24 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       height:${doc}.body.scrollHeight,
       width:${doc}.documentElement.scrollWidth,
       available:${doc}.documentElement.clientWidth,
+      textFits:Array.from(${doc}.querySelectorAll('.r-text')).every(p=>p.scrollWidth<=p.clientWidth),
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))
     })`);
     assert.ok(result.height <= 600, `${label}: height ${result.height} <=600`);
     assert.ok(result.width <= result.available, `${label}: no horizontal overflow`);
+    assert.ok(result.textFits, `${label}: full text wraps without clipping`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
   }
-  async function collectParts(label) {
+  async function collectParts(label, page) {
     let text = '', actions = [], part = 0;
     while (true) {
       assert.ok(++part <= 40, `${label}: finite local pagination`);
       await dimensions(`${label}/part${part}`);
+      if (page && page.back) {
+        const back = await evaluate(`({text:${get('r-back')}.textContent,rect:${get('r-back')}.getBoundingClientRect().toJSON()})`);
+        assert.equal(back.text, page.lang === 'ru' ? '‹ Назад' : '‹ Back');
+        assert.ok(back.rect.width >= 44 && back.rect.height >= 44 && back.rect.top < 30, `${label}/part${part}: persistent Back at the top`);
+      }
       const content = await evaluate(`({
         text:Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join(''),
         actions:Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent]),
@@ -57,7 +64,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     return {text, actions, parts: part};
   }
   async function assertPreserved(page, label) {
-    const content = await collectParts(label);
+    const content = await collectParts(label, page);
     assert.ok(content.text.endsWith(page.alert + page.notice + page.body + (page.hint || '')), `${label}: all body/hint text survives local pagination exactly`);
     assert.deepEqual(content.actions, page.rows.flat().map(b => [b.key, b.text]), `${label}: every original action survives in order`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
@@ -98,6 +105,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home');
   assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
   assert.equal(await evaluate(`${doc}.querySelector('.r-hint')`), null);
+  assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
+  await push({back:null});
+  assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
@@ -124,6 +134,53 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   for (const [id, theme] of [['scenes','light'],['confirmation','light'],['climate','dark'],['form','light'],['admin','light']]) {
     await reload(id, {theme}); await capture('release-'+id+'-'+theme);
   }
+  // The thermostat's original Back lives on chunk 2; its persistent control works on both.
+  for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
+    await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
+    if (serverPage === 2) {
+      await evaluate(`${get('r-next')}.click()`);
+      await until(`${get('r-count')}.textContent.endsWith(' 2/2') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    }
+    assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');
+    assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'false');
+    await evaluate(`${get('r-back')}.click()`);
+    await until(`${get('r-title')}.textContent === ${JSON.stringify(lang === 'ru' ? 'Гостиная' : 'Living room')} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  }
+  // Returning from each local part dispatches exactly one canonical action, not pagination.
+  for (const id of ['confirmation','confirmation_en','long']) for (const theme of ['light','dark']) {
+    const fixture = fixtures.find(f=>f.id===id);
+    await reload(id, {theme,width:200});
+    const {parts} = await collectParts('persistent back/'+id, fixture.page);
+    for (let part=0;part<parts;part++) {
+      await reload(id, {theme,width:200});
+      for (let i=0;i<part;i++) await evaluate(`${get('r-local-next')}.click()`);
+      await controlRequests();
+      await evaluate(`${get('r-back')}.click();${get('r-back')}.click()`);
+      assert.equal(await evaluate(`${win}.__requests.length`), 1);
+      assert.equal(await evaluate(`${win}.__requests[0].value`), `r1:${fixture.page.rev}:${fixture.page.back}`);
+      assert.equal(await evaluate(`${get('r-title')}.textContent`), fixture.page.title);
+      assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'true');
+      await reply({accepted:true});
+      const destination = fixtures.find(f=>f.id === fixture.page.back + (fixture.page.lang==='en' && fixture.page.back==='scenes' ? '_en' : ''));
+      await evaluate(`${win}.previewSetData(${JSON.stringify({...destination.page,seq:100,rev:'a'.repeat(32)})})`);
+      await until(`${get('r-title')}.textContent === ${JSON.stringify(destination.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    }
+  }
+  // Malformed keys fail before request; unknown well-formed keys are rejected by the server map.
+  await reload('climate'); await controlRequests(); await push({back:'bad:key'});
+  assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
+  await evaluate(`${get('r-back')}.click()`);
+  assert.equal(await evaluate(`${win}.__requests.length`), 0);
+  await reload('climate'); await push({back:'unknown_key'});
+  await evaluate(`${get('r-back')}.click()`);
+  await until(`${get('r-title')}.textContent === 'Доступ закрыт'`);
+  assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
+  // A failed Back follows ordinary recovery and never retries or bypasses the lock.
+  await reload('climate', {scenario:'error'}); await evaluate(`${get('r-back')}.click()`);
+  await until(`${get('r-feedback')}.textContent.includes('Нет ответа')`);
+  assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'true');
+  await evaluate(`${get('r-read')}.click()`);
+  await until(`${get('r-back')}.getAttribute('aria-disabled') === 'false' && ${get('r-feedback')}.textContent === ''`);
   // Existing callback menus keep their entire continuation and both directions.
   for (const lang of ['ru','en']) {
     await reload(lang === 'ru' ? 'admin' : 'admin_en');
@@ -244,5 +301,5 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await capture('release-mobile');
   await dimensions('mobile');
   assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Release mobile shell overflow');
-  console.log(`Release checks passed: ${fixtures.length} fixtures × 2 themes × 4 widths, all text/actions across local parts, separate device navigation/control, server chunks, RU/EN, timeout/read recovery, both ACK races, stale seq, duplicate taps, denial, forwards and mobile.`);
+  console.log(`Release checks passed: ${fixtures.length} fixtures × 2 themes × 4 widths, persistent Back across server/local pages, all text/actions, separate device navigation/control, RU/EN, timeout/read recovery, both ACK races, stale seq, duplicate taps, denial, forwards and mobile.`);
 }

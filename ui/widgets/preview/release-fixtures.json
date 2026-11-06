@@ -132,7 +132,8 @@
       "prev": null,
       "next": "next",
       "page": 1,
-      "pages": 2
+      "pages": 2,
+      "back": "home"
     }
   },
   {
@@ -192,7 +193,8 @@
       "prev": "home",
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "rooms"
     }
   },
   {
@@ -234,7 +236,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "kind": "device"
+      "kind": "device",
+      "back": "room"
     }
   },
   {
@@ -289,7 +292,8 @@
       "prev": null,
       "next": "next",
       "page": 1,
-      "pages": 2
+      "pages": 2,
+      "back": "home"
     }
   },
   {
@@ -344,7 +348,8 @@
       "prev": null,
       "next": "next",
       "page": 1,
-      "pages": 2
+      "pages": 2,
+      "back": "home"
     }
   },
   {
@@ -392,7 +397,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "rooms"
     }
   },
   {
@@ -421,7 +427,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "home"
     }
   },
   {
@@ -472,7 +479,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "home"
     }
   },
   {
@@ -523,7 +531,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "home"
     }
   },
   {
@@ -561,7 +570,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "scenes"
     }
   },
   {
@@ -599,7 +609,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "scenes"
     }
   },
   {
@@ -635,25 +646,14 @@
             "key": "form",
             "kind": "nav"
           }
-        ],
-        [
-          {
-            "text": "Назад",
-            "key": "room",
-            "kind": "nav"
-          },
-          {
-            "text": "Дом",
-            "key": "home",
-            "kind": "nav"
-          }
         ]
       ],
       "read": "read",
       "prev": null,
-      "next": null,
+      "next": "climate_more",
       "page": 1,
-      "pages": 1
+      "pages": 2,
+      "back": "room"
     }
   },
   {
@@ -689,25 +689,14 @@
             "key": "form",
             "kind": "nav"
           }
-        ],
-        [
-          {
-            "text": "Back",
-            "key": "room",
-            "kind": "nav"
-          },
-          {
-            "text": "Home",
-            "key": "home",
-            "kind": "nav"
-          }
         ]
       ],
       "read": "read",
       "prev": null,
-      "next": null,
+      "next": "climate_more",
       "page": 1,
-      "pages": 1
+      "pages": 2,
+      "back": "room"
     }
   },
   {
@@ -738,7 +727,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "climate"
     }
   },
   {
@@ -769,7 +759,8 @@
       "prev": null,
       "next": null,
       "page": 1,
-      "pages": 1
+      "pages": 1,
+      "back": "climate"
     }
   },
   {
@@ -820,7 +811,8 @@
       "prev": null,
       "next": "admin_more",
       "page": 1,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
     }
   },
   {
@@ -871,7 +863,8 @@
       "prev": null,
       "next": "admin_more",
       "page": 1,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
     }
   },
   {
@@ -922,7 +915,8 @@
       "prev": "admin",
       "next": "admin_last",
       "page": 2,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
     }
   },
   {
@@ -973,7 +967,8 @@
       "prev": "admin",
       "next": "admin_last",
       "page": 2,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
     }
   },
   {
@@ -1003,7 +998,8 @@
       "prev": "admin_more",
       "next": null,
       "page": 3,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
     }
   },
   {
@@ -1033,7 +1029,141 @@
       "prev": "admin_more",
       "next": null,
       "page": 3,
-      "pages": 3
+      "pages": 3,
+      "back": "home"
+    }
+  },
+  {
+    "id": "climate_more",
+    "label": "Климат · продолжение · RU",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000018",
+      "seq": 24,
+      "lang": "ru",
+      "kind": "climate",
+      "title": "Климат",
+      "context": "Гостиная · Отопление",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Назад",
+            "key": "room",
+            "kind": "nav"
+          },
+          {
+            "text": "Дом",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "climate",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "back": "room"
+    }
+  },
+  {
+    "id": "climate_more_en",
+    "label": "Climate · continued · EN",
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000019",
+      "seq": 25,
+      "lang": "en",
+      "kind": "climate",
+      "title": "Climate",
+      "context": "Living room · Heating",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Back",
+            "key": "room",
+            "kind": "nav"
+          },
+          {
+            "text": "Home",
+            "key": "home",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "climate",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "back": "room"
+    }
+  },
+  {
+    "id": "room_en",
+    "label": "Living room · EN",
+    "page": {
+      "v": 1,
+      "rev": "44444444444444444444444444444444",
+      "seq": 4,
+      "lang": "en",
+      "title": "Living room",
+      "context": "Controls",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "Floor lamp · Off",
+            "key": "device",
+            "kind": "nav"
+          },
+          {
+            "text": "On",
+            "key": "lamp_on",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Ceiling light · On",
+            "key": "ceiling",
+            "kind": "nav"
+          },
+          {
+            "text": "Off",
+            "key": "ceiling_off",
+            "kind": "action"
+          }
+        ],
+        [
+          {
+            "text": "Climate: Heating · 22 °C",
+            "key": "climate",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "History: Temperature · 22.4 °C",
+            "key": "sensor",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": "home",
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "back": "rooms"
     }
   }
 ]

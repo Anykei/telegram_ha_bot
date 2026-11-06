@@ -3,7 +3,7 @@ use super::super::{
     personal::PersonalPayload,
     router::{AdminPayload, CameraPayload, CommandPayload, ControlPayload, Payload},
 };
-use crate::i18n::Language;
+use crate::i18n::{t, Language};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,6 +32,8 @@ pub struct Page {
     pub alert: String,
     pub rows: Vec<Vec<Button>>,
     pub read: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
     pub prev: Option<String>,
     pub next: Option<String>,
     pub page: usize,
@@ -194,6 +196,18 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         alert: String::new(),
         rows: Vec::new(),
         read: "read".into(),
+        // The shared screen builder labels its existing parent callback with
+        // common.back. Pin the last such button (the footer), without inventing
+        // a parent route or losing list/wizard context. Keys keep their row order.
+        back: view
+            .kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, button)| button.text == t(view.lang, "common.back"))
+            .map(|(index, _)| format!("a{index}"))
+            .last(),
         prev: Some("p9999".into()),
         next: Some("p9999".into()),
         page: 9999,

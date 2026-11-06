@@ -1,12 +1,12 @@
 // All actions are server-issued opaque keys. This file never interprets a device command.
 (() => {
-  const api = globalThis.TelegramWidget, el = id => document.getElementById(id);
+  const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Назад', 'Далее', 'Обновить', 'Обновляем экран…', 'Нет ответа. Нажмите «Обновить».', 'Доступ закрыт', 'Откройте /classic в личном чате с ботом.', 'Страница', 'Часть'],
-    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Press Refresh.', 'Access denied', 'Open /classic in your private chat with the bot.', 'Page', 'Part']
+    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновляем экран…', 'Нет ответа. Нажмите «Обновить».', 'Доступ закрыт', 'Откройте /classic в личном чате с ботом.', 'Страница', 'Часть', 'Назад'],
+    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Press Refresh.', 'Access denied', 'Open /classic in your private chat with the bot.', 'Page', 'Part', 'Back']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
-  let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', oversized = false;
+  let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '';
   let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
@@ -16,6 +16,7 @@
       && ['ru', 'en'].includes(v.lang) && ['title', 'context', 'body', 'notice', 'alert'].every(k => typeof v[k] === 'string')
       && (v.kind === undefined || ['menu', 'device', 'climate', 'confirmation', 'form', 'list'].includes(v.kind))
       && (v.hint === undefined || typeof v.hint === 'string')
+      && (v.back == null || key(v.back))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
       && Array.isArray(v.rows) && v.rows.length <= 4 && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= 2
@@ -63,7 +64,7 @@
     const blocks = [];
     const paragraphs = [[data.alert, 'r-alert'], [data.notice, 'r-notice'], [data.body, 'r-body'], [data.hint || '', 'r-hint']];
     for (const id of ['r-title', 'r-context']) {
-      if (el(id).scrollWidth > el(id).clientWidth) paragraphs.unshift([el(id).textContent, id]);
+      if (el(id).scrollWidth > el(id).clientWidth) paragraphs.unshift([el(id).textContent, id + '-full']);
     }
     for (const [value, style] of paragraphs) {
       const chars = Array.from(value);
@@ -79,16 +80,16 @@
       row.forEach(b => node.appendChild(action(b))); blocks.push(node);
     });
     mount(blocks); hide('r-local', true);
-    if (el('release').getBoundingClientRect().height <= 580) { deck = [blocks]; local = 0; return; }
+    if (card.getBoundingClientRect().height <= 580) { deck = [blocks]; local = 0; return; }
     hide('r-local', false); text('r-local-count', w(8) + ' 1/1');
     deck = []; let part = [];
     for (const block of blocks) {
       part.push(block); mount(part);
-      if (el('release').getBoundingClientRect().height > 580) {
+      if (card.getBoundingClientRect().height > 580) {
         part.pop();
         if (part.length) deck.push(part);
         part = [block]; mount(part);
-        if (el('release').getBoundingClientRect().height > 580) { oversized = true; return; }
+        if (card.getBoundingClientRect().height > 580) return true;
       }
     }
     if (part.length || !deck.length) deck.push(part);
@@ -101,23 +102,22 @@
   }
   function render() {
     const locked = denied || !data || !api;
-    el('release').setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
+    card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
     text('r-read-label', w(2));
+    text('r-back', '‹ ' + w(9));
+    hide('r-back', locked || !data.back);
     text('r-feedback', locked ? w(6) : note);
-    el('release').classList.toggle('r-error', uncertain || denied);
+    card.classList.toggle('r-error', uncertain || denied);
     ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
     ['r-next', 'r-local-next'].forEach(id => el(id).setAttribute('aria-label', w(1)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);
     mount([]);
     if (locked) return;
     text('r-count', w(7) + ' ' + data.page + '/' + data.pages);
-    disable(el('r-read'), blocked(true));
-    disable(el('r-prev'), !data.prev || blocked(false));
-    disable(el('r-next'), !data.next || blocked(false));
-    oversized = false; layout();
-    if (oversized) {
+    ['read', 'prev', 'next', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
+    if (layout()) {
       mount([]); hide('r-local', true); hide('r-server', true);
       text('r-feedback', w(6));
     }
@@ -158,9 +158,7 @@
   function theme() {
     document.documentElement.setAttribute('data-theme', api && api.colorScheme === 'dark' ? 'dark' : 'light');
   }
-  el('r-read').addEventListener('click', () => data && send(data.read));
-  el('r-prev').addEventListener('click', () => data && data.prev && send(data.prev));
-  el('r-next').addEventListener('click', () => data && data.next && send(data.next));
+  ['read', 'prev', 'next', 'back'].forEach(k => el('r-' + k).addEventListener('click', () => data && data[k] && send(data[k])));
   el('r-local-prev').addEventListener('click', () => { if (local > 0) { local--; render(); } });
   el('r-local-next').addEventListener('click', () => { if (local + 1 < deck.length) { local++; render(); } });
   if (api && !denied) {
@@ -171,9 +169,9 @@
   if (typeof ResizeObserver === 'function') {
     let width = 0;
     new ResizeObserver(() => {
-      const next = el('release').getBoundingClientRect().width;
+      const next = card.getBoundingClientRect().width;
       if (next !== width) { width = next; render(); }
-    }).observe(el('release'));
+    }).observe(card);
   }
   theme(); render();
 })();

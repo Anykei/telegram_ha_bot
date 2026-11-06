@@ -174,6 +174,52 @@ async fn release_navigation_keeps_scenarios_admin_settings_and_camera_controls_i
 }
 
 #[tokio::test]
+async fn pinned_back_returns_from_climate_through_each_parent_level() -> Result<()> {
+    let (config, ha) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "climate.bedroom").await?;
+    let before = ha.fetch_states_by_ids(&["climate.bedroom".into()]).await?[0]
+        .attributes
+        .temperature;
+    publish(
+        &fake,
+        &config,
+        Payload::Control(ControlPayload::DeviceControl { room, device }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    for parent in [
+        Payload::Control(ControlPayload::RoomDetail { room }),
+        Payload::Control(ControlPayload::ListRooms),
+        Payload::Home,
+    ] {
+        let session = current(&config);
+        let key = session.pages[0]
+            .back
+            .as_deref()
+            .context("Missing pinned Back")?;
+        assert!(session.pages.iter().all(|p| p.back.as_deref() == Some(key)));
+        assert_eq!(session.actions[key], parent);
+        // Use the same control from the last content page as from the first.
+        let last = query(&session, &format!("p{}", session.pages.len() - 1));
+        assert!(resolve(&fake.bot, &last, &config).await?.is_none());
+        press(&fake, &config, &dialogue, query(&session, key)).await?;
+        assert_eq!(current(&config).view.payload, parent);
+    }
+    assert!(current(&config).pages.iter().all(|p| p.back.is_none()));
+    assert_eq!(
+        ha.fetch_states_by_ids(&["climate.bedroom".into()]).await?[0]
+            .attributes
+            .temperature,
+        before
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn html_confirmation_executes_once_and_refresh_never_repeats_command() -> Result<()> {
     let (config, ha) = mock_config().await?;
     let fake = FakeTelegram::new().await?;
