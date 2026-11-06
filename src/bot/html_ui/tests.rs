@@ -89,6 +89,7 @@ struct FakeTelegram {
     bot: Bot,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     fail: Arc<Mutex<Option<String>>>,
+    update_batches: Arc<Mutex<std::collections::VecDeque<Vec<Value>>>>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for FakeTelegram {
@@ -104,6 +105,8 @@ impl FakeTelegram {
         let recorded = calls.clone();
         let fail = Arc::new(Mutex::new(None::<String>));
         let failing = fail.clone();
+        let update_batches = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let pending_updates = update_batches.clone();
         let task = tokio::spawn(async move {
             let mut id = 10;
             while let Ok((stream, _)) = listener.accept().await {
@@ -146,7 +149,13 @@ impl FakeTelegram {
                     }
                 };
                 id += 1;
-                let result = if method.to_ascii_lowercase().starts_with("send")
+                let result = if method == "getUpdates" {
+                    json!(pending_updates
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_default())
+                } else if method.to_ascii_lowercase().starts_with("send")
                     || method.to_ascii_lowercase().starts_with("editmessage")
                 {
                     json!({"message_id":id,"date":1,"chat":{"id":1,"type":"private"},"text":"Test"})
@@ -173,6 +182,7 @@ impl FakeTelegram {
             bot,
             calls,
             fail,
+            update_batches,
             task,
         })
     }
@@ -225,6 +235,78 @@ fn normalization_preserves_original_sender_and_chat_for_admission_filters() -> R
     ));
     raw["widget_query"]["inline_message_id"] = json!("inline");
     assert!(transport::normalize(&raw).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn polling_delivers_both_interfaces_and_advances_past_invalid_updates() -> Result<()> {
+    use futures_util::StreamExt;
+    use teloxide::{
+        types::UpdateKind,
+        update_listeners::{AsUpdateStream, UpdateListener},
+    };
+
+    let fake = FakeTelegram::new().await?;
+    let user = json!({"id":7,"is_bot":false,"first_name":"Test"});
+    let chat = json!({"id":7,"type":"private"});
+    let message = json!({"message_id":12,"date":1,"chat":chat,"from":user,"text":"/start"});
+    fake.update_batches.lock().unwrap().extend([
+        vec![
+            json!({"update_id":10,"future_update":{}}),
+            json!({"update_id":11,"message":{"text":"malformed"}}),
+            json!({"update_id":12,"callback_query":{"id":"classic","from":user,
+                "chat_instance":"chat","data":"route","message":message}}),
+            json!({"update_id":13,"widget_query":{"id":"widget","from":user,
+                "chat":chat,"message_id":12,"data":"opaque-key"}}),
+            json!({"update_id":14,"message":message}),
+            json!({"update_id":15,"widget_query":{"id":"invalid","message_id":12}}),
+            json!({"update_id":16,"future_update":{}}),
+        ],
+        vec![json!({"update_id":17,"message":message})],
+    ]);
+    let mut listener = transport::listener(fake.bot.clone());
+    let stop = listener.stop_token();
+    let updates = listener.as_stream();
+    futures_util::pin_mut!(updates);
+    let mut received = Vec::new();
+    for id in [12, 13, 14, 17] {
+        let update = tokio::time::timeout(std::time::Duration::from_secs(5), updates.next())
+            .await?
+            .context("Polling stopped unexpectedly")??;
+        assert_eq!(update.id.0, id);
+        assert!(crate::bot::is_verified_private_update(&update));
+        received.push(update.kind);
+    }
+    assert!(
+        matches!(&received[0], UpdateKind::CallbackQuery(q) if !is_widget(q) && q.data.as_deref() == Some("route"))
+    );
+    assert!(
+        matches!(&received[1], UpdateKind::CallbackQuery(q) if is_widget(q) && q.data.as_deref() == Some("opaque-key"))
+    );
+    assert!(matches!(&received[2], UpdateKind::Message(m) if m.text() == Some("/start")));
+    stop.stop();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), updates.next())
+            .await?
+            .is_none()
+    );
+
+    let calls = fake.calls();
+    let polls = calls
+        .iter()
+        .filter(|(method, _)| method == "getUpdates")
+        .collect::<Vec<_>>();
+    assert_eq!(polls.len(), 2);
+    assert_eq!(polls[0].1["offset"], 0);
+    assert_eq!(polls[1].1["offset"], 17);
+    assert_eq!(
+        polls[1].1["allowed_updates"],
+        json!(["message", "callback_query", "widget_query"])
+    );
+    assert!(calls
+        .iter()
+        .any(|(method, body)| method == "answerWidgetQuery"
+            && body == &json!({"widget_query_id":"invalid","data":"{\"denied\":true}"})));
     Ok(())
 }
 

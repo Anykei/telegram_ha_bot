@@ -1,6 +1,7 @@
 //! Beta methods and raw polling. Teloxide 0.17 drops unknown widget_query fields.
 use anyhow::{ensure, Context, Result};
 use futures_util::{stream, Stream};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::VecDeque, pin::Pin, time::Duration};
 use teloxide::{
@@ -9,6 +10,10 @@ use teloxide::{
     types::{Update, UpdateId, UpdateKind},
     update_listeners::{StatefulListener, UpdateListener},
 };
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;
 
 pub async fn call(bot: &Bot, method: &str, body: Value) -> Result<Value> {
     let url = bot.api_url();
@@ -61,7 +66,15 @@ pub async fn call(bot: &Bot, method: &str, body: Value) -> Result<Value> {
 
 pub fn normalize(raw: &Value) -> Result<Update> {
     let Some(q) = raw.get("widget_query") else {
-        return serde_json::from_value(raw.clone()).context("Invalid Telegram update");
+        // UpdateKind probes a borrowed &str key first. An owned Value consumes
+        // that key on the failed probe, silently producing Error({}) even for
+        // ordinary messages/callbacks. Borrow the JSON so the probe succeeds.
+        let update = Update::deserialize(raw).context("Invalid Telegram update")?;
+        ensure!(
+            !matches!(update.kind, UpdateKind::Error(_)),
+            "Unsupported or malformed Telegram update"
+        );
+        return Ok(update);
     };
     let id = q["id"].as_str().context("Missing query ID")?;
     ensure!(
@@ -107,6 +120,17 @@ pub fn listener(bot: Bot) -> impl UpdateListener<Err = anyhow::Error> {
                     match normalize(&raw) {
                         Ok(update) => return Some((Ok(update), (bot, offset, pending, stop_flag))),
                         Err(_) => {
+                            // Log envelope fields only: message bodies, callback data,
+                            // and user details must not end up in diagnostics.
+                            let fields = raw
+                                .as_object()
+                                .map(|object| object.keys().map(String::as_str).collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            log::warn!(
+                                "Skipping unsupported or malformed Telegram update: id={:?}, fields={:?}",
+                                raw["update_id"].as_u64(),
+                                fields
+                            );
                             if let Some(id) = raw["widget_query"]["id"].as_str() {
                                 let _ = call(
                                     &bot,
