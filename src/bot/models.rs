@@ -6,6 +6,13 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use teloxide::types::InlineKeyboardMarkup;
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HtmlSection {
+    /// Start a named continuation at this source keyboard row.
+    pub start_row: usize,
+    pub title: String,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct View {
     #[serde(default)]
@@ -23,6 +30,11 @@ pub struct View {
     /// Short confirmed state shown with controls; full text stays in details.
     #[serde(default)]
     pub html_summary: Option<String>,
+    #[serde(default)]
+    pub html_sections: Vec<HtmlSection>,
+    /// Label deferred full text, with a return to the first page.
+    #[serde(default)]
+    pub html_details_title: Option<String>,
     #[serde(default)]
     pub html_chart: Option<crate::charts::widget::WidgetChart>,
     pub notifications: Vec<HeaderItem>,

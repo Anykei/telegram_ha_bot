@@ -5,6 +5,9 @@ use crate::ha::HomeAssistantClient;
 #[path = "graph_tests.rs"]
 mod graph_tests;
 
+#[path = "home_tests.rs"]
+mod home_tests;
+
 async fn mock_config() -> Result<(Arc<AppConfig>, Arc<crate::ha::mock::MockHa>)> {
     let mut config = crate::test_support::config().await;
     let (tx, _) = tokio::sync::mpsc::channel(100);
@@ -199,7 +202,13 @@ async fn pinned_back_returns_from_climate_through_each_parent_level() -> Result<
         press(&fake, &config, &dialogue, query(&session, key)).await?;
         assert_eq!(current(&config).view.payload, parent);
     }
-    assert!(current(&config).pages.iter().all(|p| p.back.is_none()));
+    let home = current(&config);
+    assert!(home.pages[0].back.is_none());
+    assert!(home
+        .pages
+        .iter()
+        .skip(1)
+        .all(|p| p.back.as_deref() == Some("p0")));
     assert_eq!(
         ha.fetch_states_by_ids(&["climate.bedroom".into()]).await?[0]
             .attributes

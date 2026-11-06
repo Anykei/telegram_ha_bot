@@ -366,8 +366,21 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     ] {
         current = append_text(current, &empty, &mut parts, field, text)?;
     }
+    let root = empty.clone();
+    let mut empty = empty;
     let mut actions = HashMap::new();
     for (row_index, row) in view.kb.inline_keyboard.iter().enumerate() {
+        if view.text_page.is_none() && view.next_state.is_none() {
+            if let Some(section) = view
+                .html_sections
+                .iter()
+                .find(|section| section.start_row == row_index)
+            {
+                parts.push(current);
+                empty = continuation(&root, &section.title)?;
+                current = empty.clone();
+            }
+        }
         // Preserve every button, including source rows wider than the widget.
         // Graph time navigation (-day / current / +day) fits one 3-button row;
         // keeping it together leaves both rows of range presets on the first page.
@@ -425,6 +438,10 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     }
     if summary.is_some() && !body.is_empty() {
         parts.push(current);
+        empty = match &view.html_details_title {
+            Some(title) => continuation(&root, title)?,
+            None => root,
+        };
         current = append_text(empty.clone(), &empty, &mut parts, "body", &body)?;
     }
     parts.push(current);
@@ -441,4 +458,15 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         pages: parts,
         actions,
     })
+}
+
+fn continuation(root: &Page, title: &str) -> Result<Page> {
+    let page = Page {
+        title: title.into(),
+        context: root.title.clone(),
+        back: Some("p0".into()),
+        ..root.clone()
+    };
+    ensure!(page.json()?.len() <= 600, "Header is too large for HTML");
+    Ok(page)
 }

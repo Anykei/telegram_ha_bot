@@ -1,88 +1,748 @@
 [
   {
     "id": "home",
-    "label": "Дом",
+    "label": "Дом · user · favorites",
+    "home": {
+      "primary": true,
+      "owner": false,
+      "filled": true
+    },
     "page": {
       "v": 1,
       "rev": "11111111111111111111111111111111",
       "seq": 1,
       "lang": "ru",
       "title": "Мой дом",
-      "context": "Дом",
-      "body": "Выберите раздел.",
+      "context": "",
+      "body": "",
       "notice": "",
       "alert": "",
-      "rows": [
-        [
-          {
-            "text": "Комнаты",
-            "key": "rooms",
-            "kind": "nav"
-          }
-        ],
-        [
-          {
-            "text": "Сценарии",
-            "key": "scenes",
-            "kind": "nav"
-          }
-        ],
-        [
-          {
-            "text": "Камеры",
-            "key": "cameras",
-            "kind": "nav"
-          }
-        ],
-        [
-          {
-            "text": "Мои настройки",
-            "key": "settings",
-            "kind": "nav"
-          }
-        ]
-      ],
       "read": "read",
       "prev": null,
-      "next": "next",
+      "next": "home_next",
       "page": 1,
-      "pages": 2
+      "pages": 3,
+      "b": [
+        [
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ]
+      ]
     }
   },
   {
-    "id": "home_more",
-    "label": "Дом · продолжение",
+    "id": "home_empty",
+    "label": "Дом · user · empty",
+    "home": {
+      "primary": true,
+      "owner": false,
+      "filled": false
+    },
     "page": {
       "v": 1,
-      "rev": "22222222222222222222222222222222",
-      "seq": 2,
+      "rev": "00000000000000000000000000000033",
+      "seq": 51,
       "lang": "ru",
       "title": "Мой дом",
-      "context": "Дом",
-      "body": "Остальные разделы.",
+      "context": "",
+      "body": "",
       "notice": "",
       "alert": "",
-      "rows": [
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 2,
+      "b": [
         [
-          {
-            "text": "Помощь",
-            "key": "help",
-            "kind": "nav"
-          }
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
         ],
         [
-          {
-            "text": "Админка",
-            "key": "admin",
-            "kind": "nav"
-          }
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_admin",
+    "label": "Дом · owner · favorites",
+    "home": {
+      "primary": true,
+      "owner": true,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000034",
+      "seq": 52,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 3,
+      "b": [
+        [
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Администрирование",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_admin_empty",
+    "label": "Дом · owner · empty",
+    "home": {
+      "primary": true,
+      "owner": true,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000035",
+      "seq": 53,
+      "lang": "ru",
+      "title": "Мой дом",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 2,
+      "b": [
+        [
+          [
+            "🏠 Комнаты",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Сценарии",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Камеры",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Мои настройки",
+            "settings",
+            "nav"
+          ],
+          [
+            "Помощь",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Администрирование",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_en",
+    "label": "Home · user · favorites",
+    "home": {
+      "primary": true,
+      "owner": false,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000036",
+      "seq": 54,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 3,
+      "b": [
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_empty_en",
+    "label": "Home · user · empty",
+    "home": {
+      "primary": true,
+      "owner": false,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000037",
+      "seq": 55,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 2,
+      "b": [
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_admin_en",
+    "label": "Home · owner · favorites",
+    "home": {
+      "primary": true,
+      "owner": true,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000038",
+      "seq": 56,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 3,
+      "b": [
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Administration",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_admin_empty_en",
+    "label": "Home · owner · empty",
+    "home": {
+      "primary": true,
+      "owner": true,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000039",
+      "seq": 57,
+      "lang": "en",
+      "title": "My home",
+      "context": "",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "home_next",
+      "page": 1,
+      "pages": 2,
+      "b": [
+        [
+          [
+            "🏠 Rooms",
+            "rooms",
+            "nav"
+          ],
+          [
+            "⚡ Scenarios",
+            "scenes",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "📹 Cameras",
+            "cameras",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "favorites",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "My settings",
+            "settings",
+            "nav"
+          ],
+          [
+            "Help",
+            "help",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "🛠 Administration",
+            "admin",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "home_favorites",
+    "label": "Быстрые избранные · RU",
+    "home": {
+      "owner": false,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000044",
+      "seq": 68,
+      "lang": "ru",
+      "title": "Избранное",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": "home_next",
+      "page": 2,
+      "pages": 3,
+      "b": [
+        [
+          [
+            "Торшер · Выключен",
+            "device",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Отопление · 22 °C",
+            "climate",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Температура · 23 °C",
+            "sensor",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Камера · Вход",
+            "cameras",
+            "nav"
+          ]
         ]
       ],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_summary",
+    "label": "Сводка дома · RU",
+    "home": {
+      "owner": false,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000045",
+      "seq": 69,
+      "lang": "ru",
+      "title": "Сводка дома",
+      "context": "Мой дом",
+      "body": "Температура в гостиной: 23 °C.\nВлажность: 46 %.\nУведомления включены.",
+      "notice": "",
+      "alert": "",
       "read": "read",
-      "prev": "prev",
+      "prev": "home_prev",
+      "next": null,
+      "page": 3,
+      "pages": 3,
+      "b": [],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_summary_empty",
+    "label": "Сводка дома · empty · RU",
+    "home": {
+      "owner": false,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000046",
+      "seq": 70,
+      "lang": "ru",
+      "title": "Сводка дома",
+      "context": "Мой дом",
+      "body": "Температура в гостиной: 23 °C.\nВлажность: 46 %.\nУведомления включены.",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
       "next": null,
       "page": 2,
-      "pages": 2
+      "pages": 2,
+      "b": [],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_favorites_en",
+    "label": "Favorite shortcuts · EN",
+    "home": {
+      "owner": false,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000047",
+      "seq": 71,
+      "lang": "en",
+      "title": "Favorites",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": "home_next",
+      "page": 2,
+      "pages": 3,
+      "b": [
+        [
+          [
+            "Floor lamp · Off",
+            "device",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Heating · 22 °C",
+            "climate",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Temperature · 23 °C",
+            "sensor",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Camera · Entrance",
+            "cameras",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_summary_en",
+    "label": "Home overview · EN",
+    "home": {
+      "owner": false,
+      "filled": true
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000048",
+      "seq": 72,
+      "lang": "en",
+      "title": "Home overview",
+      "context": "My home",
+      "body": "Living room temperature: 23 °C.\nHumidity: 46 %.\nNotifications are on.",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": null,
+      "page": 3,
+      "pages": 3,
+      "b": [],
+      "back": "p0"
+    }
+  },
+  {
+    "id": "home_summary_empty_en",
+    "label": "Home overview · empty · EN",
+    "home": {
+      "owner": false,
+      "filled": false
+    },
+    "page": {
+      "v": 1,
+      "rev": "00000000000000000000000000000049",
+      "seq": 73,
+      "lang": "en",
+      "title": "Home overview",
+      "context": "My home",
+      "body": "Living room temperature: 23 °C.\nHumidity: 46 %.\nNotifications are on.",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": "home_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "b": [],
+      "back": "p0"
     }
   },
   {

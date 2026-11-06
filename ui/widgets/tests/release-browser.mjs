@@ -97,7 +97,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       for (const fixture of fixtures) {
         await reload(fixture.id, {theme, width});
         assert.equal(await evaluate(`${doc}.documentElement.getAttribute('data-theme')`), theme);
-        if (fixture.page.b && ['device','climate'].includes(fixture.page.kind) && fixture.page.page===1 && width>=320) {
+        if (fixture.page.b && (['device','climate'].includes(fixture.page.kind) || fixture.home?.primary) && fixture.page.page===1 && width>=320) {
           assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent])`), visibleActions(fixture.page), `${fixture.id}/${theme}/${width}: all primary controls on the first local part`);
           assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
           assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0, 'Idle feedback takes no space');
@@ -118,11 +118,44 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent === 'Страница 2/2'`);
-  assert.ok(await evaluate(`${button('help')} && ${button('admin')}`));
+  await until(`${get('r-count')}.textContent === 'Страница 2/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  assert.equal(await evaluate(`${get('r-title')}.textContent`), 'Избранное');
+  assert.ok(await evaluate(`${button('device')} && ${button('climate')}`));
+  await capture('release-home-favorites');
   await evaluate(`${get('r-prev')}.click()`);
-  await until(`${get('r-count')}.textContent === 'Страница 1/2'`);
+  await until(`${get('r-count')}.textContent === 'Страница 1/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.ok(await evaluate(`${button('rooms')}`));
+  // Role and favorites never move the six primary sections off the first page.
+  const primaryKeys=['rooms','scenes','cameras','favorites','settings','help'];
+  for (const fixture of fixtures.filter(f=>f.home?.primary)) {
+    const {owner,filled}=fixture.home, ru=fixture.page.lang==='ru';
+    await reload(fixture.id,{width:320});
+    assert.deepEqual(fixture.page.b.slice(0,3).map(row=>row.map(b=>b[1])),[['rooms','scenes'],['cameras','favorites'],['settings','help']]);
+    assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
+    assert.equal(await evaluate(`${doc}.querySelector('.r-text')`),null,'Home begins with sections, without teaching or notification text');
+    await click('favorites');
+    await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':favorites')`),'Full favorites retains its own callback');
+    await reload(fixture.id,{width:320});
+    await evaluate(`${get('r-next')}.click()`);
+    await until(`${get('r-count')}.textContent.endsWith(' 2/${filled?3:2}') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    assert.equal(await evaluate(`${get('r-title')}.textContent`),filled?(ru?'Избранное':'Favorites'):(ru?'Сводка дома':'Home overview'));
+    if(filled) {
+      assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
+      await evaluate(`${get('r-next')}.click()`);
+      await until(`${get('r-count')}.textContent.endsWith(' 3/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    }
+    const summary=fixtures.find(f=>f.id==='home_summary'+(filled?'':'_empty')+(ru?'':'_en'));
+    assert.equal(await evaluate(`${get('r-title')}.textContent`),summary.page.title);
+    assert.equal(await evaluate(`Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join('')`),summary.page.body);
+    await evaluate(`${get('r-back')}.click()`);
+    await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':p0')`));
+    assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
+  }
+  await reload('home_admin',{theme:'dark',width:360}); await capture('release-home-admin-dark');
+  await reload('home_en',{width:320}); await capture('release-home-en-light');
+  await reload('home_summary_empty',{width:320}); await capture('release-home-overview-empty');
   // Language changes use the same server-issued action path.
   await reload('settings'); await capture('release-settings');
   await click('en'); await until(`${get('r-read-label')}.textContent === 'Refresh'`);
