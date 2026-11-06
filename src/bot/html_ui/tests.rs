@@ -14,6 +14,10 @@ mod live_tests;
 #[derive(Default)]
 struct FakeHa {
     calls: Mutex<Vec<String>>,
+    states: Mutex<HashMap<String, String>>,
+    attributes: Mutex<HashMap<String, crate::ha::models::EntityAttributes>>,
+    fail_reads: std::sync::atomic::AtomicBool,
+    fail_service: std::sync::atomic::AtomicBool,
 }
 #[async_trait::async_trait]
 impl crate::ha::HomeAssistantClient for FakeHa {
@@ -32,14 +36,27 @@ impl crate::ha::HomeAssistantClient for FakeHa {
         anyhow::bail!("No history")
     }
     async fn fetch_states_by_ids(&self, ids: &[String]) -> Result<Vec<crate::ha::models::Entity>> {
+        anyhow::ensure!(!self.fail_reads.load(Ordering::Relaxed), "HA unavailable");
         Ok(ids
             .iter()
             .map(|id| crate::ha::models::Entity {
                 entity_id: id.clone(),
                 name: "Свет в гостиной".into(),
-                state: "off".into(),
+                state: self
+                    .states
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "off".into()),
                 device_class: None,
-                attributes: Default::default(),
+                attributes: self
+                    .attributes
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default(),
             })
             .collect())
     }
@@ -51,6 +68,10 @@ impl crate::ha::HomeAssistantClient for FakeHa {
             .lock()
             .unwrap()
             .push(format!("{domain}:{service}:{entity}"));
+        anyhow::ensure!(
+            !self.fail_service.load(Ordering::Relaxed),
+            "Service response lost"
+        );
         Ok(())
     }
     async fn call_service_with_data(

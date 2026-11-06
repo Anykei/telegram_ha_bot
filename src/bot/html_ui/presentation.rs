@@ -89,8 +89,17 @@ mod button_rows {
 impl Page {
     pub fn json(&self) -> Result<String> {
         let json = serde_json::to_string(self)?;
+        // All command phases reserve the same wire space; changing an action
+        // to wait/uncertain must not repartition an otherwise unchanged page.
+        let phase_reserve: usize = self
+            .rows
+            .iter()
+            .flatten()
+            .filter(|b| matches!(b.kind.as_str(), "action" | "wait" | "uncertain"))
+            .map(|b| "uncertain".len() - b.kind.len())
+            .sum();
         ensure!(
-            json.len() <= 1000 && !json.contains("\\u0000"),
+            json.len() + phase_reserve <= 1000 && !json.contains("\\u0000"),
             "HTML page exceeds Telegram data budget"
         );
         Ok(json)
@@ -226,6 +235,15 @@ fn append_text(
 }
 
 pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
+    prepare_with_pending(view, rev, seq, &HashMap::new())
+}
+
+pub fn prepare_with_pending(
+    view: &View,
+    rev: String,
+    seq: u64,
+    pending: &HashMap<i64, &'static str>,
+) -> Result<Prepared> {
     ensure!(supported(view), "Screen uses classic presentation");
     let english = view.lang == Language::En;
     let title = view
@@ -411,10 +429,20 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                     || (button.text == t(view.lang, "control.refresh")
                         && payload == view.payload.for_refresh());
                 if !pinned {
+                    let pending_kind = match &payload {
+                        Payload::Control(ControlPayload::QuickAction { device, cmd, .. })
+                            if super::super::router::action_requires_control(cmd) =>
+                        {
+                            pending.get(device)
+                        }
+                        _ => None,
+                    };
                     rendered.push(Button {
                         text: button.text.clone(),
                         key: key.clone(),
-                        kind: if button.text.starts_with("✓ ") {
+                        kind: if let Some(status) = pending_kind {
+                            status
+                        } else if button.text.starts_with("✓ ") {
                             "selected"
                         } else {
                             kind(&payload)

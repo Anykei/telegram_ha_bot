@@ -401,8 +401,25 @@ pub(crate) async fn handle_device_interaction_with_consent(
         validate_critical_consent(&config.db, device_id, &ha_state.entity_id, &action, consent)
             .await?;
     }
+    let pending = crate::bot::html_ui::pending::begin(
+        config,
+        user_id,
+        admission_generation,
+        device_id,
+        &ha_state,
+        &action,
+    )?;
     let smart_obj = SmartDevice::new(ha_state);
     let res = smart_obj.on_click(config.ha_client.as_ref(), action).await;
+    if let Some(pending) = pending {
+        pending.finish(
+            config,
+            matches!(
+                res,
+                InteractionResult::Processed | InteractionResult::RequiresDetail
+            ),
+        );
+    }
     if matches!(res, InteractionResult::Processed) {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }

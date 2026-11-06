@@ -191,6 +191,42 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await until(`${disabled('temp_up')} === 'false'`);
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
   assert.deepEqual(await geometry(), beforePress, 'State update does not move controls');
+  // Receipt is not physical state confirmation: the issued wait kind survives
+  // new revisions and blocks only that device after the transport has completed.
+  for (const theme of ['light', 'dark']) for (const width of [200, 360]) {
+    await reload('room', {theme, width}); await controlRequests();
+    const stable = await geometry();
+    await click('lamp_on'); await click('lamp_on');
+    assert.equal(await evaluate(`${win}.__requests.length`), 1);
+    assert.equal(await evaluate(`${button('lamp_on')}.getAttribute('aria-busy')`), 'true');
+    assert.equal(await evaluate(`${win}.getComputedStyle(${button('lamp_on')}).animationName`), 'pending');
+    assert.deepEqual(await geometry(), stable, 'Immediate progress keeps button geometry');
+    await reply({accepted:true});
+    const waiting = rows(fixtures.find(f=>f.id==='room').page).map(row=>row.map(b=>b.key==='lamp_on'?{...b,kind:'wait'}:b));
+    await push({s:'room-1',seq:100,rev:'b'.repeat(32),rows:waiting});
+    assert.equal(await evaluate(disabled('lamp_on')), 'true');
+    assert.equal(await evaluate(disabled('ceiling_off')), 'false', 'Other devices remain available');
+    assert.deepEqual(await geometry(), stable, 'Pending HA state keeps button geometry');
+    await push({s:'room-1',seq:101,rev:'c'.repeat(32)});
+    await click('lamp_on');
+    assert.equal(await evaluate(`${win}.__requests.length`), 1, 'New revision cannot repeat a pending action');
+    await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+    assert.equal(await evaluate(`${win}.getComputedStyle(${button('lamp_on')}).animationName`), 'none');
+    await command('Emulation.setEmulatedMedia', {features:[]});
+    if(width===360) await capture('release-pending-'+theme);
+    const unknown = waiting.map(row=>row.map(b=>b.key==='lamp_on'?{...b,kind:'uncertain'}:b));
+    await push({seq:102,rev:'d'.repeat(32),rows:unknown});
+    assert.equal(await evaluate(disabled('lamp_on')), 'true');
+    assert.equal(await evaluate(`${button('lamp_on')}.getAttribute('aria-busy')`), 'false');
+    assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('Нет ответа')`));
+    assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')`), 'false');
+    await click('lamp_on');
+    assert.equal(await evaluate(`${win}.__requests.length`), 1, 'Timeout never retries control');
+    await push({seq:103,rev:'e'.repeat(32),rows:waiting.map(row=>row.map(b=>b.key==='lamp_on'?{text:'Выключить',key:'lamp_off',kind:'action'}:b))});
+    assert.equal(await evaluate(disabled('lamp_off')), 'false', 'Confirmed state enables the new command');
+    assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+    await dimensions('pending/'+theme+'/'+width);
+  }
   // Telegram reserves space for native message metadata when there is no caption.
   for (const width of [200, 360]) {
     await reload('long', {width});

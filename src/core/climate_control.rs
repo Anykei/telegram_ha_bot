@@ -364,8 +364,16 @@ async fn execute(
             request.consent.as_ref(),
         )
         .await?;
+        let pending = crate::bot::html_ui::pending::begin(
+            config,
+            request.user_id,
+            &request.admission_generation,
+            device_id,
+            &entity,
+            &DeviceAction::SetTemperature(target),
+        )?;
         *uncertain = true;
-        config
+        let response = config
             .ha_client
             .call_service_with_data(
                 "climate",
@@ -373,7 +381,11 @@ async fn execute(
                 &device.entity_id,
                 serde_json::json!({"temperature": target}),
             )
-            .await?;
+            .await;
+        if let Some(pending) = pending {
+            pending.finish(config, response.is_ok());
+        }
+        response?;
         *uncertain = false;
         let remembered = recent.get_or_insert_with(|| RecentTargets {
             values: VecDeque::from([current]),

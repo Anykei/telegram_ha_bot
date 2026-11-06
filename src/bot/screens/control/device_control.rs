@@ -17,6 +17,7 @@ pub async fn render(
         .await?
         .context("Device not found")?;
     ctx.track_device(dev_db.id, &dev_db.entity_id);
+    let read_started = std::time::Instant::now();
     let ha_ent = ctx
         .config
         .ha_client
@@ -25,6 +26,12 @@ pub async fn render(
         .into_iter()
         .next()
         .context("HA state missing")?;
+    ctx.config.html_ui.pending.observe_states(
+        ctx.user_id,
+        &ctx.admission_generation,
+        read_started,
+        std::slice::from_ref(&ha_ent),
+    );
 
     let room_id = crate::db::devices::get_room_id_by_entity(&dev_db.entity_id, db)
         .await?

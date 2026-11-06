@@ -12,6 +12,7 @@ pub(crate) mod commands;
 pub mod devices;
 pub(crate) mod maintenance;
 mod notification;
+pub(crate) use notification::enqueue_current_refresh;
 pub(crate) mod notification_delivery;
 pub(crate) mod presentation;
 pub(crate) mod types;

@@ -52,9 +52,16 @@ pub async fn render_page(
         ctx.track_device(device.id, &device.entity_id);
     }
     let entity_ids: Vec<String> = db_devices.iter().map(|d| d.entity_id.clone()).collect();
+    let read_started = std::time::Instant::now();
     let ha_result = ctx.config.ha_client.fetch_states_by_ids(&entity_ids).await;
     let failed = ha_result.is_err();
     let mut ha_entities = ha_result.unwrap_or_default();
+    ctx.config.html_ui.pending.observe_states(
+        ctx.user_id,
+        &ctx.admission_generation,
+        read_started,
+        &ha_entities,
+    );
     // Missing HA entities remain visible with a read-only, recoverable state.
     for device in &db_devices {
         if !ha_entities.iter().any(|e| e.entity_id == device.entity_id) {

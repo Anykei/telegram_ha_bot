@@ -1,4 +1,5 @@
 //! HTML is a presentation adapter for existing routes, not a second command engine.
+pub(crate) mod pending;
 mod presentation;
 #[cfg(test)]
 mod tests;
@@ -48,6 +49,7 @@ struct WidgetSession {
 pub struct HtmlUi {
     pub enabled: bool,
     sessions: DashMap<u64, WidgetSession>,
+    pub(crate) pending: pending::PendingCommands,
 }
 impl HtmlUi {
     pub fn new(enabled: bool) -> Self {
@@ -58,6 +60,7 @@ impl HtmlUi {
     }
     pub fn clear(&self, user: u64) {
         self.sessions.remove(&user);
+        self.pending.clear(user);
     }
     pub fn input_is_open(&self, user: u64, message: i32) -> bool {
         self.sessions
@@ -123,16 +126,21 @@ pub async fn deliver(
     if !presentation::supported(view) {
         return Ok(None);
     }
+    let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
+        return Ok(None);
+    };
     let rev: String = sqlx::query_scalar("SELECT lower(hex(randomblob(16)))")
         .fetch_one(&config.db)
         .await?;
-    let Prepared { pages, actions } = match presentation::prepare(view, rev, sequence()) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            log::debug!("HTML uses classic fallback: {error}");
-            return Ok(None);
-        }
-    };
+    let pending = config.html_ui.pending.kinds(user, &generation);
+    let Prepared { pages, actions } =
+        match presentation::prepare_with_pending(view, rev, sequence(), &pending) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                log::debug!("HTML uses classic fallback: {error}");
+                return Ok(None);
+            }
+        };
     let index = config
         .html_ui
         .sessions
@@ -152,9 +160,6 @@ pub async fn deliver(
                 .unwrap_or_else(|| old.index.min(pages.len() - 1))
         })
         .unwrap_or(0);
-    let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
-        return Ok(None);
-    };
     if cancellation.is_some_and(CancellationToken::is_cancelled) {
         return Ok(None);
     }
@@ -282,6 +287,11 @@ pub async fn resolve(
         parts[2] == "read" && snapshot.view.next_state.is_some() && !snapshot.claimed;
     if parts[2] == "read" && !refresh_input {
         answer(bot, query, "").await?;
+        config
+            .html_ui
+            .pending
+            .reconcile(config, user, &snapshot.generation)
+            .await;
         return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
     }
     if snapshot.claimed {
@@ -312,6 +322,19 @@ pub async fn resolve(
         answer(bot, query, "denied").await?;
         return Ok(None);
     };
+    if let Payload::Control(super::router::ControlPayload::QuickAction { device, cmd, .. }) = action
+    {
+        if super::router::action_requires_control(cmd)
+            && config
+                .html_ui
+                .pending
+                .blocks(user, *device, &snapshot.generation)
+        {
+            // A refreshed revision must not turn a still-pending command into a new write.
+            answer(bot, query, "").await?;
+            return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
+        }
+    }
     if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
         session.claimed = true;
         if let Payload::Control(super::router::ControlPayload::QuickAction { room, device, cmd }) =

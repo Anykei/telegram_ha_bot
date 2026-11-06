@@ -3,11 +3,11 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите экран.', 'Доступ закрыт', 'Откройте /classic в чате бота.', 'Страница', 'Часть', 'Назад'],
-    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic in the bot chat.', 'Page', 'Part', 'Back']
+    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', 'Страница', 'Часть', 'Назад'],
+    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', 'Page', 'Part', 'Back']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
-  let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '';
+  let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
   let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
@@ -23,7 +23,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
       && Array.isArray(v.rows) && v.rows.length <= 4 && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
-        && row.every(b => b && typeof b.text === 'string' && key(b.key) && ['action', 'nav', 'danger', 'selected'].includes(b.kind)));
+        && row.every(b => b && typeof b.text === 'string' && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain']).includes(b.kind)));
   }
   function accept(v) {
     if (v && v.b !== undefined) {
@@ -43,17 +43,17 @@ import { validGraph, renderGraph } from './graph-render.js';
   const blocked = read => denied || !data || !api || busy || waiting || (!read && uncertain);
   function action(b) {
     const node = document.createElement('button');
-    node.className = 'r-button r-' + b.kind;
-    node.setAttribute('type', 'button'); node.setAttribute('data-key', b.key);
+    const awaiting = !GRAPH && (b.kind === 'wait' || b.key === activeKey && (busy || waiting));
+    const unavailable = !GRAPH && (awaiting || b.kind === 'uncertain');
+    node.className = 'r-button r-' + b.kind + (awaiting ? ' r-wait' : '');
+    if (!GRAPH) {
+      node.setAttribute('aria-busy', String(awaiting));
+    }
+    node.setAttribute('data-key', b.key);
     if (b.kind === 'selected') node.setAttribute('aria-pressed', 'true');
     const label = document.createElement('span'); label.textContent = b.text; node.appendChild(label);
-    if (!GRAPH) {
-      const mark = document.createElement('span'); mark.className = 'r-mark';
-      mark.textContent = { nav: '›', selected: '✓', danger: '!', action: '•' }[b.kind];
-      mark.setAttribute('aria-hidden', 'true'); node.appendChild(mark);
-    }
-    disable(node, blocked(b.key === data.read));
-    node.addEventListener('click', () => send(b.key));
+    disable(node, unavailable || blocked(b.key === data.read));
+    node.addEventListener('click', () => !unavailable && send(b.key));
     return node;
   }
   function mount(nodes) {
@@ -129,7 +129,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (!GRAPH) text('r-read-label', w(busy || waiting ? 3 : 2));
     text('r-back', '‹ ' + w(9));
     hide('r-back', locked || !data.back);
-    feedback(locked ? w(6) : note);
+    feedback(locked ? w(6) : note || (!GRAPH && data.rows.flat().some(b => b.kind === 'uncertain') ? w(4) : ''));
     if (GRAPH) { renderGraph(locked ? null : data.graph, lang, el, hide); el('r-read').setAttribute('aria-label', w(2)); }
     card.classList.toggle('r-error', uncertain || denied);
     ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
@@ -150,7 +150,7 @@ import { validGraph, renderGraph } from './graph-render.js';
   async function send(k) {
     if (!key(k) || blocked(k === (data && data.read))) return;
     const rev = data.rev, seq = data.seq, read = k === data.read;
-    requestSeq = seq; pendingRead = read; busy = true; note = ''; render();
+    requestSeq = seq; pendingRead = read; activeKey = k; busy = true; note = ''; render();
     try {
       const result = await api.request('r1:' + rev + ':' + k);
       const answer = JSON.parse(result.result);
