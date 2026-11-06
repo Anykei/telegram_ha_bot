@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { transform, build as bundle } from 'esbuild';
+import { embed } from './preview/embed.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const read = path => readFile(root + path, 'utf8');
@@ -42,33 +43,28 @@ async function build(screen, stylesheet, title) {
   return {html, manifest};
 }
 const {html, manifest} = await build('switch', 'components.css', 'Управление светом');
-const escaped = value => JSON.stringify(value).replaceAll('<', '\\u003c');
-const preview = (await read('preview/index.html'))
-  .replace('__PAYLOAD__', escaped(html))
-  .replace('__MOCK__', escaped(await read('preview/mock-telegram.js')))
-  .replace('__MANIFEST__', escaped(manifest));
+const preview = embed(await read('preview/index.html'), {
+  PAYLOAD: html, MOCK: await read('preview/mock-telegram.js'), MANIFEST: manifest
+});
 await writeFile(root + 'dist/preview.html', preview);
 await writeFile(root + 'dist/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
 const panel = await build('panel', 'panel.css', 'Мой дом');
-const panelPreview = (await read('preview/panel.html'))
-  .replace('__PAYLOAD__', escaped(panel.html))
-  .replace('__MOCK__', escaped(await read('preview/panel-mock.js')))
-  .replace('__MANIFEST__', escaped(panel.manifest));
+const panelPreview = embed(await read('preview/panel.html'), {
+  PAYLOAD: panel.html, MOCK: await read('preview/panel-mock.js'), MANIFEST: panel.manifest
+});
 await writeFile(root + 'dist/panel-preview.html', panelPreview);
 await writeFile(root + 'dist/panel-manifest.json', JSON.stringify(panel.manifest, null, 2) + '\n');
 console.log('Previews: ui/widgets/dist/{preview,panel-preview}.html');
 
 const release = await build('release', 'release.css', 'Дом');
 await writeFile(root + 'dist/release-manifest.json', JSON.stringify(release.manifest, null, 2) + '\n');
-const releasePreview = (await read('preview/release.html'))
-  .replace('__PAYLOAD__', escaped(release.html))
-  .replace('__FIXTURES__', escaped(JSON.parse(await read('preview/release-fixtures.json'))))
-  .replace('__MANIFEST__', escaped(release.manifest));
+const releasePreview = embed(await read('preview/release.html'), {
+  PAYLOAD: release.html, FIXTURES: JSON.parse(await read('preview/release-fixtures.json')), MANIFEST: release.manifest
+});
 await writeFile(root + 'dist/release-preview.html', releasePreview);
 const graph = await build('graph', 'graph.css', 'История');
 await writeFile(root + 'dist/graph-manifest.json', JSON.stringify(graph.manifest, null, 2) + '\n');
-const graphPreview = (await read('preview/release.html'))
-  .replace('__PAYLOAD__', escaped(graph.html))
-  .replace('__FIXTURES__', escaped(JSON.parse(await read('preview/graph-fixtures.json'))))
-  .replace('__MANIFEST__', escaped(graph.manifest));
+const graphPreview = embed(await read('preview/release.html'), {
+  PAYLOAD: graph.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')), MANIFEST: graph.manifest
+});
 await writeFile(root + 'dist/graph-preview.html', graphPreview);
