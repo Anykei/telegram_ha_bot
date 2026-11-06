@@ -151,15 +151,25 @@
       "rows": [
         [
           {
-            "text": "💡 Выключить: Торшер · Включён",
-            "key": "lamp_off",
+            "text": "Торшер · Выключен",
+            "key": "device",
+            "kind": "nav"
+          },
+          {
+            "text": "Включить",
+            "key": "lamp_on",
             "kind": "action"
           }
         ],
         [
           {
-            "text": "💡 Включить: Люстра · Выключена",
-            "key": "lamp_on",
+            "text": "Люстра · Включена",
+            "key": "ceiling",
+            "kind": "nav"
+          },
+          {
+            "text": "Выключить",
+            "key": "ceiling_off",
             "kind": "action"
           }
         ],
@@ -180,6 +190,33 @@
       ],
       "read": "read",
       "prev": "home",
+      "next": null,
+      "page": 1,
+      "pages": 1
+    }
+  },
+  {
+    "id": "device",
+    "label": "Устройство · Торшер",
+    "page": {
+      "v": 1,
+      "rev": "99999999999999999999999999999999",
+      "seq": 9,
+      "lang": "ru",
+      "title": "Торшер",
+      "context": "Гостиная",
+      "body": "Состояние: Выключен.",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [{"text": "Включить", "key": "lamp_on", "kind": "action"}],
+        [
+          {"text": "Назад", "key": "room", "kind": "nav"},
+          {"text": "Дом", "key": "home", "kind": "nav"}
+        ]
+      ],
+      "read": "read",
+      "prev": null,
       "next": null,
       "page": 1,
       "pages": 1

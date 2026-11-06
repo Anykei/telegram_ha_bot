@@ -69,6 +69,8 @@ pub async fn render_page(
         compact: mode == RoomViewMode::Control,
         notifications: ctx.notifications,
         header: Some(text.into()),
+        html_title: Some(crate::bot::personal::words(ctx.lang, "Комнаты", "Rooms").into()),
+        html_context: Some(crate::bot::personal::words(ctx.lang, "Мой дом", "My home").into()),
         text: if empty {
             crate::i18n::t(ctx.lang, "control.empty_rooms").into()
         } else {

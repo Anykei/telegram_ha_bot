@@ -48,12 +48,13 @@
           parent.postMessage({type:'release-preview',text:raw}, '*');
           if (scenario === 'denied') return {result:JSON.stringify({denied:true})};
           if (scenario === 'error' && key !== 'read') { await new Promise(resolve => setTimeout(resolve, 300)); throw Error('timeout'); }
-          let target = {home:'home',rooms:'rooms',room:'room',settings:'settings',ru:'settings',en:'english'}[key];
+          let target = {home:'home',rooms:'rooms',room:'room',device:'device',ceiling:'device',settings:'settings',ru:'settings',en:'english'}[key];
           if (key === 'next' && id === 'home') target = 'home_more';
           if (key === 'prev') target = 'home';
           const found = all.find(fixture => fixture.id === target);
           const next = structuredClone(found ? found.page : state);
           if (found) id = found.id;
+          if (key === 'ceiling') { next.title = 'Люстра'; next.body = 'Состояние: Включена.'; next.rows[0] = [{text:'Выключить',key:'ceiling_off',kind:'action'}]; }
           next.seq = state.seq + 1; next.rev = next.seq.toString(16).padStart(32, '0');
           if (key !== 'read' && !found) next.notice = state.lang === 'ru' ? 'Действие обработано в предпросмотре.' : 'Action handled in this preview.';
           setTimeout(() => emit(next), scenario === 'slow' ? 2400 : 250);
@@ -73,7 +74,7 @@
     document.getElementById('widths').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; width = Number(button.dataset.width); document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); load(); });
     select.addEventListener('change', load); document.getElementById('scenario').addEventListener('change', load);
     addEventListener('message', event => { if (event.source === frame.contentWindow && event.data?.type === 'release-preview') document.getElementById('log').textContent = 'Симуляция запроса · ' + event.data.text; });
-    setInterval(() => { if (frame.contentDocument?.body) frame.style.height = Math.min(600, frame.contentDocument.body.scrollHeight) + 'px'; }, 150);
+    setInterval(() => { const card = frame.contentDocument?.querySelector('.release'); if (card) frame.style.height = Math.min(600, Math.ceil(card.getBoundingClientRect().height)) + 'px'; }, 150);
     load();
   </script>
 </body>

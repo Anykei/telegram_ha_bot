@@ -13,6 +13,11 @@ pub struct View {
     #[serde(default)]
     pub admission_generation: Option<String>,
     pub header: Option<String>,
+    /// Semantic title and context for compact cards; old serialized views remain valid.
+    #[serde(default)]
+    pub html_title: Option<String>,
+    #[serde(default)]
+    pub html_context: Option<String>,
     pub notifications: Vec<HeaderItem>,
     pub text: String,
     pub kb: InlineKeyboardMarkup,

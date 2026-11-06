@@ -104,53 +104,57 @@ fn split_text(text: &str, limit: usize) -> Vec<String> {
 pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     ensure!(supported(view), "Screen uses classic presentation");
     let english = view.lang == Language::En;
-    let title = view.header.clone().unwrap_or_else(|| {
-        match &view.payload {
-            Payload::Home => {
-                if english {
-                    "My home"
-                } else {
-                    "Мой дом"
+    let title = view
+        .html_title
+        .clone()
+        .or_else(|| view.header.clone())
+        .unwrap_or_else(|| {
+            match &view.payload {
+                Payload::Home => {
+                    if english {
+                        "My home"
+                    } else {
+                        "Мой дом"
+                    }
+                }
+                Payload::Help => {
+                    if english {
+                        "Help"
+                    } else {
+                        "Помощь"
+                    }
+                }
+                Payload::Personal(PersonalPayload::Interface) => {
+                    if english {
+                        "Interface"
+                    } else {
+                        "Вид интерфейса"
+                    }
+                }
+                Payload::Personal(_) => {
+                    if english {
+                        "My settings"
+                    } else {
+                        "Мои настройки"
+                    }
+                }
+                _ => {
+                    if english {
+                        "Home"
+                    } else {
+                        "Дом"
+                    }
                 }
             }
-            Payload::Help => {
-                if english {
-                    "Help"
-                } else {
-                    "Помощь"
-                }
-            }
-            Payload::Personal(PersonalPayload::Interface) => {
-                if english {
-                    "Interface"
-                } else {
-                    "Вид интерфейса"
-                }
-            }
-            Payload::Personal(_) => {
-                if english {
-                    "My settings"
-                } else {
-                    "Мои настройки"
-                }
-            }
-            _ => {
-                if english {
-                    "Home"
-                } else {
-                    "Дом"
-                }
-            }
-        }
-        .into()
-    });
+            .into()
+        });
     let empty = Page {
         v: 1,
         rev,
         seq,
         lang: if english { "en" } else { "ru" }.into(),
         title,
-        context: String::new(),
+        context: view.html_context.clone().unwrap_or_default(),
         body: String::new(),
         notice: String::new(),
         alert: String::new(),

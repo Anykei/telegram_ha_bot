@@ -12,7 +12,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   const click = key => evaluate(`${button(key)}.click()`);
   const disabled = key => `${button(key)}.getAttribute('aria-disabled')`;
   async function capture(name) {
-    await until(`document.getElementById('release-frame').clientHeight >= Math.min(600,${doc}.body.scrollHeight)`);
+    await until(`document.getElementById('release-frame').clientHeight === Math.min(600,Math.ceil(${get('release')}.getBoundingClientRect().height))`);
     await screenshot(name);
   }
   async function reload(id, {theme = 'light', width = 360, scenario = 'ok'} = {}) {
@@ -107,6 +107,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'My settings');
   await click('ru'); await until(`${get('r-read-label')}.textContent === 'Обновить'`);
   await reload('room', {theme:'dark'}); await capture('release-room-dark');
+  // The name/state opens a device card, while its adjacent command keeps a distinct key.
+  assert.equal(await evaluate(`${button('device')}.classList.contains('r-nav')`), true);
+  assert.equal(await evaluate(`${button('lamp_on')}.classList.contains('r-action')`), true);
+  await click('device'); await until(`${get('r-title')}.textContent === 'Торшер'`);
+  await capture('release-device-dark');
+  assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Выключен.');
+  await click('room'); await until(`${get('r-title')}.textContent === 'Гостиная'`);
+  await click('ceiling'); await until(`${get('r-title')}.textContent === 'Люстра'`);
+  assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Включена.');
   // A command timeout blocks every action; read recovers through accepted + push.
   await reload('home', {scenario:'error'}); await click('rooms');
   await until(`${get('r-feedback')}.textContent.includes('Нет ответа')`);
@@ -194,5 +203,5 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await capture('release-mobile');
   await dimensions('mobile');
   assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Release mobile shell overflow');
-  console.log('Release checks passed: 8 fixtures × 2 themes × 4 widths, all text/actions across local parts, server chunks, RU/EN, timeout/read recovery, both ACK races, stale seq, duplicate taps, denial, forwards and mobile.');
+  console.log(`Release checks passed: ${fixtures.length} fixtures × 2 themes × 4 widths, all text/actions across local parts, separate device navigation/control, server chunks, RU/EN, timeout/read recovery, both ACK races, stale seq, duplicate taps, denial, forwards and mobile.`);
 }

@@ -37,6 +37,7 @@ pub async fn render(
         })
         .unwrap_or_default();
     let lang = ctx.lang;
+    let device_name = super::labels::device_name(&dev_db, &ha_ent, ctx.lang);
     let smart_obj = SmartDevice::new(ha_ent.clone());
 
     // 2. Диспетчеризация отрисовки
@@ -68,38 +69,69 @@ pub async fn render(
                 room: room_id,
                 device: device_id,
             });
+            let mut rows = vec![];
+            if can_control
+                && matches!(domain, "light" | "switch")
+                && matches!(ha_ent.state.as_str(), "on" | "off")
+            {
+                let logical_on = (ha_ent.state == "on") != inverted;
+                rows.push(vec![InlineKeyboardButton::callback(
+                    t(
+                        ctx.lang,
+                        if logical_on {
+                            "control.turn_off"
+                        } else {
+                            "control.turn_on"
+                        },
+                    ),
+                    Payload::Control(ControlPayload::QuickAction {
+                        room: room_id,
+                        device: device_id,
+                        cmd: if ha_ent.state == "on" {
+                            DeviceCmd::TurnOff
+                        } else {
+                            DeviceCmd::TurnOn
+                        },
+                    })
+                    .to_string(),
+                )]);
+            }
+            rows.push(vec![InlineKeyboardButton::callback(
+                t(ctx.lang, "control.refresh"),
+                payload.to_string(),
+            )]);
+            rows.push(vec![crate::bot::screens::common::back_button_lang(
+                ctx.lang,
+                Payload::Control(ControlPayload::RoomDetail { room: room_id }),
+            )]);
             Ok(View {
                 compact: true,
+                header: Some(device_name.clone()),
                 text: format!(
-                    "{}\n{}: {}\n\n{}",
-                    super::labels::device_name(&dev_db, &ha_ent, ctx.lang),
-                    t(ctx.lang, "control.details"),
+                    "{}: {}\n\n{}",
+                    crate::bot::personal::words(ctx.lang, "Состояние", "State"),
                     super::labels::state(&ha_ent, ctx.lang, inverted, state_alias.as_deref()),
                     detail
                 ),
                 notifications: ctx.notifications,
-                kb: InlineKeyboardMarkup::new(vec![
-                    vec![InlineKeyboardButton::callback(
-                        t(ctx.lang, "control.refresh"),
-                        payload.to_string(),
-                    )],
-                    vec![crate::bot::screens::common::back_button_lang(
-                        ctx.lang,
-                        Payload::Control(ControlPayload::RoomDetail { room: room_id }),
-                    )],
-                ]),
+                kb: InlineKeyboardMarkup::new(rows),
                 payload,
                 lang: ctx.lang,
                 ..Default::default()
             })
         }
     }?;
+    view.html_title = Some(device_name);
+    view.html_context = Some(room_name.clone());
     view.header = Some(match view.header {
         Some(title) => format!("{room_name} · {title}"),
         None => room_name,
     });
+    let details_index = usize::from(view.kb.inline_keyboard.first().is_some_and(|row| row.iter().any(|button| {
+        matches!(&button.kind, teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if matches!(Payload::from_string(data), Ok(Payload::Control(crate::bot::router::ControlPayload::QuickAction {..}))))
+    })));
     view.kb.inline_keyboard.insert(
-        0,
+        details_index,
         vec![teloxide::types::InlineKeyboardButton::callback(
             crate::bot::personal::words(lang, "Подробности", "Details"),
             Payload::DeviceDetails {

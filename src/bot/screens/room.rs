@@ -94,6 +94,7 @@ pub async fn render_page(
                 && matches!(domain, "light" | "switch")
                 && matches!(ha_ent.state.as_str(), "on" | "off");
 
+            let mut quick_label = None;
             let text = match mode {
                 RoomViewMode::Control => {
                     let inverted =
@@ -130,7 +131,12 @@ pub async fn render_page(
                             _ => format!("ℹ️ {}", t(ctx.lang, "control.details")),
                         }
                     };
-                    format!("{action}: {name} · {state}")
+                    if quick_action {
+                        quick_label = Some(action);
+                        format!("{name} · {state}")
+                    } else {
+                        format!("{action}: {name} · {state}")
+                    }
                 }
                 RoomViewMode::Settings if ctx.is_admin => {
                     format!("#{} {}", db_dev.id, smart_dev.render_button_text(alias))
@@ -163,10 +169,24 @@ pub async fn render_page(
                 }),
             };
 
-            rows.push(vec![InlineKeyboardButton::callback(
-                text,
-                payload.to_string(),
-            )]);
+            if let Some(action) = quick_label {
+                rows.push(vec![
+                    InlineKeyboardButton::callback(
+                        text,
+                        Payload::Control(ControlPayload::DeviceControl {
+                            room: room_id,
+                            device: db_dev.id,
+                        })
+                        .to_string(),
+                    ),
+                    InlineKeyboardButton::callback(action, payload.to_string()),
+                ]);
+            } else {
+                rows.push(vec![InlineKeyboardButton::callback(
+                    text,
+                    payload.to_string(),
+                )]);
+            }
         }
     }
 
@@ -197,6 +217,8 @@ pub async fn render_page(
         compact: mode == RoomViewMode::Control,
         notifications: ctx.notifications,
         header: Some(format!("{header_label} · {room_display}")),
+        html_title: Some(room_display),
+        html_context: Some(crate::bot::personal::words(ctx.lang, "Комнаты", "Rooms").into()),
         alert: failed.then(|| t(ctx.lang, "control.ha_unavailable").into()),
         text: if empty {
             t(ctx.lang, "control.empty_room").into()

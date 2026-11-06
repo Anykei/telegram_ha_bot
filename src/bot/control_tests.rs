@@ -819,14 +819,8 @@ async fn room_labels_distinguish_devices_and_readonly_buttons_open_details() -> 
         .map(|b| b.text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(
-        labels.contains("Выключить: Люстра · light.bedroom"),
-        "{labels}"
-    );
-    assert!(
-        labels.contains("Выключить: Люстра · light.desk"),
-        "{labels}"
-    );
+    assert!(labels.contains("Люстра · light.bedroom"), "{labels}");
+    assert!(labels.contains("Люстра · light.desk"), "{labels}");
     assert!(
         labels.contains("История: Термостат · Батарея · 97%"),
         "{labels}"
@@ -3478,5 +3472,94 @@ async fn session_expiration_rechecks_activity_after_waiting_for_lifecycle() -> a
     cleanup.await;
     assert_eq!(config.sessions.get(&42).unwrap().last_seen_at, active);
     assert_eq!(db::get_all_active_sessions(&config.db).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn light_name_opens_card_and_separate_power_button_keeps_existing_command(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let room = open(&config, ControlPayload::RoomDetail { room: 1 }).await?;
+    let link = Payload::Control(ControlPayload::DeviceControl { room: 1, device: 3 });
+    let row = room.kb.inline_keyboard.iter().find(|row| {
+        row.first().is_some_and(|button| matches!(&button.kind,
+            teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if Payload::from_string(data).ok().as_ref()==Some(&link)))
+    }).expect("The device name must open its card");
+    assert_eq!(row.len(), 2);
+    assert!(
+        matches!(&row[1].kind, teloxide::types::InlineKeyboardButtonKind::CallbackData(data)
+        if Payload::from_string(data).ok()==Some(Payload::Control(ControlPayload::QuickAction { room:1,device:3,cmd:DeviceCmd::TurnOff })))
+    );
+    let card = open(
+        &config,
+        ControlPayload::DeviceControl { room: 1, device: 3 },
+    )
+    .await?;
+    assert_eq!(card.html_title.as_deref(), Some("Люстра"));
+    let room_name = db::rooms::get_room_by_id(1, &config.db)
+        .await?
+        .unwrap()
+        .display_name()
+        .to_owned();
+    assert_eq!(card.html_context.as_deref(), Some(room_name.as_str()));
+    assert!(
+        callbacks(&card).contains(&Payload::Control(ControlPayload::QuickAction {
+            room: 1,
+            device: 3,
+            cmd: DeviceCmd::TurnOff
+        }))
+    );
+    assert!(
+        ha.calls.lock().unwrap().is_empty(),
+        "Opening a room or card cannot turn a device off"
+    );
+    db::access::set_device_access(42, "light.bedroom", true, false, &config.db).await?;
+    let readonly = open(
+        &config,
+        ControlPayload::DeviceControl { room: 1, device: 3 },
+    )
+    .await?;
+    assert!(!callbacks(&readonly).iter().any(|payload| matches!(
+        payload,
+        Payload::Control(ControlPayload::QuickAction { .. })
+    )));
+    Ok(())
+}
+
+#[tokio::test]
+async fn light_card_power_action_keeps_critical_confirmation_and_one_time_execution(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    sqlx::query("UPDATE devices SET critical = 1 WHERE id = 3")
+        .execute(&config.db)
+        .await?;
+    let card = open(
+        &config,
+        ControlPayload::DeviceControl { room: 1, device: 3 },
+    )
+    .await?;
+    let action = callbacks(&card)
+        .into_iter()
+        .find(|payload| {
+            matches!(
+                payload,
+                Payload::Control(ControlPayload::QuickAction { device: 3, .. })
+            )
+        })
+        .expect("Power action in the light card");
+    let review = router(action, 42, config.clone()).await?;
+    assert!(ha.calls.lock().unwrap().is_empty());
+    let confirmation = callbacks(&review)
+        .into_iter()
+        .find(|payload| {
+            matches!(
+                payload,
+                Payload::Control(ControlPayload::ConfirmAction { .. })
+            )
+        })
+        .expect("Critical control must ask for confirmation");
+    router(confirmation.clone(), 42, config.clone()).await?;
+    router(confirmation, 42, config.clone()).await?;
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
     Ok(())
 }
