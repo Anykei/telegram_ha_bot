@@ -5,6 +5,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
+import { checkPanel } from './panel-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 let executable = process.env.HA_WIDGET_CHROME;
@@ -114,6 +115,7 @@ try {
   assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile overflow');
   console.log('Browser checks passed: offline preview, actions, themes, confirmation, ACL, 200–430px.');
   console.log('Screenshots: ui/widgets/screenshots/{light,dark,confirmation,mobile}.png');
+  await checkPanel({root, command, evaluate, until, screenshot});
 } finally {
   await command('Browser.close', {}, null).catch(() => {});
   browser.kill();

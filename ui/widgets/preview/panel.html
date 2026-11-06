@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-src 'self' about:; connect-src 'none'">
+<title>Дом · экраны управления</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f8f4;color:#243c30;font:15px/1.5 system-ui,sans-serif}button{font:inherit;cursor:pointer}button:focus-visible{outline:3px solid #589a79;outline-offset:2px}header,main,footer{max-width:1100px;margin:auto}header{padding:28px 32px;border-bottom:1px solid #dde5dc;display:flex;justify-content:space-between}header strong{font-size:20px}header span,footer{color:#718574;font-size:12px}main{display:grid;grid-template-columns:300px 1fr;gap:64px;padding:52px 32px}h1{font-size:38px;line-height:1.12;letter-spacing:-1px;margin:12px 0 18px}p{color:#718574}.kicker{color:#52735c;font-size:11px;letter-spacing:2px;text-transform:uppercase}.label{display:block;font-size:12px;margin:22px 0 9px}.segments{display:flex;gap:4px;background:#e8eee5;padding:4px;border-radius:12px}.segments button{flex:1;border:0;border-radius:9px;background:none;padding:8px;color:#47634d;font-size:12px}.segments button[aria-pressed=true]{background:white}.screens{display:grid;gap:8px}.screens button{display:flex;justify-content:space-between;text-align:left;padding:12px;border:1px solid #d9e3d7;background:none;border-radius:12px;color:#36513e}.screens button[aria-pressed=true]{border-color:#347b57;background:#e9f2e9}.chat{background:#e6ede3;border:1px solid #d6e1d3;border-radius:24px;overflow:hidden;min-width:0}.chat-head{background:#ffffffb8;padding:18px 24px;border-bottom:1px solid #d9e3d5;font-size:14px}.chat-head small{display:block;color:#7f9280;font-size:11px}.conversation{padding:24px;min-height:550px}.bubble{width:360px;max-width:100%;border-radius:18px;background:white;overflow:hidden}iframe{border:0;width:100%;height:450px;display:block}.caption{font-size:10px;padding:8px 16px;margin:0;border-top:1px solid #e5ece1;color:#738a76}.dark{background:#111d17;border-color:#324c3b}.dark .chat-head{background:#1b2b21;color:#e0eee4;border-color:#324c3b}.dark .bubble{background:#192420}.dark .caption{color:#a0b3a7;border-color:#324c3b}.meta{font-size:11px;color:#849582;margin:14px 4px}.log{background:white;border:1px solid #dce6d8;border-radius:12px;padding:12px;font-size:12px;overflow-wrap:anywhere}.classic{padding:16px}.classic h2{margin:0 0 12px}.classic button{display:block;width:100%;padding:12px;background:#dbeadb;border:0;border-radius:7px;margin-top:6px;color:#243e2d}.classic p{font-size:13px}.dark .classic{color:#e0eee4}.dark .classic button{background:#294b3a;color:#e0eee4}footer{padding:24px 32px;border-top:1px solid #dde5dc}footer a{color:#456c4f}@media(max-width:760px){header{padding:20px}header span{display:none}main{grid-template-columns:1fr;padding:28px 18px;gap:26px}h1{font-size:32px}.screens{grid-template-columns:1fr 1fr}.conversation{padding:16px;min-height:0}.bubble{margin:0 auto}footer{padding:20px}}
+</style></head><body>
+<header><strong>⌂ Дом</strong><span>Система оформления 1.1 · предварительный просмотр</span></header>
+<main><section><span class="kicker">Управление в сообщении</span><h1>Дом, комнаты<br>и всё внутри.</h1><p>Новые экраны в одном стиле. Переходите между ними прямо в карточке.</p>
+<span class="label">Экран</span><div class="screens"><button data-screen="home">Дом <span>01</span></button><button data-screen="rooms">Комнаты <span>02</span></button><button data-screen="room">Гостиная <span>03</span></button><button data-screen="device">Торшер <span>04</span></button><button data-screen="settings">Мои настройки <span>05</span></button></div>
+<span class="label">Тема Telegram</span><div class="segments"><button data-theme="light">Светлая</button><button data-theme="dark">Тёмная</button></div>
+<span class="label">Ширина карточки</span><div class="segments"><button data-width="200">200</button><button data-width="320">320</button><button data-width="360">360</button><button data-width="430">430</button></div>
+<p class="meta">Данные виртуальные. Home Assistant и Telegram не подключены. Здесь выбор вида живёт только до обновления страницы.</p></section>
+<section><div class="chat" id="chat"><div class="chat-head">Мой дом<small>бот · демонстрация</small></div><div class="conversation"><div class="bubble" id="bubble"><iframe id="panel-frame" title="Экраны управления домом" sandbox="allow-scripts allow-same-origin"></iframe><div id="classic" class="classic" hidden></div><p class="caption">Демо · реальный дом не подключён</p></div></div></div><div id="size" class="meta"></div><div id="log" class="log" aria-live="polite">Выберите комнату в карточке.</div></section></main>
+<footer><a href="../../../docks/html-widgets/DESIGN.md">Правила дизайна</a> · <a href="../../../docks/html-widgets/SCREENS.md">Карта переноса</a> · <a href="preview.html">Состояния выключателя</a></footer>
+<script>
+const payload=__PAYLOAD__,mock=__MOCK__,manifest=__MANIFEST__;
+let screen='home',theme='light',width=360;
+const frame=document.getElementById('panel-frame'),classic=document.getElementById('classic');
+document.getElementById('size').textContent=manifest.zlibBytes+' / 4096 байт · HTML + CSS + JS без внешних ресурсов';
+function resize(){if(frame.contentDocument?.body)frame.style.height=Math.min(600,frame.contentDocument.body.scrollHeight)+'px'}
+frame.onload=()=>{new ResizeObserver(resize).observe(frame.contentDocument.body);resize()};
+function render(){
+frame.hidden=false;frame.style.display='block';classic.hidden=true;
+document.getElementById('chat').classList.toggle('dark',theme==='dark');document.getElementById('bubble').style.width=width+'px';
+document.querySelectorAll('[data-screen]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.screen===screen));
+document.querySelectorAll('[data-theme]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.theme===theme));
+document.querySelectorAll('[data-width]').forEach(b=>b.setAttribute('aria-pressed',Number(b.dataset.width)===width));
+frame.srcdoc=payload.replace('<head>','<head><script>'+mock.replace('__SCREEN__',JSON.stringify(screen)).replace('__THEME__',JSON.stringify(theme))+'<\/script>');
+}
+document.querySelectorAll('[data-screen]').forEach(b=>b.onclick=()=>{screen=b.dataset.screen;render()});
+document.querySelectorAll('[data-theme]').forEach(b=>b.onclick=()=>{theme=b.dataset.theme;document.getElementById('chat').classList.toggle('dark',theme==='dark');frame.contentWindow.__panelTest.theme(theme);document.querySelectorAll('[data-theme]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.theme===theme))});
+document.querySelectorAll('[data-width]').forEach(b=>b.onclick=()=>{width=Number(b.dataset.width);document.getElementById('bubble').style.width=width+'px';document.querySelectorAll('[data-width]').forEach(x=>x.setAttribute('aria-pressed',Number(x.dataset.width)===width));resize()});
+window.addEventListener('message',e=>{
+if(e.source!==frame.contentWindow||e.data.source!=='ha-panel-demo')return;
+const {mode,page,request}=e.data;document.getElementById('log').textContent='Симуляция · '+request;
+frame.style.display=mode==='classic'?'none':'block';classic.hidden=mode!=='classic';
+if(mode==='classic'){
+classic.textContent='';const h=document.createElement('h2');h.textContent=page.title;classic.appendChild(h);
+const p=document.createElement('p');p.textContent=page.hero? page.hero.label+': '+page.hero.value:page.description;classic.appendChild(p);
+for(const item of [...page.items,...page.nav,{label:'Обновить',action:'read'}]){const b=document.createElement('button');b.textContent=(item.selected?'✓ ':'')+item.label;b.onclick=()=>frame.contentWindow.TelegramWidget.request('p1:'+page.rev+':'+item.action).then(()=>frame.contentWindow.__panelTest.update({}));classic.appendChild(b)}
+}
+});
+render();
+</script></body></html>
