@@ -194,7 +194,7 @@ pub async fn deliver(
 
 /// Resolve a server-issued key only after the normal admission middleware.
 /// UI lock serializes claims with delivery, pagination, and view replacement.
-/// Returns None when the widget query has already been answered here.
+/// Answers every query here; Some forwards a validated payload to the router.
 pub async fn resolve(
     bot: &Bot,
     query: &CallbackQuery,
@@ -241,6 +241,7 @@ pub async fn resolve(
         return Ok(None);
     }
     if parts[2] == "read" {
+        answer(bot, query, "").await?;
         return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
     }
     if snapshot.claimed {
@@ -270,5 +271,8 @@ pub async fn resolve(
     if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
         session.claimed = true;
     }
+    // Acknowledge before handing off to handlers that may wait for HA. A failed
+    // ACK keeps the claim consumed; recovery must read state, never retry a write.
+    answer(bot, query, "").await?;
     Ok(Some(action.to_string()))
 }

@@ -307,10 +307,13 @@ async fn pagination_is_read_only_and_read_does_not_repeat_an_action() -> Result<
     assert_eq!(fake.calls()[0].0, "answerWidgetQuery");
     assert_eq!(fake.calls()[1].0, "editMessageWidgetData");
     assert_eq!(config.html_ui.sessions.get(&1).unwrap().index, 1);
+    fake.clear();
     assert_eq!(
         resolve(&fake.bot, &query(&session, "read"), &config).await?,
         Some(session.view.payload.for_refresh().to_string())
     );
+    assert_eq!(fake.calls().len(), 1);
+    assert_eq!(fake.calls()[0].0, "answerWidgetQuery");
     assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
 }
@@ -372,9 +375,12 @@ async fn original_confirmation_routes_are_used_for_widget_device_actions() -> Re
             )
         })
         .context("Missing light action")?;
+    fake.clear();
     let data = resolve(&fake.bot, &query(&session, key), &config)
         .await?
         .unwrap();
+    assert_eq!(fake.calls().len(), 1);
+    assert_eq!(fake.calls()[0].0, "answerWidgetQuery");
     assert_eq!(&Payload::from_string(&data)?, payload);
     assert!(
         ha.calls.lock().unwrap().is_empty(),
@@ -394,6 +400,60 @@ async fn original_confirmation_routes_are_used_for_widget_device_actions() -> Re
     assert!(resolve(&fake.bot, &query(&session, key), &config)
         .await?
         .is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn widget_callback_is_acknowledged_once_before_result_delivery() -> Result<()> {
+    let (config, ha) = config().await?;
+    let fake = FakeTelegram::new().await?;
+    let session = publish(
+        &fake,
+        &config,
+        Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 }),
+    )
+    .await?;
+    fake.clear();
+    let storage = teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new();
+    let dialogue = Dialogue::new(storage, ChatId(1));
+    dialogue.update(crate::bot::State::default()).await?;
+    handlers::handle_callback(
+        fake.bot.clone(),
+        query(&session, "read"),
+        config.clone(),
+        dialogue,
+    )
+    .await?;
+    assert_eq!(fake.calls()[0].0, "answerWidgetQuery");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if config
+                .html_ui
+                .sessions
+                .get(&1)
+                .is_some_and(|current| current.pages[0].seq > session.pages[0].seq)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let calls = fake.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(method, _)| method == "answerWidgetQuery")
+            .count(),
+        1
+    );
+    assert!(!calls
+        .iter()
+        .any(|(method, _)| method.eq_ignore_ascii_case("answerCallbackQuery")));
+    assert!(calls
+        .iter()
+        .any(|(method, _)| method == "editMessageWidgetData"));
+    assert!(ha.calls.lock().unwrap().is_empty());
     Ok(())
 }
 

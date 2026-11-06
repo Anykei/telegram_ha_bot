@@ -689,9 +689,14 @@ pub async fn handle_callback(
     let payload = match Payload::from_string(data) {
         Ok(payload) => payload,
         Err(_) => {
-            let _ =
-                super::html_ui::answer(&bot, &q, "Кнопка устарела. Откройте меню командой /start.")
-                    .await;
+            if !super::html_ui::is_widget(&q) {
+                let _ = super::html_ui::answer(
+                    &bot,
+                    &q,
+                    "Кнопка устарела. Откройте меню командой /start.",
+                )
+                .await;
+            }
             return Ok(());
         }
     };
@@ -722,8 +727,10 @@ pub async fn handle_callback(
         {
             Ok(reply) => Some((room, device, reply)),
             Err(_) => {
-                let _ =
-                    super::html_ui::answer(&bot, &q, crate::i18n::t(lang, "climate.busy")).await;
+                if !super::html_ui::is_widget(&q) {
+                    let _ = super::html_ui::answer(&bot, &q, crate::i18n::t(lang, "climate.busy"))
+                        .await;
+                }
                 return Ok(());
             }
         }
@@ -747,7 +754,9 @@ pub async fn handle_callback(
     } else {
         ""
     };
-    let _ = super::html_ui::answer(&bot, &q, answer_text).await;
+    if !super::html_ui::is_widget(&q) {
+        let _ = super::html_ui::answer(&bot, &q, answer_text).await;
+    }
 
     if is_background_view {
         dialogue.exit().await?;
