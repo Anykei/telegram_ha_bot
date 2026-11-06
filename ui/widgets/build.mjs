@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { transform, build as bundle } from 'esbuild';
+import { minify } from 'terser';
 import { embed } from './preview/embed.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -26,13 +27,15 @@ async function build(screen, stylesheet, title) {
   }
   const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
   const script = r1
-    ? {code:(await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',minify:true,target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text}
+    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text, {ecma:2020, compress:{passes:2}, format:{ascii_only:true}})
     : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
   let body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
   // Widget v1 has no forms or browser tab: omit redundant button types and
   // the tab title in r1 assets. Keep preview titles and accessible labels.
   if (r1) body = body.replaceAll(' type="button"', '');
-  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${r1 ? '' : `<title>${title}</title>`}<style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
+  // r1 is rendered inside Telegram's fixed widget viewport (and a sized preview
+  // iframe), so its document needs neither a browser viewport hint nor a title.
+  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8">${r1 ? '' : `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>`}<style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);
