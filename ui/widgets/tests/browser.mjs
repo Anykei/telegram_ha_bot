@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { checkPanel } from './panel-browser.mjs';
 import { checkRelease } from './release-browser.mjs';
 import { checkGraph } from './graph-browser.mjs';
+import { checkLive } from './live-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 let executable = process.env.HA_WIDGET_CHROME;
@@ -66,6 +67,9 @@ try {
   await command('Network.enable');
   // The complete page must work even with networking forcibly offline.
   await command('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  if (process.env.HA_WIDGET_LIVE_FIXTURES) {
+    await checkLive({root, command, evaluate, until, file:process.env.HA_WIDGET_LIVE_FIXTURES});
+  } else {
   await command('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1080, deviceScaleFactor: 1, mobile: false });
   await command('Page.navigate', { url: pathToFileURL(root + 'dist/preview.html').href });
   await until(`document.getElementById('widget-frame') && ${get('power')} && ${get('state')}.textContent === 'Выключен'`);
@@ -120,6 +124,7 @@ try {
   await checkPanel({root, command, evaluate, until, screenshot});
   await checkRelease({root, command, evaluate, until, screenshot});
   await checkGraph({root, command, evaluate, until, screenshot});
+  }
 } finally {
   await command('Browser.close', {}, null).catch(() => {});
   browser.kill();

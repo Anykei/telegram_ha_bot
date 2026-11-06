@@ -8,6 +8,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[path = "release_tests.rs"]
 mod release_tests;
 
+#[path = "live_tests.rs"]
+mod live_tests;
+
 #[derive(Default)]
 struct FakeHa {
     calls: Mutex<Vec<String>>,
