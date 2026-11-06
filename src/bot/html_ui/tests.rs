@@ -369,7 +369,10 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         };
         assert_eq!(prepared.actions[&key], Payload::from_string(data)?);
         if let Some(visible) = rendered.iter().find(|b| b.key == key) {
-            assert_eq!(visible.text, button.text);
+            assert_eq!(
+                &visible.text,
+                view.html_button_labels.get(data).unwrap_or(&button.text)
+            );
             order.push(key);
         } else {
             assert!(
@@ -456,6 +459,25 @@ async fn more_than_five_room_controls_share_a_page_across_command_phases() -> Re
     )
     .await?;
     let ready = presentation::prepare(&view, "a".repeat(32), 1)?;
+    assert_eq!(ready.pages[0].kind, "room");
+    for row in ready.pages[0]
+        .rows
+        .iter()
+        .filter(|row| row.iter().any(|b| b.kind == "action"))
+    {
+        assert_eq!(row.len(), 2);
+        assert_eq!(row[0].text.lines().count(), 2);
+        assert_eq!(row[0].text.lines().nth(1), Some("ВЫКЛ"));
+        assert_eq!(row[1].text, "💡\nВключить");
+    }
+    assert!(
+        view.kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .all(|b| !b.text.contains('\n')),
+        "Classic labels must retain their original presentation"
+    );
     assert!(ready.pages[0].rows.len() > 5);
     assert_eq!(
         ready.pages[0]

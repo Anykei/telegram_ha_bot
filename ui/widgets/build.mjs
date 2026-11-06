@@ -27,7 +27,8 @@ async function build(screen, stylesheet, title) {
   }
   const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
   const script = r1
-    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text, {ecma:2020, compress:{passes:2}, format:{ascii_only:true}})
+    // Optimize for the compressed wire size, not just raw JavaScript bytes.
+    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')}})).outputFiles[0].text, {ecma:2020, compress:screen==='release'?{passes:1,unused:false,reduce_vars:false,sequences:1}:{passes:2}, format:{ascii_only:true}})
     : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
   let body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
   // Widget v1 has no forms or browser tab: omit redundant button types and

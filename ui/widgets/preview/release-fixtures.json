@@ -876,38 +876,38 @@
       "rows": [
         [
           {
-            "text": "Торшер · Выключен",
+            "text": "Торшер\nВыключен",
             "key": "device",
             "kind": "nav"
           },
           {
-            "text": "Включить",
+            "text": "💡\nВключить",
             "key": "lamp_on",
             "kind": "action"
           }
         ],
         [
           {
-            "text": "Люстра · Включена",
+            "text": "Люстра\nВключена",
             "key": "ceiling",
             "kind": "nav"
           },
           {
-            "text": "Выключить",
+            "text": "💡\nВыключить",
             "key": "ceiling_off",
             "kind": "action"
           }
         ],
         [
           {
-            "text": "Климат: Отопление · 22 °C",
+            "text": "Климат: Отопление\n22 °C",
             "key": "climate",
             "kind": "nav"
           }
         ],
         [
           {
-            "text": "История: Температура · 22,4 °C",
+            "text": "История: Температура\n22,4 °C",
             "key": "sensor",
             "kind": "nav"
           }
@@ -918,7 +918,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "rooms"
+      "back": "rooms",
+      "kind": "room"
     }
   },
   {
@@ -1844,38 +1845,38 @@
       "rows": [
         [
           {
-            "text": "Floor lamp · Off",
+            "text": "Floor lamp\nOff",
             "key": "device",
             "kind": "nav"
           },
           {
-            "text": "On",
+            "text": "💡\nOn",
             "key": "lamp_on",
             "kind": "action"
           }
         ],
         [
           {
-            "text": "Ceiling light · On",
+            "text": "Ceiling light\nOn",
             "key": "ceiling",
             "kind": "nav"
           },
           {
-            "text": "Off",
+            "text": "💡\nOff",
             "key": "ceiling_off",
             "kind": "action"
           }
         ],
         [
           {
-            "text": "Climate: Heating · 22 °C",
+            "text": "Climate: Heating\n22 °C",
             "key": "climate",
             "kind": "nav"
           }
         ],
         [
           {
-            "text": "History: Temperature · 22.4 °C",
+            "text": "History: Temperature\n22.4 °C",
             "key": "sensor",
             "kind": "nav"
           }
@@ -1886,7 +1887,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "rooms"
+      "back": "rooms",
+      "kind": "room"
     }
   },
   {
@@ -1935,55 +1937,56 @@
       "b": [
         [
           [
-            "📊 История: Терморегулятор · Батарея · 97%",
+            "📊 Терморегулятор · Батарея\n97%",
             "battery",
             "nav"
           ]
         ],
         [
           [
-            "Люстра · ВЫКЛ",
+            "Люстра\nВЫКЛ",
             "ceiling",
             "nav"
           ],
           [
-            "💡 Включить",
+            "💡\nВключить",
             "ceiling_on",
             "action"
           ]
         ],
         [
           [
-            "Подсветка · switch.kitchen_strip_right · ВЫКЛ",
+            "Подсветка\nВЫКЛ · vykliuchatel_3_right",
             "strip",
             "nav"
           ],
           [
-            "💡 Включить",
+            "💡\nВключить",
             "strip_on",
             "action"
           ]
         ],
         [
           [
-            "Подсветка · switch.kitchen_relay · ВЫКЛ",
+            "Подсветка\nВЫКЛ · rele_0",
             "relay",
             "nav"
           ],
           [
-            "💡 Включить",
+            "💡\nВключить",
             "relay_on",
             "action"
           ]
         ],
         [
           [
-            "🌡 Климат: Терморегулятор · автоматический",
+            "Терморегулятор\nАвтоматический",
             "climate",
             "nav"
           ]
         ]
-      ]
+      ],
+      "kind": "room"
     }
   },
   {
@@ -2441,6 +2444,81 @@
       "pages": 2,
       "b": [],
       "back": "p0"
+    }
+  },
+  {
+    "id": "room_long_labels",
+    "label": "Комната · длинные названия и состояния",
+    "page": {
+      "v": 1,
+      "rev": "44444444444444444444444444444444",
+      "seq": 4,
+      "lang": "ru",
+      "title": "🍳 Кухня",
+      "context": "Комнаты",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 3,
+      "back": "rooms",
+      "s": "kitchen",
+      "b": [
+        [
+          [
+            "📊 Терморегулятор · Батарея\n97%",
+            "battery",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Очень длинное название светильника · 🪔 гостиная\nНедоступен · Проверьте подключение устройства",
+            "ceiling",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "ceiling_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка\nВЫКЛ · vykliuchatel_3_right",
+            "strip",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "strip_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка\nВЫКЛ · rele_0",
+            "relay",
+            "nav"
+          ],
+          [
+            "💡\nВключить",
+            "relay_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Терморегулятор\nАвтоматический",
+            "climate",
+            "nav"
+          ]
+        ]
+      ],
+      "kind": "room"
     }
   }
 ]

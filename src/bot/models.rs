@@ -30,6 +30,9 @@ pub struct View {
     /// Short confirmed state shown with controls; full text stays in details.
     #[serde(default)]
     pub html_summary: Option<String>,
+    /// Compact labels by callback; the classic keyboard keeps its full labels.
+    #[serde(default)]
+    pub html_button_labels: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub html_sections: Vec<HtmlSection>,
     /// Label deferred full text, with a return to the first page.

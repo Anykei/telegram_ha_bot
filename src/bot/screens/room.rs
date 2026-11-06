@@ -84,6 +84,7 @@ pub async fn render_page(
         common::list_page(&ctx, &current_payload, requested, db_devices.len()).await?;
     let empty = db_devices.is_empty();
     let mut rows = vec![];
+    let mut html_button_labels = std::collections::HashMap::new();
     let names = labels::room_names(&db_devices, &ha_entities, ctx.lang);
 
     for db_dev in db_devices
@@ -116,6 +117,21 @@ pub async fn render_page(
 
                     let name = names.get(&db_dev.id).map(String::as_str).unwrap_or(alias);
                     let state = labels::state(ha_ent, ctx.lang, inverted, state_alias.as_deref());
+                    let base = labels::device_name(&db_dev, ha_ent, ctx.lang);
+                    let label = labels::room_html_label(&base, name, &db_dev.entity_id, &state);
+                    let label = if matches!(domain, "sensor" | "binary_sensor") {
+                        format!("📊 {label}")
+                    } else {
+                        label
+                    };
+                    html_button_labels.insert(
+                        Payload::Control(ControlPayload::DeviceControl {
+                            room: room_id,
+                            device: db_dev.id,
+                        })
+                        .to_string(),
+                        label,
+                    );
                     let action = if quick_action {
                         let logical_on = (ha_ent.state == "on") != inverted;
                         format!(
@@ -177,6 +193,7 @@ pub async fn render_page(
             };
 
             if let Some(action) = quick_label {
+                html_button_labels.insert(payload.to_string(), action.replacen(' ', "\n", 1));
                 rows.push(vec![
                     InlineKeyboardButton::callback(
                         text,
@@ -227,6 +244,8 @@ pub async fn render_page(
         html_title: Some(room_display),
         html_context: Some(crate::bot::personal::words(ctx.lang, "Комнаты", "Rooms").into()),
         html_summary: Some(String::new()),
+        html_kind: (mode == RoomViewMode::Control).then(|| "room".into()),
+        html_button_labels,
         alert: failed.then(|| t(ctx.lang, "control.ha_unavailable").into()),
         text: if empty {
             t(ctx.lang, "control.empty_room").into()

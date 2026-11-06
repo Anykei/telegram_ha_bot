@@ -57,6 +57,23 @@ pub fn room_names(devices: &[Device], entities: &[Entity], lang: Language) -> Ha
     names
 }
 
+/// Two authored lines avoid hiding the current state behind a long device name.
+pub fn room_html_label(base: &str, unique: &str, entity_id: &str, state: &str) -> String {
+    let single_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let qualifier = unique.strip_prefix(&format!("{base} · "));
+    let detail = if let Some(qualifier) = qualifier {
+        let qualifier = if qualifier == entity_id {
+            entity_id.split_once('.').map_or(entity_id, |(_, id)| id)
+        } else {
+            qualifier
+        };
+        format!("{state} · {qualifier}")
+    } else {
+        state.to_owned()
+    };
+    format!("{}\n{}", single_line(base), single_line(&detail))
+}
+
 pub fn state(entity: &Entity, lang: Language, inverted: bool, alias: Option<&str>) -> String {
     if let Some(alias) = alias {
         return alias.into();
@@ -117,6 +134,38 @@ pub fn state(entity: &Entity, lang: Language, inverted: bool, alias: Option<&str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn room_labels_keep_state_on_second_line_and_disambiguate_duplicates() {
+        assert_eq!(
+            room_html_label("Люстра", "Люстра", "light.ceiling", "ВЫКЛ"),
+            "Люстра\nВЫКЛ"
+        );
+        for id in ["switch.vykliuchatel_3_right", "switch.rele_0"] {
+            let label = room_html_label("Подсветка", &format!("Подсветка · {id}"), id, "ВКЛ");
+            assert_eq!(
+                label,
+                format!("Подсветка\nВКЛ · {}", id.split_once('.').unwrap().1)
+            );
+        }
+        assert_eq!(
+            room_html_label(
+                "Подсветка",
+                "Подсветка · Столешница",
+                "switch.worktop",
+                "ВКЛ"
+            ),
+            "Подсветка\nВКЛ · Столешница"
+        );
+        // User-authored separators and whitespace must never create a third line
+        // or get confused with the structured name/state boundary.
+        let alias = "Очень длинное\nимя · 🪔 светильника\r\nс пробелами";
+        let label = room_html_label(alias, alias, "light.test", "Работает · ярко\n\nна 50%");
+        assert_eq!(
+            label,
+            "Очень длинное имя · 🪔 светильника с пробелами\nРаботает · ярко на 50%"
+        );
+    }
 
     #[test]
     fn english_binary_labels_use_classes_inversion_and_aliases_consistently() {

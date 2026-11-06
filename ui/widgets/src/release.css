@@ -1,10 +1,11 @@
 * { box-sizing: border-box; }
-body { margin: 0; padding: 0; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
+body { margin: 0; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
 button { font: inherit; cursor: pointer; }
 .release { min-height: 600px; padding: var(--ha-space-3); }
-.r-context { flex: 1; min-width: 0; color: var(--ha-muted); font-size: 12px; }
-.release h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight: 650; }
-.r-context, .release h1 { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.r-context { flex: 1; color: var(--ha-muted); font-size: 12px; }
+h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight: 650; }
+.r-context, h1 { white-space: nowrap; }
+.r-context, h1, .r-button span { text-overflow: ellipsis; overflow: hidden; }
 .r-text { margin: 0 0 var(--ha-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .r-text { padding: var(--ha-space-3); border-radius: var(--ha-radius-control); }
 .r-body { background: var(--ha-surface-soft); }
@@ -26,7 +27,7 @@ button { font: inherit; cursor: pointer; }
 .r-footer { display:flex; gap:var(--ha-space-2); margin-top:var(--ha-space-2); justify-content:flex-end; }
 .r-footer .r-pager { flex:1; min-width:0; margin:0; }
 .r-read { font-size:22px; line-height:1; }
-.r-feedback { min-height: 34px; margin: var(--ha-space-2) 0 0; color: var(--ha-error); font-size: 14px; overflow-wrap: anywhere; }
+.r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); overflow-wrap: anywhere; }
 [aria-disabled="true"] { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
 .r-wait { position:relative; opacity:1; }
@@ -43,3 +44,7 @@ button { font: inherit; cursor: pointer; }
 .r-status > * { display:block; }
 .r-status strong { font-size:18px; margin:4px 0; }
 .r-status small { font-size:12px; color:var(--ha-muted); }
+
+/* Room labels have two server-authored lines: identity and current state. */
+[data-kind="room"] .r-button { height:72px; }
+[data-kind="room"] .r-button span { white-space:pre; }

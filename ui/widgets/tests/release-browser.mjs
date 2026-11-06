@@ -118,8 +118,8 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 6, 'More than five rows fit without another page');
   assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
   await dimensions('six rows');
-  // A phone can use the previously empty bottom strip for a fifth control row.
-  // Keep real-world wrapping, native clock space and all footer targets visible.
+  // Authored two-line labels make every device row predictable, even with long
+  // names, duplicate aliases and custom states. Native clock space stays clear.
   for (const width of [390, 430]) {
     await reload('room_five_rows', {theme:'dark', width});
     await evaluate(`${win}.previewSetSafeArea(24)`);
@@ -135,6 +135,26 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.equal(footer.label, 'Обновить');
     await dimensions('room/five/'+width);
     if (width === 390) await capture('release-room-five-rows-phone');
+  }
+  for (const width of [200, 320, 390, 430]) {
+    await reload('room_long_labels', {theme:'dark', width});
+    const labels = await evaluate(`Array.from(${doc}.querySelectorAll('.r-button'), b => {
+      const span=b.firstChild, style=${win}.getComputedStyle(span);
+      return {height:b.getBoundingClientRect().height, text:span.textContent,
+        labelHeight:span.getBoundingClientRect().height,lineHeight:parseFloat(style.lineHeight),
+        overflow:style.overflow,ellipsis:style.textOverflow,wrap:style.whiteSpace};
+    })`);
+    assert.ok(labels.length >= 5);
+    for (const label of labels) {
+      assert.equal(label.height, 72, 'Every room button has the same fixed height');
+      assert.equal(label.text.split('\n').length, 2, 'Name and state stay on separate authored lines');
+      assert.ok(label.labelHeight <= label.lineHeight * 2 + 1, 'Visible label never exceeds two lines');
+      assert.equal(label.wrap, 'pre');
+      assert.equal(label.overflow, 'hidden');
+      assert.equal(label.ellipsis, 'ellipsis');
+    }
+    await assertPreserved(fixtures.find(f=>f.id==='room_long_labels').page, 'room labels/'+width);
+    if (width === 390) await capture('release-room-long-labels-phone');
   }
   // Old snapshots without optional kind/hint still have the default menu presentation.
   await reload('home');

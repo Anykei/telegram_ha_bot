@@ -165,7 +165,7 @@ fn screen_kind(view: &View) -> &str {
     }) {
         return "confirmation";
     }
-    if let Some(kind @ ("menu" | "device" | "climate" | "confirmation" | "list")) =
+    if let Some(kind @ ("menu" | "device" | "climate" | "confirmation" | "list" | "room")) =
         view.html_kind.as_deref()
     {
         return kind;
@@ -487,7 +487,11 @@ pub fn prepare_with_pending(
                         _ => None,
                     };
                     rendered.push(Button {
-                        text: button.text.clone(),
+                        text: view
+                            .html_button_labels
+                            .get(data)
+                            .unwrap_or(&button.text)
+                            .clone(),
                         key: key.clone(),
                         kind: if let Some(status) = pending_kind {
                             status

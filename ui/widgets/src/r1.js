@@ -63,20 +63,18 @@ import { validGraph, renderGraph } from './graph-render.js';
     return button;
   }
   function mount(nodes) {
-    el('r-content').textContent = '';
-    if (GRAPH) nodes.forEach(node => el('r-content').appendChild(node));
-    else {
-      let previous;
-      nodes.forEach(block => {
-      if (block.tagName === 'P') {
+    const content = el('r-content');
+    content.textContent = '';
+    let previous;
+    nodes.forEach(block => {
+      if (!GRAPH && block.tagName === 'P') {
         if (!previous || previous.className !== block.className) {
           previous = node('p', block.className);
-          el('r-content').appendChild(previous);
+          content.appendChild(previous);
         }
         previous.textContent += block.textContent;
-      } else { previous = null; el('r-content').appendChild(block); }
-      });
-    }
+      } else { previous = null; content.appendChild(block); }
+    });
   }
   function layout() {
     const blocks = [];
