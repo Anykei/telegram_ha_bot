@@ -49,7 +49,7 @@ impl Page {
 }
 
 pub fn supported(view: &View) -> bool {
-    if view.image.is_some() || view.next_state.is_some() || view.text_page.is_some() {
+    if view.image.is_some() {
         return false;
     }
     // Every text screen uses the same server-issued callback contract. Access
@@ -203,22 +203,49 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     ensure!(empty.json()?.len() <= 600, "Header is too large for HTML");
     let mut parts: Vec<Page> = Vec::new();
     let mut current = empty.clone();
-    let mut body = Vec::new();
-    for item in &view.notifications {
-        body.push(format!(
-            "{} {}: {} · {}",
-            item.icon,
-            item.label,
-            item.value,
-            crate::core::presentation::StateFormatter::format_last_update(item.last_update)
-        ));
+    if view.next_state.is_some() {
+        current.hint = if english {
+            "Reply with a message in this chat. /cancel to cancel."
+        } else {
+            "Ответьте сообщением в этот чат. /cancel — отмена."
+        }
+        .into();
     }
-    if !view.text.is_empty() {
-        body.push(view.text.clone());
+    let mut body = Vec::new();
+    if view.text_page.is_some() {
+        // Switching from a classic long screen preserves its source page and pager.
+        body.push(view.get_plain_text());
+    } else {
+        for item in &view.notifications {
+            body.push(format!(
+                "{} {}: {} · {}",
+                item.icon,
+                item.label,
+                item.value,
+                crate::core::presentation::StateFormatter::format_last_update(item.last_update)
+            ));
+        }
+        if !view.text.is_empty() {
+            body.push(view.text.clone());
+        }
     }
     for (field, text) in [
-        ("alert", view.alert.as_deref().unwrap_or("")),
-        ("notice", view.notice.as_deref().unwrap_or("")),
+        (
+            "alert",
+            if view.text_page.is_some() {
+                ""
+            } else {
+                view.alert.as_deref().unwrap_or("")
+            },
+        ),
+        (
+            "notice",
+            if view.text_page.is_some() {
+                ""
+            } else {
+                view.notice.as_deref().unwrap_or("")
+            },
+        ),
         ("body", &body.join("\n\n")),
     ] {
         for part in split_text(text, 180) {
@@ -231,9 +258,11 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             target.push_str(&part);
             let characters = candidate.body.chars().count()
                 + candidate.alert.chars().count()
-                + candidate.notice.chars().count();
+                + candidate.notice.chars().count()
+                + candidate.hint.chars().count();
             if candidate.json().is_err() || characters > 200 {
-                if !current.body.is_empty()
+                if !current.hint.is_empty()
+                    || !current.body.is_empty()
                     || !current.alert.is_empty()
                     || !current.notice.is_empty()
                 {
@@ -278,7 +307,8 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             candidate.rows.push(rendered.clone());
             let text_chars = candidate.body.chars().count()
                 + candidate.notice.chars().count()
-                + candidate.alert.chars().count();
+                + candidate.alert.chars().count()
+                + candidate.hint.chars().count();
             if candidate.rows.len() > 4
                 || candidate.json().is_err()
                 || (candidate.rows.len() > 2 && text_chars > 80)

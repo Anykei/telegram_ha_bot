@@ -90,6 +90,10 @@ async fn press(
         dialogue.update(crate::bot::State::Idle).await?;
     }
     handlers::handle_callback(fake.bot.clone(), q, config.clone(), dialogue.clone()).await?;
+    wait_idle(config).await
+}
+
+async fn wait_idle(config: &AppConfig) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while config.view_updates.contains_key(&1) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -97,6 +101,12 @@ async fn press(
     })
     .await?;
     Ok(())
+}
+
+fn input_message(text: &str) -> Result<teloxide::types::Message> {
+    Ok(serde_json::from_value(
+        json!({"message_id":100,"date":1,"from":{"id":1,"is_bot":false,"first_name":"Test"},"chat":{"id":1,"type":"private"},"text":text}),
+    )?)
 }
 
 #[tokio::test]
@@ -228,6 +238,236 @@ async fn html_confirmation_executes_once_and_refresh_never_repeats_command() -> 
         .fetch_one(&config.db)
         .await?,
         count
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn html_temperature_form_keeps_dialogue_on_read_and_uses_regular_input_validation(
+) -> Result<()> {
+    let (config, ha) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, climate) = device(&config, "climate.bedroom").await?;
+    let card = Payload::Control(ControlPayload::DeviceControl {
+        room,
+        device: climate,
+    });
+    publish(&fake, &config, card.clone()).await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let open = Payload::TemperatureInput {
+        room,
+        device: climate,
+    };
+    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    let form = current(&config);
+    assert!(form.pages.iter().all(|p| p.kind == "form"));
+    assert!(form.pages[0].hint.contains("сообщением"));
+    assert!(form.pages.iter().skip(1).all(|p| p.hint.is_empty()));
+    assert!(matches!(
+        dialogue.get().await?,
+        Some(crate::bot::State::ExactTemperature { .. })
+    ));
+
+    fake.clear();
+    handlers::refresh_current_view(
+        &fake.bot,
+        &config,
+        1,
+        ChatId(1),
+        MessageId(form.message),
+        &form.view.payload.to_string(),
+    )
+    .await?;
+    assert!(
+        fake.calls().is_empty(),
+        "Heartbeat must not replace a form or create a new draft"
+    );
+    press(&fake, &config, &dialogue, query(&form, "read")).await?;
+    assert_eq!(current(&config).pages[0].rev, form.pages[0].rev);
+    let state = dialogue
+        .get()
+        .await?
+        .context("Form dialogue lost after refresh")?;
+    crate::bot::personal::handle_input(
+        fake.bot.clone(),
+        input_message("не число")?,
+        config.clone(),
+        dialogue.clone(),
+        state.clone(),
+    )
+    .await?;
+    assert!(matches!(
+        dialogue.get().await?,
+        Some(crate::bot::State::ExactTemperature { .. })
+    ));
+    assert_eq!(
+        ha.fetch_states_by_ids(&["climate.bedroom".into()]).await?[0]
+            .attributes
+            .temperature,
+        Some(22.0)
+    );
+    crate::bot::personal::handle_input(
+        fake.bot.clone(),
+        input_message("23,5")?,
+        config.clone(),
+        dialogue.clone(),
+        state,
+    )
+    .await?;
+    wait_idle(&config).await?;
+    assert_eq!(
+        ha.fetch_states_by_ids(&["climate.bedroom".into()]).await?[0]
+            .attributes
+            .temperature,
+        Some(23.5)
+    );
+    assert!(current(&config).view.next_state.is_none());
+    assert_eq!(current(&config).pages[0].kind, "climate");
+    assert!(dialogue.get().await?.is_none());
+
+    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    let cancel = action_query(&config, &card);
+    press(&fake, &config, &dialogue, cancel.clone()).await?;
+    assert!(current(&config).view.next_state.is_none());
+    assert!(dialogue.get().await?.is_none());
+    assert!(resolve(&fake.bot, &cancel, &config).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn html_schedule_form_pagination_and_read_do_not_create_another_draft() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let native: i64 =
+        sqlx::query_scalar("SELECT id FROM ha_native_targets WHERE entity_id='scene.evening'")
+            .fetch_one(&config.db)
+            .await?;
+    let target = db::action_groups::ActionTargetRef::HaNative(native);
+    publish(
+        &fake,
+        &config,
+        Payload::Admin(AdminPayload::ActionSchedules { target }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let snapshot = current(&config);
+    let (key, _) = snapshot
+        .actions
+        .iter()
+        .find(|(_, p)| {
+            matches!(
+                p,
+                Payload::Admin(AdminPayload::PromptCreateActionScheduleTime { .. })
+            )
+        })
+        .context("Missing create schedule button")?;
+    press(&fake, &config, &dialogue, query(&snapshot, key)).await?;
+    let form = current(&config);
+    assert!(form.view.next_state.is_some());
+    let before: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, revision, payload FROM ui_drafts WHERE kind=?")
+            .bind(db::schedule_drafts::KIND)
+            .fetch_all(&config.db)
+            .await?;
+    assert_eq!(before.len(), 1);
+    if form.pages.len() > 1 {
+        press(&fake, &config, &dialogue, query(&form, "p1")).await?;
+    }
+    for _ in 0..2 {
+        press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
+    }
+    let after: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, revision, payload FROM ui_drafts WHERE kind=?")
+            .bind(db::schedule_drafts::KIND)
+            .fetch_all(&config.db)
+            .await?;
+    assert_eq!(before, after);
+    assert!(dialogue.get().await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn long_html_forms_preserve_all_content_without_classic_pagination() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let mut view = router(
+        Payload::Personal(PersonalPayload::QuietInput),
+        1,
+        config.clone(),
+    )
+    .await?;
+    view.text
+        .push_str(&"\nПолная инструкция 🏠 без обрезки текста и потери действий.".repeat(220));
+    crate::bot::text_pages::prepare(&mut view, 1, &config).await?;
+    assert!(view.text_page.is_none());
+    let prepared = presentation::prepare(&view, "e".repeat(32), 1)?;
+    assert_complete(&view, &prepared)?;
+    assert!(prepared.pages.len() > 10);
+    assert_eq!(
+        prepared.pages.iter().filter(|p| !p.hint.is_empty()).count(),
+        1
+    );
+    assert!(
+        handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view.clone(), config.clone(), None)
+            .await?
+    );
+    assert_eq!(current(&config).view.text, view.text);
+
+    db::interface::set(1, db::interface::InterfaceMode::Classic, &config.db).await?;
+    crate::bot::text_pages::prepare(&mut view, 1, &config).await?;
+    assert!(view.text_page.is_some());
+    let text = view.get_plain_text();
+    let source_page = presentation::prepare(&view, "e".repeat(32), 1)?;
+    assert_eq!(
+        source_page
+            .pages
+            .iter()
+            .map(|p| p.body.as_str())
+            .collect::<String>(),
+        text
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn long_html_delivery_failure_uses_a_bounded_classic_page_and_saved_context() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let mut view = router(
+        Payload::Personal(PersonalPayload::QuietInput),
+        1,
+        config.clone(),
+    )
+    .await?;
+    view.text
+        .push_str(&"\nДлинная инструкция, все строки должны оставаться доступными.".repeat(200));
+    assert!(view.text_page.is_none());
+    *fake.fail.lock().unwrap() = Some("sendWidget".into());
+    assert!(
+        handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view, config.clone(), None).await?
+    );
+    let calls = fake.calls();
+    let (_, sent) = calls
+        .iter()
+        .find(|(method, _)| method.eq_ignore_ascii_case("sendMessage"))
+        .context("Missing classic fallback")?;
+    let text = sent["text"].as_str().context("Missing text")?;
+    assert!(crate::bot::text_pages::text_len(text) <= 4096);
+    let session = config.sessions.get(&1).unwrap();
+    assert_eq!(session.ui_message_mode, UiMessageMode::Text);
+    assert!(matches!(
+        Payload::from_string(&session.current_context)?,
+        Payload::TextPage { .. }
+    ));
+    assert_eq!(
+        db::interface::get(1, &config.db).await?,
+        db::interface::InterfaceMode::Html
     );
     Ok(())
 }

@@ -480,7 +480,7 @@ async fn delivery_failure_and_unsupported_views_fall_back_without_changing_prefe
     );
     let mut view = router(Payload::Home, 1, config.clone()).await?;
     view.next_state = Some(crate::bot::State::PersonalQuietHours);
-    assert!(!eligible(&view));
+    assert!(eligible(&view));
     view.next_state = None;
     view.image = Some(vec![1]);
     assert!(!eligible(&view));

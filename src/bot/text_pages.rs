@@ -167,6 +167,19 @@ fn select_page(view: &mut View, screen: i64, requested: u16) {
 }
 
 pub async fn prepare(view: &mut View, user: u64, config: &AppConfig) -> Result<()> {
+    // HTML has its own complete, bounded pagination. Do not wrap new HTML
+    // screens in a second classic pager or replace their form context.
+    if view.text_page.is_none()
+        && super::html_ui::preferred(config, user).await
+        && super::html_ui::eligible(view)
+    {
+        return Ok(());
+    }
+    prepare_classic(view, user, config).await
+}
+
+/// Also used after an HTML transport failure, regardless of the saved preference.
+pub async fn prepare_classic(view: &mut View, user: u64, config: &AppConfig) -> Result<()> {
     if view.text_page.is_none() && text_len(&view.get_full_plain_text()) <= content_limit(view) {
         return Ok(());
     }

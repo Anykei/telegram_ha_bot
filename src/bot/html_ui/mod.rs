@@ -57,6 +57,11 @@ impl HtmlUi {
     pub fn clear(&self, user: u64) {
         self.sessions.remove(&user);
     }
+    pub fn input_is_open(&self, user: u64, message: i32) -> bool {
+        self.sessions
+            .get(&user)
+            .is_some_and(|session| session.message == message && session.view.next_state.is_some())
+    }
 }
 
 pub async fn preferred(config: &AppConfig, user: u64) -> bool {
@@ -246,7 +251,9 @@ pub async fn resolve(
         answer(bot, query, "denied").await?;
         return Ok(None);
     }
-    if parts[2] == "read" {
+    let refresh_input =
+        parts[2] == "read" && snapshot.view.next_state.is_some() && !snapshot.claimed;
+    if parts[2] == "read" && !refresh_input {
         answer(bot, query, "").await?;
         return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
     }
@@ -254,11 +261,15 @@ pub async fn resolve(
         answer(bot, query, "").await?;
         return Ok(None);
     }
-    if let Some(index) = parts[2]
-        .strip_prefix('p')
-        .and_then(|p| p.parse::<usize>().ok())
-        .filter(|&p| p < snapshot.pages.len())
-    {
+    let page = if refresh_input {
+        Some(snapshot.index)
+    } else {
+        parts[2]
+            .strip_prefix('p')
+            .and_then(|p| p.parse::<usize>().ok())
+            .filter(|&p| p < snapshot.pages.len())
+    };
+    if let Some(index) = page {
         let mut page = snapshot.pages[index].clone();
         page.seq = sequence();
         // Answer contains the same bounded page; no unrelated backend action is executed.

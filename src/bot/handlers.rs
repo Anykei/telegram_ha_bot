@@ -2101,6 +2101,9 @@ pub async fn render_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
+    if config.html_ui.input_is_open(user_id, message_id.0) {
+        return Ok(());
+    }
     let decoded = Payload::from_string(context).context("Context decoding failed")?;
     if matches!(
         decoded,
@@ -2162,6 +2165,9 @@ async fn refresh_current_view_inner(
     context: &str,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
+    if config.html_ui.input_is_open(user_id, message_id.0) {
+        return Ok(());
+    }
     if !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before render for user {} context {}",
@@ -2927,7 +2933,11 @@ pub(crate) async fn send_new_view_inner(
             )
             .into()
         });
+        // A failed HTML send must still fit native Telegram limits. The earlier
+        // preparation deliberately skipped the classic pager for HTML content.
+        super::text_pages::prepare_classic(&mut view, user_id, &config).await?;
     }
+    let payload_str = view.payload.to_string();
     let text = view.get_text();
 
     if (view.text_page.is_some() && view.image.is_none())
