@@ -461,7 +461,16 @@ pub fn prepare_with_pending(
                 + candidate.notice.chars().count()
                 + candidate.alert.chars().count()
                 + candidate.hint.chars().count();
-            if candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
+            // Let phone-sized cards use the space below the fourth row. The
+            // renderer measures actual wrapping and keeps overflow accessible.
+            let row_limit = if current.graph.is_some() {
+                3
+            } else if view.html_chart.is_some() {
+                4
+            } else {
+                5
+            };
+            if candidate.rows.len() > row_limit
                 || candidate.json().is_err()
                 || (candidate.rows.len() > 2 && text_chars > 80)
             {

@@ -395,7 +395,74 @@ async fn real_routes_keep_every_action_and_every_text_byte_within_telegram_limit
         for page in &prepared.pages {
             assert!(page.json()?.len() <= 1000);
             assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);
-            assert!(page.rows.len() <= 4);
+            assert!(page.rows.len() <= 5);
+        }
+    }
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn five_room_controls_share_a_page_across_command_phases() -> Result<()> {
+    let (config, ha) = config().await?;
+    for index in 1..5 {
+        db::devices::sync_device(
+            &format!("light.extra_{index}"),
+            "living",
+            &format!("Лампа {index}"),
+            "light",
+            &config.db,
+        )
+        .await?;
+    }
+    sqlx::query("DELETE FROM hidden_entities")
+        .execute(&config.db)
+        .await?;
+    let view = router(
+        Payload::Control(ControlPayload::RoomDetail { room: 1 }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    let ready = presentation::prepare(&view, "a".repeat(32), 1)?;
+    assert_eq!(ready.pages[0].rows.len(), 5);
+    assert_eq!(
+        ready.pages[0]
+            .rows
+            .iter()
+            .flatten()
+            .filter(|b| b.kind == "action")
+            .count(),
+        5,
+        "All five devices can be controlled from the first server page"
+    );
+    let keys = |pages: &[presentation::Page]| {
+        pages
+            .iter()
+            .map(|p| {
+                p.rows
+                    .iter()
+                    .flatten()
+                    .map(|b| b.key.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let devices: Vec<i64> = sqlx::query_scalar("SELECT id FROM devices WHERE room_id=1")
+        .fetch_all(&config.db)
+        .await?;
+    for phase in ["wait", "uncertain"] {
+        let pending = devices.iter().map(|id| (*id, phase)).collect();
+        let prepared = presentation::prepare_with_pending(&view, "b".repeat(32), 2, &pending)?;
+        assert_eq!(
+            keys(&ready.pages),
+            keys(&prepared.pages),
+            "Command phase must not move controls"
+        );
+        assert_buttons_preserved(&view, &prepared)?;
+        for page in &prepared.pages {
+            assert!(page.json()?.len() <= 1000);
+            assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);
         }
     }
     assert!(ha.calls.lock().unwrap().is_empty());

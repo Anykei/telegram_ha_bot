@@ -73,7 +73,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.deepEqual(content.actions, visibleActions(page), `${label}: every original action survives; duplicate Back is represented by the pinned control`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`), page.title);
     assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), page.kind || 'menu');
-    assert.equal(await evaluate(`${get('r-read-label')}.textContent`), page.lang === 'ru' ? 'Обновить' : 'Refresh');
+    assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), page.lang === 'ru' ? 'Обновить' : 'Refresh');
     return content;
   }
   async function controlRequests() {
@@ -110,6 +110,24 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  // A phone can use the previously empty bottom strip for a fifth control row.
+  // Keep real-world wrapping, native clock space and all footer targets visible.
+  for (const width of [390, 430]) {
+    await reload('room_five_rows', {theme:'dark', width});
+    await evaluate(`${win}.previewSetSafeArea(24)`);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5, 'Five room rows fit on a phone');
+    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true, 'No extra local page on a phone');
+    const footer = await evaluate(`(() => {
+      const read=${get('r-read')}.getBoundingClientRect(), pager=${get('r-server')}.getBoundingClientRect();
+      return {sameRow:Math.abs(read.top-pager.top)<1,bottom:Math.max(read.bottom,pager.bottom),label:${get('r-read')}.getAttribute('aria-label')};
+    })()`);
+    assert.ok(footer.sameRow, 'Paging and refresh share one row');
+    assert.ok(footer.bottom <= 576, 'Controls leave native message metadata clear');
+    assert.ok(footer.bottom >= 500, 'Room controls use the available card height');
+    assert.equal(footer.label, 'Обновить');
+    await dimensions('room/five/'+width);
+    if (width === 390) await capture('release-room-five-rows-phone');
+  }
   // Old snapshots without optional kind/hint still have the default menu presentation.
   await reload('home');
   assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
@@ -120,12 +138,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent === 'Страница 2/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${get('r-count')}.textContent === '2/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'Избранное');
   assert.ok(await evaluate(`${button('device')} && ${button('climate')}`));
   await capture('release-home-favorites');
   await evaluate(`${get('r-prev')}.click()`);
-  await until(`${get('r-count')}.textContent === 'Страница 1/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${get('r-count')}.textContent === '1/3' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.ok(await evaluate(`${button('rooms')}`));
   // Role and favorites never move the six primary sections off the first page.
   const primaryKeys=['rooms','scenes','cameras','favorites','settings','help'];
@@ -140,12 +158,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':favorites')`),'Full favorites retains its own callback');
     await reload(fixture.id,{width:320});
     await evaluate(`${get('r-next')}.click()`);
-    await until(`${get('r-count')}.textContent.endsWith(' 2/${filled?3:2}') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    await until(`${get('r-count')}.textContent.endsWith('2/${filled?3:2}') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     assert.equal(await evaluate(`${get('r-title')}.textContent`),filled?(ru?'Избранное':'Favorites'):(ru?'Сводка дома':'Home overview'));
     if(filled) {
       assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith(' 3/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-count')}.textContent.endsWith('3/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     const summary=fixtures.find(f=>f.id==='home_summary'+(filled?'':'_empty')+(ru?'':'_en'));
     assert.equal(await evaluate(`${get('r-title')}.textContent`),summary.page.title);
@@ -160,9 +178,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home_summary_empty',{width:320}); await capture('release-home-overview-empty');
   // Language changes use the same server-issued action path.
   await reload('settings'); await capture('release-settings');
-  await click('en'); await until(`${get('r-read-label')}.textContent === 'Refresh'`);
+  await click('en'); await until(`${get('r-read')}.getAttribute('aria-label') === 'Refresh'`);
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'My settings');
-  await click('ru'); await until(`${get('r-read-label')}.textContent === 'Обновить'`);
+  await click('ru'); await until(`${get('r-read')}.getAttribute('aria-label') === 'Обновить'`);
   await reload('room', {theme:'dark'}); await capture('release-room-dark');
   // The name/state opens a device card, while its adjacent command keeps a distinct key.
   assert.equal(await evaluate(`${button('device')}.classList.contains('r-nav')`), true);
@@ -184,7 +202,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await click('temp_up');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
-  assert.equal(await evaluate(`${get('r-read-label')}.textContent`), 'Обновление…');
+  assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), 'Обновление…');
   assert.deepEqual(await geometry(), beforePress, 'Press does not move or resize controls');
   await dimensions('climate/request');
   await reply({accepted:true});
@@ -276,7 +294,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload('long', {width});
     await evaluate(`${win}.previewSetSafeArea(64)`);
     assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`), '64px');
-    assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingLeft`), width === 200 ? '12px' : '16px');
+    assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingLeft`), '12px');
     await assertPreserved(fixtures.find(f=>f.id==='long').page, `safe-area/${width}`);
     const lastBottom = await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))`);
     assert.ok(lastBottom <= 536, 'Native metadata does not cover buttons');
@@ -316,7 +334,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
     if (serverPage === 2) {
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith(' 2/2') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-count')}.textContent.endsWith('2/2') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');
     assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'false');
@@ -363,13 +381,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload(lang === 'ru' ? 'admin' : 'admin_en');
     for (const page of [2,3]) {
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith(' ${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-count')}.textContent.endsWith('${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     for (const page of [2,1]) {
       await evaluate(`${get('r-prev')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith(' ${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-count')}.textContent.endsWith('${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
-    assert.equal(await evaluate(`${get('r-read-label')}.textContent`), lang === 'ru' ? 'Обновить' : 'Refresh');
+    assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), lang === 'ru' ? 'Обновить' : 'Refresh');
   }
   // Form prompts preserve every instruction; typing remains in the Telegram chat.
   await reload('form', {width:200});

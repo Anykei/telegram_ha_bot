@@ -1847,5 +1847,79 @@
       "kind": "device",
       "back": "room"
     }
+  },
+  {
+    "id": "room_five_rows",
+    "label": "Комната · пять строк управления",
+    "page": {
+      "v": 1,
+      "rev": "44444444444444444444444444444444",
+      "seq": 4,
+      "lang": "ru",
+      "title": "🍳 Кухня",
+      "context": "Комнаты",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "prev": null,
+      "next": "next",
+      "page": 1,
+      "pages": 3,
+      "back": "rooms",
+      "s": "kitchen",
+      "b": [
+        [
+          [
+            "📊 История: Терморегулятор · Батарея · 97%",
+            "battery",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Люстра · ВЫКЛ",
+            "ceiling",
+            "nav"
+          ],
+          [
+            "💡 Включить",
+            "ceiling_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка · switch.kitchen_strip_right · ВЫКЛ",
+            "strip",
+            "nav"
+          ],
+          [
+            "💡 Включить",
+            "strip_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подсветка · switch.kitchen_relay · ВЫКЛ",
+            "relay",
+            "nav"
+          ],
+          [
+            "💡 Включить",
+            "relay_on",
+            "action"
+          ]
+        ],
+        [
+          [
+            "🌡 Климат: Терморегулятор · автоматический",
+            "climate",
+            "nav"
+          ]
+        ]
+      ]
+    }
   }
 ]

@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', 'Страница', 'Часть', 'Назад'],
-    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', 'Page', 'Part', 'Back']
+    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Страница' : '', 'Часть', 'Назад'],
+    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'Page' : '', 'Part', 'Back']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
@@ -23,7 +23,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && (!GRAPH || validGraph(v.graph))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
-      && Array.isArray(v.rows) && v.rows.length <= 4 && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
+      && Array.isArray(v.rows) && v.rows.length <= (GRAPH ? 4 : 5) && v.rows.every(row => Array.isArray(row) && row.length > 0 && row.length <= (GRAPH ? 3 : 2)
         && row.every(b => b && typeof b.text === 'string' && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain']).includes(b.kind)));
   }
   function accept(v) {
@@ -128,18 +128,19 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
-    if (!GRAPH) text('r-read-label', w(busy || waiting ? 3 : 2));
+    el('r-read').setAttribute('aria-label', w(!GRAPH && (busy || waiting) ? 3 : 2));
+    if (!GRAPH) text('r-read', busy || waiting ? '…' : '↻');
     text('r-back', '‹ ' + w(9));
     hide('r-back', locked || !data.back);
     feedback(locked ? w(6) : note || (!GRAPH && data.rows.flat().some(b => b.kind === 'uncertain') ? w(4) : ''));
-    if (GRAPH) { renderGraph(locked ? null : data.graph, lang, el, hide); el('r-read').setAttribute('aria-label', w(2)); }
+    if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
     card.classList.toggle('r-error', uncertain || denied);
     ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
     ['r-next', 'r-local-next'].forEach(id => el(id).setAttribute('aria-label', w(1)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);
     mount([]);
     if (locked) return;
-    text('r-count', w(7) + ' ' + data.page + '/' + data.pages);
+    text('r-count', (GRAPH ? w(7) + ' ' : '') + data.page + '/' + data.pages);
     ['read', 'prev', 'next', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
     if (layout()) {
       mount([]); hide('r-local', true); hide('r-server', true);
