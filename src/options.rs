@@ -26,6 +26,10 @@ pub struct AppOptions {
     #[serde(deserialize_with = "flexible_u64")]
     pub root_user: u64,
 
+    /// Auto-delete notification messages after this many seconds; 0 keeps them.
+    #[serde(default = "default_delete_notification_messages_timeout_s")]
+    pub delete_notification_messages_timeout_s: u64,
+
     /// Как часто фоновый worker обновляет открытые экраны и служебные данные.
     #[serde(default = "default_background_maintenance_interval_s")]
     pub background_maintenance_interval_s: u64,
@@ -198,6 +202,10 @@ impl AppOptions {
             "root_user must be a valid Telegram ID"
         );
         ensure!(
+            options.delete_notification_messages_timeout_s <= 86400,
+            "delete_notification_messages_timeout_s must be 0..=86400 seconds"
+        );
+        ensure!(
             options.background_maintenance_interval_s > 0,
             "background_maintenance_interval_s must be greater than 0"
         );
@@ -267,6 +275,10 @@ impl AppOptions {
 
         Ok(options)
     }
+}
+
+fn default_delete_notification_messages_timeout_s() -> u64 {
+    60
 }
 
 fn default_background_maintenance_interval_s() -> u64 {
@@ -394,6 +406,7 @@ mod tests {
         .expect("options should parse");
 
         assert_eq!(options.background_maintenance_interval_s, 15);
+        assert_eq!(options.delete_notification_messages_timeout_s, 60);
         assert_eq!(options.event_refresh_min_interval_s, 5);
         assert_eq!(options.session_ttl_hours, 24);
         assert_eq!(options.telegram_retry_after_extra_delay_s, 1);

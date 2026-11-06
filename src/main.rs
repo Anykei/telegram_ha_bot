@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
         db: db_pool,
         root_user: options.root_user,
 
-        delete_notification_messages_timeout_s: 0,
+        delete_notification_messages_timeout_s: options.delete_notification_messages_timeout_s,
         ttl_notifications: 60 * 12,
         background_maintenance_interval_s: options.background_maintenance_interval_s,
         event_refresh_min_interval_s: options.event_refresh_min_interval_s,

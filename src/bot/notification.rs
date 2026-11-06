@@ -18,7 +18,8 @@ async fn send_notification_text_to_recipient(
         .send_message(chat_id, message.as_str())
         .parse_mode(teloxide::types::ParseMode::MarkdownV2)
         .await?;
-    crate::bot::utils::delete_message_after(bot, chat_id, msg.id, delay).await;
+    // Expiry must not occupy one of the two notification delivery workers.
+    crate::bot::utils::spawn_delayed_delete(bot, chat_id, msg.id, delay);
     Ok(())
 }
 
@@ -154,6 +155,10 @@ fn current_minutes(timezone: Option<&str>, user_id: i64) -> Option<u32> {
     let now = Utc::now().with_timezone(&timezone);
     Some(now.hour() * 60 + now.minute())
 }
+
+#[cfg(test)]
+#[path = "notification_tests.rs"]
+mod delivery_tests;
 
 #[cfg(test)]
 mod tests {

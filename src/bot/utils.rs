@@ -10,8 +10,7 @@ pub fn spawn_delayed_delete(bot: Bot, chat_id: ChatId, msg_id: MessageId, delay_
     debug!("Deleting message id {} delay: {}", msg_id, delay_secs);
 
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-        let _ = bot.delete_message(chat_id, msg_id).await;
+        delete_message_after(bot, chat_id, msg_id, delay_secs).await;
     });
 }
 
@@ -20,7 +19,14 @@ pub async fn delete_message_after(bot: Bot, chat_id: ChatId, msg_id: MessageId, 
         return;
     }
     tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-    let _ = bot.delete_message(chat_id, msg_id).await;
+    if bot.delete_message(chat_id, msg_id).await.is_err() {
+        // Do not log the request URL: transport errors may contain a bot token.
+        log::warn!(
+            "operation=message_delete chat={} message={} result=failed",
+            chat_id,
+            msg_id
+        );
+    }
 }
 
 pub mod md {
