@@ -349,13 +349,12 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         .html_summary
         .as_deref()
         .filter(|_| view.text_page.is_none() && view.next_state.is_none());
-    // Room controls must not move when a short command receipt appears. Reserve
-    // its bytes on every control page, then attach it after partitioning rows.
+    // Keep receipts with the room overview; commands update the device rows
+    // without adding a block above them or changing their pagination.
     let room_notice = matches!(
         view.payload,
         Payload::Control(ControlPayload::RoomDetail { .. } | ControlPayload::RoomPage { .. })
-    ) && view.text_page.is_none()
-        && serde_json::to_string(view.notice.as_deref().unwrap_or(""))?.len() <= 122;
+    ) && summary.is_some();
     for (field, text) in [
         (
             "alert",
@@ -436,7 +435,6 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 + candidate.hint.chars().count();
             if candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
                 || candidate.json().is_err()
-                || (room_notice && candidate.json()?.len() > 880)
                 || (candidate.rows.len() > 2 && text_chars > 80)
             {
                 parts.push(current);
@@ -448,21 +446,31 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             }
         }
     }
-    if summary.is_some() && !body.is_empty() {
+    if summary.is_some()
+        && (!body.is_empty()
+            || (room_notice && view.notice.as_ref().is_some_and(|s| !s.is_empty())))
+    {
         parts.push(current);
         empty = match &view.html_details_title {
             Some(title) => continuation(&root, title)?,
             None => root,
         };
-        current = append_text(empty.clone(), &empty, &mut parts, "body", &body)?;
+        current = empty.clone();
+        if room_notice {
+            current = append_text(
+                current,
+                &empty,
+                &mut parts,
+                "notice",
+                view.notice.as_deref().unwrap_or(""),
+            )?;
+        }
+        current = append_text(current, &empty, &mut parts, "body", &body)?;
     }
     parts.push(current);
     ensure!(parts.len() <= 9999, "Too many HTML pages");
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
-        if room_notice && !page.rows.is_empty() {
-            page.notice = view.notice.clone().unwrap_or_default();
-        }
         page.page = index + 1;
         page.pages = pages;
         page.prev = (index > 0).then(|| format!("p{}", index - 1));

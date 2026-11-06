@@ -66,6 +66,7 @@ async fn room_toggle_keeps_device_on_its_page_and_refresh_does_not_repeat_comman
             session
                 .pages
                 .iter()
+                .filter(|p| !p.rows.is_empty())
                 .map(|p| {
                     p.rows
                         .iter()
@@ -107,7 +108,16 @@ async fn room_toggle_keeps_device_on_its_page_and_refresh_does_not_repeat_comman
                     device: target,
                     cmd: DeviceCmd::TurnOff
                 })));
-        assert!(!after.pages[index].notice.is_empty());
+        assert!(after.pages[index].notice.is_empty());
+        assert_eq!(
+            after
+                .pages
+                .iter()
+                .map(|p| p.notice.as_str())
+                .collect::<String>(),
+            after.view.notice.as_deref().unwrap(),
+            "Keep the complete receipt in the room overview"
+        );
         press(&fake, &config, &dialogue, command).await?; // old revision cannot replay
         press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
         let refreshed = current(&config);

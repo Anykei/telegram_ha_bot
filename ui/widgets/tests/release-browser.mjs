@@ -38,7 +38,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       textFits:Array.from(${doc}.querySelectorAll('.r-text')).every(p=>p.scrollWidth<=p.clientWidth),
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))
     })`);
-    assert.ok(result.height <= 600, `${label}: height ${result.height} <=600`);
+    assert.equal(result.height, 600, `${label}: fixed card height`);
     assert.ok(result.width <= result.available, `${label}: no horizontal overflow`);
     assert.ok(result.textFits, `${label}: full text wraps without clipping`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
@@ -176,13 +176,32 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   await reload('climate', {width:430}); await capture('release-climate-wide');
   // Compact controls follow the same request/ACK path as legacy object rows.
-  await reload('climate'); await controlRequests(); await click('temp_up');
+  await reload('climate'); await controlRequests();
+  const geometry = () => evaluate(`Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().toJSON())`);
+  const beforePress = await geometry();
+  await click('temp_up');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
-  assert.equal(await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`), false);
+  assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+  assert.equal(await evaluate(`${get('r-read-label')}.textContent`), 'Обновление…');
+  assert.deepEqual(await geometry(), beforePress, 'Press does not move or resize controls');
+  await dimensions('climate/request');
   await reply({accepted:true});
+  assert.deepEqual(await geometry(), beforePress, 'Waiting for state does not move controls');
   await push({seq:100,rev:'a'.repeat(32)});
   await until(`${disabled('temp_up')} === 'false'`);
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
+  assert.deepEqual(await geometry(), beforePress, 'State update does not move controls');
+  // Telegram reserves space for native message metadata when there is no caption.
+  for (const width of [200, 360]) {
+    await reload('long', {width});
+    await evaluate(`${win}.previewSetSafeArea(64)`);
+    assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`), '64px');
+    await assertPreserved(fixtures.find(f=>f.id==='long').page, `safe-area/${width}`);
+    const lastBottom = await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))`);
+    assert.ok(lastBottom <= 536, 'Native metadata does not cover buttons');
+    await evaluate(`${win}.previewSetSafeArea(0)`);
+    await dimensions(`safe-area/cleared/${width}`);
+  }
   // A newer state of the same server page keeps the user's local part.
   // Changing the screen or the server page still starts at the first part.
   await reload('long', {width:200});

@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Нажмите «Обновить».', 'Доступ закрыт', 'Откройте /classic в личном чате с ботом.', 'Страница', 'Часть', 'Назад'],
-    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Press Refresh.', 'Access denied', 'Open /classic in your private chat with the bot.', 'Page', 'Part', 'Back']
+    ru: ['Предыдущая', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите экран.', 'Доступ закрыт', 'Откройте /classic в чате бота.', 'Страница', 'Часть', 'Назад'],
+    en: ['Previous', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic in the bot chat.', 'Page', 'Part', 'Back']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '';
@@ -101,16 +101,16 @@ import { validGraph, renderGraph } from './graph-render.js';
       row.forEach(b => node.appendChild(action(b))); blocks.push(node);
     });
     mount(blocks); hide('r-local', true);
-    if (card.getBoundingClientRect().height <= 580) { deck = [blocks]; local = 0; return; }
+    if (card.scrollHeight <= 600) { deck = [blocks]; local = 0; return; }
     hide('r-local', false); text('r-local-count', w(8) + ' 1/1');
     deck = []; let part = [];
     for (const block of blocks) {
       part.push(block); mount(part);
-      if (card.getBoundingClientRect().height > 580) {
+      if (card.scrollHeight > 600) {
         part.pop();
         if (part.length) deck.push(part);
         part = [block]; mount(part);
-        if (card.getBoundingClientRect().height > 580) return true;
+        if (card.scrollHeight > 600) return true;
       }
     }
     if (part.length || !deck.length) deck.push(part);
@@ -126,7 +126,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
-    if (!GRAPH) text('r-read-label', w(2));
+    if (!GRAPH) text('r-read-label', w(busy || waiting ? 3 : 2));
     text('r-back', '‹ ' + w(9));
     hide('r-back', locked || !data.back);
     feedback(locked ? w(6) : note);
@@ -150,13 +150,13 @@ import { validGraph, renderGraph } from './graph-render.js';
   async function send(k) {
     if (!key(k) || blocked(k === (data && data.read))) return;
     const rev = data.rev, seq = data.seq, read = k === data.read;
-    requestSeq = seq; pendingRead = read; busy = true; note = w(3); render();
+    requestSeq = seq; pendingRead = read; busy = true; note = ''; render();
     try {
       const result = await api.request('r1:' + rev + ':' + k);
       const answer = JSON.parse(result.result);
       if (answer && answer.denied) { denied = true; data = null; stopWait(); }
       else if (answer && answer.page) {
-        if (!accept(answer.page)) throw Error('Invalid page');
+        if (!accept(answer.page)) throw Error();
         if (answer.page.seq > seq) complete();
         else { pendingRead = false; stopWait(); note = uncertain ? w(4) : ''; }
       } else if (answer && answer.accepted) {
@@ -165,14 +165,14 @@ import { validGraph, renderGraph } from './graph-render.js';
           waiting = true;
           timer = setTimeout(() => { fail(); render(); }, 12000);
         }
-      } else throw Error('Invalid response');
+      } else throw Error();
     } catch { fail(); }
     busy = false; render();
   }
   function update() {
     if (denied) return;
     try {
-      if (!accept(JSON.parse(api.chatData))) throw Error('Invalid data');
+      if (!accept(JSON.parse(api.chatData))) throw Error();
       if (waiting && data.seq > requestSeq) complete();
     } catch { denied = true; data = null; stopWait(); }
     render();
@@ -185,6 +185,7 @@ import { validGraph, renderGraph } from './graph-render.js';
   el('r-local-next').addEventListener('click', () => { if (local + 1 < deck.length) { local++; render(); } });
   if (api && !denied) {
     api.onEvent('chatDataChanged', update);
+    api.onEvent('contentSafeAreaChanged', render);
     api.onEvent('themeChanged', () => { theme(); render(); });
     update(); api.ready();
   }

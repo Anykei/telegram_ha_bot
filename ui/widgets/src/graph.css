@@ -1,7 +1,7 @@
 * { box-sizing:border-box; }
-body { margin:0; background:var(--ha-surface); color:var(--ha-text); font:14px/1.4 var(--ha-font); }
+body { margin:0; padding:0; background:var(--ha-surface); color:var(--ha-text); font:14px/1.4 var(--ha-font); }
 button { font:inherit; }
-.release { padding:12px; }
+.release { min-height:600px; padding:12px; padding-bottom:max(12px,env(safe-area-inset-bottom)); }
 .r-context { flex:1; min-width:0; color:var(--ha-muted); font-size:11px; }
 h1 { margin:8px 0 12px; font-size:24px; line-height:1.2; }
 .r-context,h1 { white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }

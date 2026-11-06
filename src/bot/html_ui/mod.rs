@@ -184,7 +184,7 @@ pub async fn deliver(
         } else {
             HTML
         };
-        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":html,"width":0,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
+        let sent=transport::call(bot,"sendWidget",json!({"chat_id":chat.0,"html":html,"width":0,"height":600,"allow_queries":true,"chat_data":data,"caption":caption})).await?;
         MessageId(
             sent["message_id"]
                 .as_i64()

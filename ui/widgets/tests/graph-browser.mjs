@@ -28,7 +28,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   async function dimensions(label) {
     const result=await evaluate(`({height:${doc}.body.scrollHeight,width:${doc}.documentElement.scrollWidth,available:${doc}.documentElement.clientWidth,
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))})`);
-    assert.ok(result.height<=600,`${label}: height ${result.height}`);
+    assert.equal(result.height,600,`${label}: fixed card height`);
     assert.ok(result.width<=result.available,`${label}: no overflow`);
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=44),`${label}: targets >=44px`);
   }
@@ -71,7 +71,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
       if(f.id.startsWith('binary')) assert.ok(paths.range.includes('136V4'),`${label}: brief full-range peak retained`);
       if(f.id.startsWith('constant')) assert.equal(new Set(paths.line.match(/V[\d.]+/g)).size,1,`${label}: constant signal stays flat`);
       assert.equal(await evaluate(`${get('g-empty')}.classList.contains('r-hidden')`),known>0);
-      if(!known) assert.equal(await evaluate(`${get('g-empty')}.textContent`),f.page.lang==='ru'?'Недостаточно данных':'Not enough data');
+      if(!known) assert.equal(await evaluate(`${get('g-empty')}.textContent`),f.page.lang==='ru'?'Нет данных':'No data');
       for(const field of ['top','bottom','start','end']) assert.equal(await evaluate(`${get('g-'+field)}.textContent`),f.page.graph[field]);
       if(width>=320) {
         assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true,`${label}: plot, Now and every primary period control fit together`);
@@ -85,6 +85,15 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     const content=await collect(label);
     assert.equal(content.text,f.page.alert+f.page.notice+f.page.body+(f.page.hint||''),`${label}: every field retained`);
     assert.deepEqual(content.actions,f.page.b.flat().filter(b=>b[1]!==f.page.back).map(b=>[b[1],b[0]]),`${label}: every original control retained`);
+  }
+  for(const width of [200,360]) {
+    await reload('numeric',{width});
+    await evaluate(`${win}.previewSetSafeArea(64)`);
+    const content=await collect(`safe-area/${width}`);
+    const fixture=fixtures.find(f=>f.id==='numeric').page;
+    assert.deepEqual(content.actions,fixture.b.flat().filter(b=>b[1]!==fixture.back).map(b=>[b[1],b[0]]));
+    assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`),'64px');
+    assert.ok(await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))<=536`));
   }
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);

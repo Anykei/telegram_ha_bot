@@ -22,5 +22,5 @@ export function renderGraph(g, lang, el, hide) {
   el('g-line').setAttribute('d', line);
   el('g-gaps').setAttribute('d', gaps);
   hide('g-stage', !line); hide('g-empty', !!line);
-  el('g-empty').textContent = g ? lang === 'ru' ? 'Недостаточно данных' : 'Not enough data' : '';
+  el('g-empty').textContent = g ? lang === 'ru' ? 'Нет данных' : 'No data' : '';
 }

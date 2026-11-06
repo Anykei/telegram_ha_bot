@@ -82,11 +82,15 @@
         }
       };
       globalThis.previewSetData = emit;
+      globalThis.previewSetSafeArea = bottom => {
+        document.documentElement.style.setProperty('--tg-content-safe-area-inset-bottom', bottom + 'px');
+        handlers.contentSafeAreaChanged?.();
+      };
     }
     function load() {
       const fixture = fixtures.find(value => value.id === select.value);
       const bootstrap = `(${install.toString()})(${JSON.stringify(fixture.page)},${JSON.stringify(theme)},${JSON.stringify(document.getElementById('scenario').value)},${JSON.stringify(fixtures)},${JSON.stringify(fixture.id)});`;
-      frame.srcdoc = payload.replace('<head>', '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'">').replace('<script>', '<script>' + bootstrap + '</' + 'script><script>');
+      frame.srcdoc = payload.replaceAll('env(safe-area-inset-bottom)', 'var(--tg-content-safe-area-inset-bottom,0px)').replace('<head>', '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'">').replace('<script>', '<script>' + bootstrap + '</' + 'script><script>');
       document.getElementById('bubble').style.width = width + 'px';
       document.getElementById('chat').classList.toggle('dark', theme === 'dark');
     }

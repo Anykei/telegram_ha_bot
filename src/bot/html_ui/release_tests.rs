@@ -268,14 +268,14 @@ async fn device_state_and_primary_controls_fit_the_first_server_page() -> Result
     }
     let fake = FakeTelegram::new().await?;
     publish(&fake, &config, Payload::Home).await?;
-    assert_eq!(
-        fake.calls()
-            .iter()
-            .find(|(method, _)| method == "sendWidget")
-            .unwrap()
-            .1["width"],
-        0
-    );
+    let calls = fake.calls();
+    let sent = &calls
+        .iter()
+        .find(|(method, _)| method == "sendWidget")
+        .unwrap()
+        .1;
+    assert_eq!(sent["width"], 0);
+    assert_eq!(sent["height"], 600);
     Ok(())
 }
 
