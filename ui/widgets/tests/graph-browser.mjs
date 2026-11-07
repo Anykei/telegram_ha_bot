@@ -115,15 +115,26 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`),'64px');
     assert.ok(await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))<=536`));
   }
-  for(const fixture of fixtures) for(const side of ['left','right']) {
-    await reload(fixture.id,{width:360,theme:'dark'});
-    await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
+  for(const fixture of fixtures) for(const side of ['left','right']) for(const width of [320,360]) {
+    await reload(fixture.id,{width,theme:'dark'});
+    // A wide timestamp previously reserved the entire bottom band at 320px.
+    await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?120:0},${side==='left'?120:0})`);
     assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true);
-    const content=await collect(`${fixture.id}/clock-${side}`);
+    const content=await collect(`${fixture.id}/${width}/clock-${side}`);
     assert.equal(content.text,fixture.page.alert+fixture.page.notice+fixture.page.body+(fixture.page.hint||''));
     assert.deepEqual(content.actions,fixture.page.b.flat().filter(b=>b[1]!==fixture.page.back).map(b=>[b[1],b[0]]));
-    if(fixture.id==='numeric' && side==='right') await capture('graph-clock-corner');
+    if(fixture.id==='numeric' && side==='right') await capture('graph-clock-corner-'+width);
   }
+  await reload('numeric',{width:320,theme:'dark'});
+  await push({page:9998,pages:9999});
+  await evaluate(`${win}.previewSetSafeArea(64,120)`);
+  await dimensions('wide-clock/long-counter');
+  assert.ok(await evaluate(`${get('r-count')}.getBoundingClientRect().left>=${get('r-prev')}.getBoundingClientRect().right && ${get('r-count')}.getBoundingClientRect().right<=${get('r-next')}.getBoundingClientRect().left`));
+  const expanded=await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`);
+  await evaluate(`${win}.previewSetSafeArea(64,121)`);
+  assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false);
+  await dimensions('wide-clock/fallback');
+  assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<expanded);
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);
   }
@@ -148,12 +159,12 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await reload('numeric_past',{width:320});await capture('graph-past-320');
   // Server-only details are readable in the same immutable graph asset.
   await reload('numeric');await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent.endsWith(' 2/3') && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+  await until(`${get('r-count')}.textContent==='2/3' && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
   assert.equal(await evaluate(`${get('g-box')}.classList.contains('r-hidden')`),true);
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent.endsWith(' 3/3') && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+  await until(`${get('r-count')}.textContent==='3/3' && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
   await capture('graph-details-light');
-  await evaluate(`${get('r-prev')}.click()`);await until(`${get('r-count')}.textContent.endsWith(' 2/3') && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+  await evaluate(`${get('r-prev')}.click()`);await until(`${get('r-count')}.textContent==='2/3' && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
   await evaluate(`${get('r-prev')}.click()`);await until(`!${get('g-box')}.classList.contains('r-hidden') && ${get('r-read')}.getAttribute('aria-disabled')==='false'`);
   // Period and range offsets update only after the server snapshot.
   await evaluate(`${button('p12')}.click()`);

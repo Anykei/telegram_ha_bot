@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Страница' : '', 'Часть'],
-    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'Page' : '', 'Part']
+    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', '', 'Часть'],
+    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', '', 'Part']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = !!api?.isForward;
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
@@ -133,7 +133,9 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     const area = api?.contentSafeAreaInset;
     const corners = area && area.cornerLeft + area.cornerRight;
-    card.classList.toggle('r-corner', !locked && corners > 0 && card.clientWidth - corners >= 256);
+    // Graphs keep Refresh at the top: two 44px arrows and a short page count
+    // fit beside wider timestamps, including an edited mark, on 320px cards.
+    card.classList.toggle('r-corner', !locked && corners > 0 && card.clientWidth - corners >= (GRAPH ? 200 : 256));
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
     el('r-read').setAttribute('aria-label', w(!GRAPH && (busy || waiting) ? 3 : 2));
@@ -146,7 +148,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);
     mount([]);
     if (locked) return;
-    text('r-count', (GRAPH ? w(7) + ' ' : '') + data.page + '/' + data.pages);
+    text('r-count', data.page + '/' + data.pages);
     ['read', 'prev', 'next', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
     if (layout()) {
       mount([]); hide('r-local', true); hide('r-server', true);
