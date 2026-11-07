@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 const HTML: &str = include_str!("../../../ui/widgets/dist/release.html");
 const GRAPH_HTML: &str = include_str!("../../../ui/widgets/dist/graph.html");
+const RANGE_HTML: &str = include_str!("../../../ui/widgets/dist/range.html");
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 fn sequence() -> u64 {
     SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -85,10 +86,16 @@ pub fn renderer_matches(config: &AppConfig, user: u64, view: &View) -> bool {
         .html_ui
         .sessions
         .get(&user)
-        .is_some_and(|session| graph_renderer(&session.view) == graph_renderer(view))
+        .is_some_and(|session| renderer(&session.view) == renderer(view))
 }
-fn graph_renderer(view: &View) -> bool {
-    view.html_chart.is_some() || view.html_range.is_some()
+fn renderer(view: &View) -> &'static str {
+    if view.html_chart.is_some() {
+        GRAPH_HTML
+    } else if view.html_range.is_some() {
+        RANGE_HTML
+    } else {
+        HTML
+    }
 }
 pub async fn reject(bot: &Bot, query: &CallbackQuery, text: &str) -> Result<()> {
     answer(bot, query, if is_widget(query) { "denied" } else { text }).await
@@ -179,11 +186,7 @@ pub async fn deliver(
         .await?;
         message
     } else {
-        let html = if graph_renderer(view) {
-            GRAPH_HTML
-        } else {
-            HTML
-        };
+        let html = renderer(view);
         let mut request = json!({
             "chat_id": chat.0, "html": html, "width": 0, "height": 600,
             "allow_queries": true, "chat_data": data
@@ -227,7 +230,7 @@ pub async fn deliver(
     }
     if !matches!(
         view.html_kind.as_deref(),
-        Some("range" | "calendar" | "hours" | "minutes")
+        Some("range" | "calendar" | "time")
     ) {
         config.html_ui.ranges.remove(&user);
     }

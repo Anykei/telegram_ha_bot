@@ -46,6 +46,8 @@ pub struct View {
     /// Monday-based offset, month length, selection, first/last selectable day.
     #[serde(default)]
     pub html_calendar: Option<[u8; 5]>,
+    #[serde(default)]
+    pub html_time: Option<[u8; 2]>,
     /// This screen offers its media through Telegram attachment actions. Keep
     /// image for the classic view/fallback while rendering its controls as HTML.
     #[serde(default)]

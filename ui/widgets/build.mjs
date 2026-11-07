@@ -13,8 +13,8 @@ const block = (selector, values) => `${selector} {\n${Object.entries(values).map
 await writeFile(root + 'src/tokens.css', block(':root', { ...tokens.shared, ...tokens.themes.light }) + block(':root[data-theme="dark"]', tokens.themes.dark));
 await mkdir(root + 'dist', { recursive: true });
 async function build(screen, stylesheet, title) {
-  const r1 = screen === 'release' || screen === 'graph';
-  let components = await read('src/' + stylesheet);
+  const r1 = ['release','graph','range'].includes(screen);
+  let components = (['graph','range'].includes(screen) ? await read('src/chart-common.css') : '') + await read('src/' + stylesheet);
   // Shared tokens are immutable; keep semantic names in source and inline their values in r1.
   if (r1) for (const [key, value] of Object.entries(tokens.shared)) components = components.replaceAll(`var(${key})`, value);
   const used = new Set(components.match(/--ha-[a-z0-9-]+/g));
@@ -28,7 +28,7 @@ async function build(screen, stylesheet, title) {
   const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
   const script = r1
     // Optimize for the compressed wire size, not just raw JavaScript bytes.
-    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph')},minifySyntax:true})).outputFiles[0].text, {ecma:2020, compress:screen==='release'?{passes:1,unused:false,reduce_vars:false,sequences:1}:{passes:2}, format:{ascii_only:true}})
+    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph'),CHART:String(screen==='graph')},minifySyntax:true})).outputFiles[0].text, {ecma:2020, compress:screen==='release'?{passes:1,unused:false,reduce_vars:false,sequences:1}:{passes:2}, format:{ascii_only:true}})
     : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
   let body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
   // Widget v1 has no forms or browser tab: omit redundant button types and
@@ -73,6 +73,12 @@ await writeFile(root + 'dist/release-preview.html', releasePreview);
 const graph = await build('graph', 'graph.css', 'История');
 await writeFile(root + 'dist/graph-manifest.json', JSON.stringify(graph.manifest, null, 2) + '\n');
 const graphPreview = embed(await read('preview/release.html'), {
-  PAYLOAD: graph.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')), MANIFEST: graph.manifest
+  PAYLOAD: graph.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')).filter(f=>f.page.graph), MANIFEST: graph.manifest
 });
 await writeFile(root + 'dist/graph-preview.html', graphPreview);
+
+const range = await build('range', 'range.css', 'Период графика');
+await writeFile(root + 'dist/range-manifest.json', JSON.stringify(range.manifest, null, 2) + '\n');
+await writeFile(root + 'dist/range-preview.html', embed(await read('preview/release.html'), {
+  PAYLOAD: range.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')).filter(f=>!f.page.graph), MANIFEST: range.manifest
+}));

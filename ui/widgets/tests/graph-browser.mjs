@@ -9,7 +9,13 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const get=id=>`${doc}.getElementById('${id}')`;
   const button=key=>`${doc}.querySelector('[data-key="${key}"]')`;
   const state=`JSON.parse(${win}.TelegramWidget.chatData)`;
+  let asset;
   async function reload(id,{theme='light',width=360,scenario='ok'}={}) {
+    const next=fixtures.find(f=>f.id===id).page.graph?'graph':'range';
+    if(asset!==next) {
+      await command('Page.navigate',{url:pathToFileURL(root+'dist/'+next+'-preview.html').href});
+      await until(`document.querySelector('#fixture option[value="${id}"]')`);asset=next;
+    }
     await evaluate(`new Promise(resolve=>{
       document.getElementById('release-frame').addEventListener('load',()=>resolve(true),{once:true});
       theme=${JSON.stringify(theme)};width=${width};
@@ -17,7 +23,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
       document.getElementById('fixture').value=${JSON.stringify(id)};
       document.getElementById('fixture').dispatchEvent(new Event('change'));
     })`);
-    await until(`${get('g-line')} && ${get('r-title')}`);
+    await until(`${get('r-title')}`);
   }
   const push=patch=>evaluate(`${win}.previewSetData({...${state},...${JSON.stringify(patch)}})`);
   async function requests() {
@@ -30,11 +36,14 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(result.height,600,`${label}: fixed card height`);
     assert.ok(result.width<=result.available,`${label}: no horizontal overflow`);
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=43.9),`${label}: targets >=44px ${JSON.stringify(result.targets)}`);
-    if(await evaluate(`!${get('g-box')}.classList.contains('r-hidden')`)) {
+    if(await evaluate(`${get('g-box')} && !${get('g-box')}.classList.contains('r-hidden')`)) {
       const graph=await evaluate(`(() => {
         const stage=${get('g-stage')},empty=stage.classList.contains('r-hidden'),plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
         return {height:plot.height,stage:empty?plot.height:stage.getBoundingClientRect().height};
       })()`);
+      const empty=await evaluate(`${get('g-line')}.getAttribute('d')===''`);
+      assert.equal(await evaluate(`${win}.getComputedStyle(${get('g-empty')}).display==='none'`),!empty,`${label}: empty-state block must not take space beside a real plot`);
+      assert.equal(await evaluate(`${win}.getComputedStyle(${get('g-stage')}).display==='none'`),empty,`${label}: empty chart hides plot stage`);
       assert.ok(graph.height>=144,`${label}: readable plot`);
       assert.ok(Math.abs(graph.height-graph.stage)<1,`${label}: plot fills spare height`);
     }
@@ -63,8 +72,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     return {keys,text,count};
   }
   await command('Emulation.setDeviceMetricsOverride',{width:1280,height:1080,deviceScaleFactor:1,mobile:false});
-  await command('Page.navigate',{url:pathToFileURL(root+'dist/graph-preview.html').href});
-  await until(`${get('r-title')}.textContent==='Температура'`);
+  await reload('numeric');
   for(const theme of ['light','dark']) for(const width of [200,320,360,430]) for(const f of fixtures) {
     const label=`${f.id}/${theme}/${width}`;
     await reload(f.id,{theme,width});
@@ -91,11 +99,10 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const bottom=await evaluate(`${get('r-content')}.getBoundingClientRect().bottom`);
   await screenshot('graph-calendar-overview-dark');
   assert.ok(Math.abs(600-bottom-16)<1,`last control uses space beside clock: bottom=${bottom}, height=${height}, padding=${await evaluate(win+".getComputedStyle("+get('release')+").paddingBottom")}`);
-  await screenshot('graph-calendar-overview-dark');
   await evaluate(`${win}.previewSetSafeArea(64)`);
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<height);
   await dimensions('unknown clock reserves full band');
-  for(const id of ['range','calendar','calendar_previous','calendar_six_weeks','hours','minutes']) {
+  for(const id of ['range','calendar','calendar_previous','calendar_six_weeks','time','time_changed']) {
     await reload(id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,80)`);
     await screenshot('graph-'+id+'-dark');
@@ -112,10 +119,26 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     await evaluate(`${button('d'+c[3])}.click()`);
     assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':d'+c[3]));
   }
-  // Preview follows the server-generated route map in the same document.
-  await reload('numeric');
-  await evaluate(`${win}.__sameDocument=123;${button('period')}.click()`);
-  await until(`${get('release')}.dataset.kind==='range' && !${get('r-read')}.disabled`);
+  // Opening and paging the two dropdowns is local; all exact values remain reachable.
+  for(const width of [200,320,360,430]) for(const theme of ['dark','light']) {
+    await reload('time',{width,theme});await requests();
+    assert.equal(await evaluate(`${doc}.querySelector('.t-grid')`),null);
+    for(const [i,max] of [[0,24],[1,60]]) {
+      await evaluate(`${button('u'+i)}.click()`);
+      assert.equal(await evaluate(`${button('u'+i)}.getAttribute('aria-expanded')`),'true');
+      const all=await collect(`time/${width}/${theme}/${i}`);
+      for(let n=0;n<max;n++) assert.ok(all.keys.has((i?'m':'h')+n));
+      assert.equal(await evaluate(`${win}.__requests.length`),0,'opening and paging do not query bot');
+      await evaluate(`${button('u'+i)}.click()`);
+      assert.equal(await evaluate(`${doc}.querySelector('.t-grid')`),null);
+    }
+  }
+  await reload('time',{theme:'dark'});await evaluate(`${win}.previewSetSafeArea(64,80)`);
+  await screenshot('time-fields-dark');await evaluate(`${button('u0')}.click()`);
+  await dimensions('expanded time/clock');await screenshot('time-hours-dropdown-dark');
+  await evaluate(`${button('u1')}.click()`);await screenshot('time-minutes-dropdown-dark');
+  await reload('range');
+  await evaluate(`${win}.__sameDocument=123`);
   const range=fixtures.find(f=>f.id==='range');
   const dateKey=Object.keys(range.links).find(k=>range.links[k]==='calendar');
   await evaluate(`${button(dateKey)}.click()`);
@@ -123,21 +146,33 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const cal=fixtures.find(f=>f.id==='calendar');
   await evaluate(`${button('d'+cal.page.c[2])}.click()`);
   await until(`${get('release')}.dataset.kind==='range' && !${get('r-read')}.disabled`);
-  const timeKey=Object.keys(range.links).find(k=>range.links[k]==='hours');
+  const timeKey=Object.keys(range.links).find(k=>range.links[k]==='time');
   await evaluate(`${button(timeKey)}.click()`);
-  await until(`${get('release')}.dataset.kind==='hours' && !${get('r-read')}.disabled`);
-  const hours=fixtures.find(f=>f.id==='hours');
-  await evaluate(`${button(hours.page.b[2][0][1])}.click()`);
-  await until(`${get('release')}.dataset.kind==='minutes' && !${get('r-read')}.disabled`);
-  const minutes=fixtures.find(f=>f.id==='minutes');
-  for(const label of ['05','+1','−1','Готово']) {
-    const k=minutes.page.b.flat().find(b=>b[0]===label)[1];
-    await evaluate(`${button(k)}.click()`);await until(`!${get('r-read')}.disabled`);
+  await until(`${get('release')}.dataset.kind==='time' && !${get('r-read')}.disabled`);
+  const time=fixtures.find(f=>f.id==='time');
+  for(const [i,n] of [[0,9],[1,38]]) {
+    await evaluate(`${button('u'+i)}.click();${button((i?'m':'h')+n)}.click()`);
+    await until(`${get('t'+i)}.textContent===${JSON.stringify(String(n).padStart(2,'0'))} && !${get('r-read')}.disabled`);
+    assert.equal(await evaluate(`${doc}.querySelector('.t-grid')`),null,'selection collapses dropdown');
   }
-  assert.equal(await evaluate(`${get('release')}.dataset.kind`),'range');
-  await evaluate(`${button(range.page.b[2][0][1])}.click()`);
-  await until(`${get('release')}.dataset.kind==='chart' && !${get('r-read')}.disabled`);
+  await evaluate(`${button(time.page.b[0][0][1])}.click()`);
+  await until(`${get('release')}.dataset.kind==='range' && !${get('r-read')}.disabled`);
   assert.equal(await evaluate(`${win}.__sameDocument`),123);
+  // Animation is driven by rAF, including on clients that suppress CSS animations.
+  for(const reduced of [false,true]) {
+    await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:reduced?'reduce':'no-preference'}]});
+    await reload('time');await requests();
+    await evaluate(`(()=>{const style=${doc}.createElement('style');style.textContent='*{animation:none!important;transition:none!important}';${doc}.head.appendChild(style);${button('u0')}.click();${button('h9')}.click();${button('h9')}.click();})()`);
+    assert.equal(await evaluate(`${win}.__requests.length`),1);
+    assert.equal(await evaluate(`${get('t0')}.textContent`),'10','no optimistic confirmation');
+    await reply({accepted:true});await push({seq:100,t:[9,37]});
+    const moving=await evaluate(`${get('t0')}.style.transform`);
+    assert.equal(moving==='translateY(0px)',reduced);
+    await until(`${get('t0')}.style.transform==='translateY(0px)'`);
+    await push({seq:2,t:[22,59]});assert.equal(await evaluate(`${get('t0')}.textContent`),'09');
+    await evaluate(`${win}.previewSetData({denied:true})`);assert.equal(await evaluate(`${doc}.querySelector('.t-value')`),null);
+  }
+  await command('Emulation.setEmulatedMedia',{features:[]});
   // One request in flight; timeout only permits a read, never repeats the edit.
   for(const dataFirst of [false,true]) {
     await reload('range');await requests();
@@ -153,10 +188,10 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(await evaluate(`${get('r-title')}.textContent`),range.page.title);
   }
   // Revocation/forwarding removes private data, even if an older response arrives later.
-  for(const id of ['numeric','calendar']) {
+  for(const id of ['numeric','calendar','time']) {
     await reload(id);await requests();await evaluate(`${get('r-back')}.click()`);
-    await evaluate(`${win}.previewSetData({denied:true})`);await reply({page:{...fixtures[0].page,seq:100}});
-    assert.equal(await evaluate(`${get('g-line')}.getAttribute('d')`),'');
+    await evaluate(`${win}.previewSetData({denied:true})`);await reply({page:{...fixtures.find(f=>f.id===id).page,seq:100}});
+    assert.ok(await evaluate(`!${get('g-line')} || ${get('g-line')}.getAttribute('d')===''`));
     assert.equal(await evaluate(`${get('r-content')}.textContent`),'');
     await reload(id,{scenario:'forward'});
     assert.equal(await evaluate(`${get('r-content')}.textContent`),'');
@@ -164,11 +199,11 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   }
   const invalid=[{graph:{...fixtures[0].page.graph,plot:'A'.repeat(95)}},{graph:{...fixtures[0].page.graph,plot:'AA_'+'AAA'.repeat(31)}},
     {kind:'calendar',c:[7,31,1,1,31]},{kind:'calendar',c:[0,32,1,1,31]},{kind:'calendar',c:[0,31,1,20,10]},
-    {kind:'calendar',c:[0,31,1,0,31]},{b:[[['bad','<html>','nav']]]}];
+    {kind:'calendar',c:[0,31,1,0,31]},{kind:'time',t:[24,0]},{kind:'time',t:[0,60]},{kind:'time',t:[-1,0]},{kind:'time',t:[1]},{b:[[['bad','<html>','nav']]]}];
   for(const bad of invalid) {
-    await reload('numeric');await requests();await push(bad);
+    await reload(bad.kind?'range':'numeric');await requests();await push(bad);
     assert.equal(await evaluate(`${get('r-content')}.textContent`),'');
-    assert.equal(await evaluate(`${get('g-line')}.getAttribute('d')`),'');
+    assert.ok(await evaluate(`!${get('g-line')} || ${get('g-line')}.getAttribute('d')===''`));
     assert.equal(await evaluate(`${win}.__requests.length`),0);
   }
   await reload('numeric');await push({graph:{...fixtures[0].page.graph,top:'<img src=x onerror=alert(1)>'}});

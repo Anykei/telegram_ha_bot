@@ -436,9 +436,9 @@
     "label": "range",
     "links": {
       "a0": "calendar",
-      "a1": "hours",
+      "a1": "time",
       "a2": "calendar",
-      "a3": "hours",
+      "a3": "time",
       "a4": "numeric",
       "a5": "numeric"
     },
@@ -603,175 +603,111 @@
     }
   },
   {
-    "id": "hours",
-    "label": "hours",
+    "id": "time",
+    "label": "time",
     "links": {
-      "a0": "minutes",
-      "a1": "minutes",
-      "a10": "minutes",
-      "a11": "minutes",
-      "a12": "minutes",
-      "a13": "minutes",
-      "a14": "minutes",
-      "a15": "minutes",
-      "a16": "minutes",
-      "a17": "minutes",
-      "a18": "minutes",
-      "a19": "minutes",
-      "a2": "minutes",
-      "a20": "minutes",
-      "a21": "minutes",
-      "a22": "minutes",
-      "a23": "minutes",
-      "a24": "range",
-      "a3": "minutes",
-      "a4": "minutes",
-      "a5": "minutes",
-      "a6": "minutes",
-      "a7": "minutes",
-      "a8": "minutes",
-      "a9": "minutes"
+      "a84": "range",
+      "a85": "range",
+      "h0": "time_changed",
+      "h1": "time_changed",
+      "h10": "time_changed",
+      "h11": "time_changed",
+      "h12": "time_changed",
+      "h13": "time_changed",
+      "h14": "time_changed",
+      "h15": "time_changed",
+      "h16": "time_changed",
+      "h17": "time_changed",
+      "h18": "time_changed",
+      "h19": "time_changed",
+      "h2": "time_changed",
+      "h20": "time_changed",
+      "h21": "time_changed",
+      "h22": "time_changed",
+      "h23": "time_changed",
+      "h3": "time_changed",
+      "h4": "time_changed",
+      "h5": "time_changed",
+      "h6": "time_changed",
+      "h7": "time_changed",
+      "h8": "time_changed",
+      "h9": "time_changed",
+      "m0": "time_changed",
+      "m1": "time_changed",
+      "m10": "time_changed",
+      "m11": "time_changed",
+      "m12": "time_changed",
+      "m13": "time_changed",
+      "m14": "time_changed",
+      "m15": "time_changed",
+      "m16": "time_changed",
+      "m17": "time_changed",
+      "m18": "time_changed",
+      "m19": "time_changed",
+      "m2": "time_changed",
+      "m20": "time_changed",
+      "m21": "time_changed",
+      "m22": "time_changed",
+      "m23": "time_changed",
+      "m24": "time_changed",
+      "m25": "time_changed",
+      "m26": "time_changed",
+      "m27": "time_changed",
+      "m28": "time_changed",
+      "m29": "time_changed",
+      "m3": "time_changed",
+      "m30": "time_changed",
+      "m31": "time_changed",
+      "m32": "time_changed",
+      "m33": "time_changed",
+      "m34": "time_changed",
+      "m35": "time_changed",
+      "m36": "time_changed",
+      "m37": "time_changed",
+      "m38": "time_changed",
+      "m39": "time_changed",
+      "m4": "time_changed",
+      "m40": "time_changed",
+      "m41": "time_changed",
+      "m42": "time_changed",
+      "m43": "time_changed",
+      "m44": "time_changed",
+      "m45": "time_changed",
+      "m46": "time_changed",
+      "m47": "time_changed",
+      "m48": "time_changed",
+      "m49": "time_changed",
+      "m5": "time_changed",
+      "m50": "time_changed",
+      "m51": "time_changed",
+      "m52": "time_changed",
+      "m53": "time_changed",
+      "m54": "time_changed",
+      "m55": "time_changed",
+      "m56": "time_changed",
+      "m57": "time_changed",
+      "m58": "time_changed",
+      "m59": "time_changed",
+      "m6": "time_changed",
+      "m7": "time_changed",
+      "m8": "time_changed",
+      "m9": "time_changed"
     },
     "page": {
       "alert": "",
       "b": [
         [
           [
-            "00",
-            "a0",
-            "nav"
-          ],
-          [
-            "01",
-            "a1",
-            "nav"
-          ],
-          [
-            "02",
-            "a2",
-            "nav"
-          ],
-          [
-            "03",
-            "a3",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "04",
-            "a4",
-            "nav"
-          ],
-          [
-            "05",
-            "a5",
-            "nav"
-          ],
-          [
-            "06",
-            "a6",
-            "nav"
-          ],
-          [
-            "07",
-            "a7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "08",
-            "a8",
-            "nav"
-          ],
-          [
-            "09",
-            "a9",
-            "nav"
-          ],
-          [
-            "10",
-            "a10",
-            "selected"
-          ],
-          [
-            "11",
-            "a11",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12",
-            "a12",
-            "nav"
-          ],
-          [
-            "13",
-            "a13",
-            "nav"
-          ],
-          [
-            "14",
-            "a14",
-            "nav"
-          ],
-          [
-            "15",
-            "a15",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "16",
-            "a16",
-            "nav"
-          ],
-          [
-            "17",
-            "a17",
-            "nav"
-          ],
-          [
-            "18",
-            "a18",
-            "nav"
-          ],
-          [
-            "19",
-            "a19",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "20",
-            "a20",
-            "nav"
-          ],
-          [
-            "21",
-            "a21",
-            "nav"
-          ],
-          [
-            "22",
-            "a22",
-            "nav"
-          ],
-          [
-            "23",
-            "a23",
+            "Готово",
+            "a84",
             "nav"
           ]
         ]
       ],
-      "back": "a24",
-      "body": "05.11.2026 · 10:37\nВремя бота: UTC+03:00",
+      "back": "a85",
+      "body": "05.11.2026\nВремя бота: UTC+03:00",
       "context": "Начало",
-      "kind": "hours",
+      "kind": "time",
       "lang": "ru",
       "next": null,
       "notice": "",
@@ -782,126 +718,120 @@
       "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "s": "AQMEDgoRAA",
       "seq": 1,
-      "title": "Выберите час",
+      "t": [
+        10,
+        37
+      ],
+      "title": "Выберите время",
       "v": 1
     }
   },
   {
-    "id": "minutes",
-    "label": "minutes",
+    "id": "time_changed",
+    "label": "time_changed",
     "links": {
-      "a0": "minutes",
-      "a1": "minutes",
-      "a10": "minutes",
-      "a11": "minutes",
-      "a12": "minutes",
-      "a13": "minutes",
-      "a14": "range",
-      "a15": "hours",
-      "a2": "minutes",
-      "a3": "minutes",
-      "a4": "minutes",
-      "a5": "minutes",
-      "a6": "minutes",
-      "a7": "minutes",
-      "a8": "minutes",
-      "a9": "minutes"
+      "a84": "range",
+      "a85": "range",
+      "h0": "time_changed",
+      "h1": "time_changed",
+      "h10": "time_changed",
+      "h11": "time_changed",
+      "h12": "time_changed",
+      "h13": "time_changed",
+      "h14": "time_changed",
+      "h15": "time_changed",
+      "h16": "time_changed",
+      "h17": "time_changed",
+      "h18": "time_changed",
+      "h19": "time_changed",
+      "h2": "time_changed",
+      "h20": "time_changed",
+      "h21": "time_changed",
+      "h22": "time_changed",
+      "h23": "time_changed",
+      "h3": "time_changed",
+      "h4": "time_changed",
+      "h5": "time_changed",
+      "h6": "time_changed",
+      "h7": "time_changed",
+      "h8": "time_changed",
+      "h9": "time_changed",
+      "m0": "time_changed",
+      "m1": "time_changed",
+      "m10": "time_changed",
+      "m11": "time_changed",
+      "m12": "time_changed",
+      "m13": "time_changed",
+      "m14": "time_changed",
+      "m15": "time_changed",
+      "m16": "time_changed",
+      "m17": "time_changed",
+      "m18": "time_changed",
+      "m19": "time_changed",
+      "m2": "time_changed",
+      "m20": "time_changed",
+      "m21": "time_changed",
+      "m22": "time_changed",
+      "m23": "time_changed",
+      "m24": "time_changed",
+      "m25": "time_changed",
+      "m26": "time_changed",
+      "m27": "time_changed",
+      "m28": "time_changed",
+      "m29": "time_changed",
+      "m3": "time_changed",
+      "m30": "time_changed",
+      "m31": "time_changed",
+      "m32": "time_changed",
+      "m33": "time_changed",
+      "m34": "time_changed",
+      "m35": "time_changed",
+      "m36": "time_changed",
+      "m37": "time_changed",
+      "m38": "time_changed",
+      "m39": "time_changed",
+      "m4": "time_changed",
+      "m40": "time_changed",
+      "m41": "time_changed",
+      "m42": "time_changed",
+      "m43": "time_changed",
+      "m44": "time_changed",
+      "m45": "time_changed",
+      "m46": "time_changed",
+      "m47": "time_changed",
+      "m48": "time_changed",
+      "m49": "time_changed",
+      "m5": "time_changed",
+      "m50": "time_changed",
+      "m51": "time_changed",
+      "m52": "time_changed",
+      "m53": "time_changed",
+      "m54": "time_changed",
+      "m55": "time_changed",
+      "m56": "time_changed",
+      "m57": "time_changed",
+      "m58": "time_changed",
+      "m59": "time_changed",
+      "m6": "time_changed",
+      "m7": "time_changed",
+      "m8": "time_changed",
+      "m9": "time_changed"
     },
     "page": {
       "alert": "",
       "b": [
         [
           [
-            "00",
-            "a0",
-            "nav"
-          ],
-          [
-            "05",
-            "a1",
-            "nav"
-          ],
-          [
-            "10",
-            "a2",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "15",
-            "a3",
-            "nav"
-          ],
-          [
-            "20",
-            "a4",
-            "nav"
-          ],
-          [
-            "25",
-            "a5",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "30",
-            "a6",
-            "nav"
-          ],
-          [
-            "35",
-            "a7",
-            "nav"
-          ],
-          [
-            "40",
-            "a8",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "45",
-            "a9",
-            "nav"
-          ],
-          [
-            "50",
-            "a10",
-            "nav"
-          ],
-          [
-            "55",
-            "a11",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "−1",
-            "a12",
-            "nav"
-          ],
-          [
-            "+1",
-            "a13",
-            "nav"
-          ]
-        ],
-        [
-          [
             "Готово",
-            "a14",
+            "a84",
             "nav"
           ]
         ]
       ],
-      "back": "a15",
-      "body": "05.11.2026 · 08:37\nВремя бота: UTC+03:00",
+      "back": "a85",
+      "body": "05.11.2026\nВремя бота: UTC+03:00",
       "context": "Начало",
-      "kind": "minutes",
+      "kind": "time",
       "lang": "ru",
       "next": null,
       "notice": "",
@@ -912,7 +842,11 @@
       "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "s": "AQMEDgoRAA",
       "seq": 1,
-      "title": "Выберите минуты",
+      "t": [
+        8,
+        37
+      ],
+      "title": "Выберите время",
       "v": 1
     }
   },
@@ -921,9 +855,9 @@
     "label": "range_error",
     "links": {
       "a0": "calendar",
-      "a1": "hours",
+      "a1": "time",
       "a2": "calendar",
-      "a3": "hours",
+      "a3": "time",
       "a4": "numeric",
       "a5": "numeric"
     },
@@ -985,9 +919,9 @@
     "label": "range_retry",
     "links": {
       "a0": "calendar",
-      "a1": "hours",
+      "a1": "time",
       "a2": "calendar",
-      "a3": "hours",
+      "a3": "time",
       "a4": "numeric",
       "a5": "numeric"
     },
@@ -1173,9 +1107,9 @@
     "label": "range_en",
     "links": {
       "a0": "calendar_en",
-      "a1": "hours_en",
+      "a1": "time_en",
       "a2": "calendar_en",
-      "a3": "hours_en",
+      "a3": "time_en",
       "a4": "numeric_en",
       "a5": "numeric_en"
     },
@@ -1340,175 +1274,111 @@
     }
   },
   {
-    "id": "hours_en",
-    "label": "hours_en",
+    "id": "time_en",
+    "label": "time_en",
     "links": {
-      "a0": "minutes_en",
-      "a1": "minutes_en",
-      "a10": "minutes_en",
-      "a11": "minutes_en",
-      "a12": "minutes_en",
-      "a13": "minutes_en",
-      "a14": "minutes_en",
-      "a15": "minutes_en",
-      "a16": "minutes_en",
-      "a17": "minutes_en",
-      "a18": "minutes_en",
-      "a19": "minutes_en",
-      "a2": "minutes_en",
-      "a20": "minutes_en",
-      "a21": "minutes_en",
-      "a22": "minutes_en",
-      "a23": "minutes_en",
-      "a24": "range_en",
-      "a3": "minutes_en",
-      "a4": "minutes_en",
-      "a5": "minutes_en",
-      "a6": "minutes_en",
-      "a7": "minutes_en",
-      "a8": "minutes_en",
-      "a9": "minutes_en"
+      "a84": "range_en",
+      "a85": "range_en",
+      "h0": "time_changed_en",
+      "h1": "time_changed_en",
+      "h10": "time_changed_en",
+      "h11": "time_changed_en",
+      "h12": "time_changed_en",
+      "h13": "time_changed_en",
+      "h14": "time_changed_en",
+      "h15": "time_changed_en",
+      "h16": "time_changed_en",
+      "h17": "time_changed_en",
+      "h18": "time_changed_en",
+      "h19": "time_changed_en",
+      "h2": "time_changed_en",
+      "h20": "time_changed_en",
+      "h21": "time_changed_en",
+      "h22": "time_changed_en",
+      "h23": "time_changed_en",
+      "h3": "time_changed_en",
+      "h4": "time_changed_en",
+      "h5": "time_changed_en",
+      "h6": "time_changed_en",
+      "h7": "time_changed_en",
+      "h8": "time_changed_en",
+      "h9": "time_changed_en",
+      "m0": "time_changed_en",
+      "m1": "time_changed_en",
+      "m10": "time_changed_en",
+      "m11": "time_changed_en",
+      "m12": "time_changed_en",
+      "m13": "time_changed_en",
+      "m14": "time_changed_en",
+      "m15": "time_changed_en",
+      "m16": "time_changed_en",
+      "m17": "time_changed_en",
+      "m18": "time_changed_en",
+      "m19": "time_changed_en",
+      "m2": "time_changed_en",
+      "m20": "time_changed_en",
+      "m21": "time_changed_en",
+      "m22": "time_changed_en",
+      "m23": "time_changed_en",
+      "m24": "time_changed_en",
+      "m25": "time_changed_en",
+      "m26": "time_changed_en",
+      "m27": "time_changed_en",
+      "m28": "time_changed_en",
+      "m29": "time_changed_en",
+      "m3": "time_changed_en",
+      "m30": "time_changed_en",
+      "m31": "time_changed_en",
+      "m32": "time_changed_en",
+      "m33": "time_changed_en",
+      "m34": "time_changed_en",
+      "m35": "time_changed_en",
+      "m36": "time_changed_en",
+      "m37": "time_changed_en",
+      "m38": "time_changed_en",
+      "m39": "time_changed_en",
+      "m4": "time_changed_en",
+      "m40": "time_changed_en",
+      "m41": "time_changed_en",
+      "m42": "time_changed_en",
+      "m43": "time_changed_en",
+      "m44": "time_changed_en",
+      "m45": "time_changed_en",
+      "m46": "time_changed_en",
+      "m47": "time_changed_en",
+      "m48": "time_changed_en",
+      "m49": "time_changed_en",
+      "m5": "time_changed_en",
+      "m50": "time_changed_en",
+      "m51": "time_changed_en",
+      "m52": "time_changed_en",
+      "m53": "time_changed_en",
+      "m54": "time_changed_en",
+      "m55": "time_changed_en",
+      "m56": "time_changed_en",
+      "m57": "time_changed_en",
+      "m58": "time_changed_en",
+      "m59": "time_changed_en",
+      "m6": "time_changed_en",
+      "m7": "time_changed_en",
+      "m8": "time_changed_en",
+      "m9": "time_changed_en"
     },
     "page": {
       "alert": "",
       "b": [
         [
           [
-            "00",
-            "a0",
-            "nav"
-          ],
-          [
-            "01",
-            "a1",
-            "nav"
-          ],
-          [
-            "02",
-            "a2",
-            "nav"
-          ],
-          [
-            "03",
-            "a3",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "04",
-            "a4",
-            "nav"
-          ],
-          [
-            "05",
-            "a5",
-            "nav"
-          ],
-          [
-            "06",
-            "a6",
-            "nav"
-          ],
-          [
-            "07",
-            "a7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "08",
-            "a8",
-            "nav"
-          ],
-          [
-            "09",
-            "a9",
-            "nav"
-          ],
-          [
-            "10",
-            "a10",
-            "selected"
-          ],
-          [
-            "11",
-            "a11",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12",
-            "a12",
-            "nav"
-          ],
-          [
-            "13",
-            "a13",
-            "nav"
-          ],
-          [
-            "14",
-            "a14",
-            "nav"
-          ],
-          [
-            "15",
-            "a15",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "16",
-            "a16",
-            "nav"
-          ],
-          [
-            "17",
-            "a17",
-            "nav"
-          ],
-          [
-            "18",
-            "a18",
-            "nav"
-          ],
-          [
-            "19",
-            "a19",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "20",
-            "a20",
-            "nav"
-          ],
-          [
-            "21",
-            "a21",
-            "nav"
-          ],
-          [
-            "22",
-            "a22",
-            "nav"
-          ],
-          [
-            "23",
-            "a23",
+            "Done",
+            "a84",
             "nav"
           ]
         ]
       ],
-      "back": "a24",
-      "body": "05.11.2026 · 10:37\nBot time: UTC+03:00",
+      "back": "a85",
+      "body": "05.11.2026\nBot time: UTC+03:00",
       "context": "Start",
-      "kind": "hours",
+      "kind": "time",
       "lang": "en",
       "next": null,
       "notice": "",
@@ -1519,126 +1389,120 @@
       "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "s": "AQMEDgoRAA",
       "seq": 1,
-      "title": "Choose hour",
+      "t": [
+        10,
+        37
+      ],
+      "title": "Choose time",
       "v": 1
     }
   },
   {
-    "id": "minutes_en",
-    "label": "minutes_en",
+    "id": "time_changed_en",
+    "label": "time_changed_en",
     "links": {
-      "a0": "minutes_en",
-      "a1": "minutes_en",
-      "a10": "minutes_en",
-      "a11": "minutes_en",
-      "a12": "minutes_en",
-      "a13": "minutes_en",
-      "a14": "range_en",
-      "a15": "hours_en",
-      "a2": "minutes_en",
-      "a3": "minutes_en",
-      "a4": "minutes_en",
-      "a5": "minutes_en",
-      "a6": "minutes_en",
-      "a7": "minutes_en",
-      "a8": "minutes_en",
-      "a9": "minutes_en"
+      "a84": "range_en",
+      "a85": "range_en",
+      "h0": "time_changed_en",
+      "h1": "time_changed_en",
+      "h10": "time_changed_en",
+      "h11": "time_changed_en",
+      "h12": "time_changed_en",
+      "h13": "time_changed_en",
+      "h14": "time_changed_en",
+      "h15": "time_changed_en",
+      "h16": "time_changed_en",
+      "h17": "time_changed_en",
+      "h18": "time_changed_en",
+      "h19": "time_changed_en",
+      "h2": "time_changed_en",
+      "h20": "time_changed_en",
+      "h21": "time_changed_en",
+      "h22": "time_changed_en",
+      "h23": "time_changed_en",
+      "h3": "time_changed_en",
+      "h4": "time_changed_en",
+      "h5": "time_changed_en",
+      "h6": "time_changed_en",
+      "h7": "time_changed_en",
+      "h8": "time_changed_en",
+      "h9": "time_changed_en",
+      "m0": "time_changed_en",
+      "m1": "time_changed_en",
+      "m10": "time_changed_en",
+      "m11": "time_changed_en",
+      "m12": "time_changed_en",
+      "m13": "time_changed_en",
+      "m14": "time_changed_en",
+      "m15": "time_changed_en",
+      "m16": "time_changed_en",
+      "m17": "time_changed_en",
+      "m18": "time_changed_en",
+      "m19": "time_changed_en",
+      "m2": "time_changed_en",
+      "m20": "time_changed_en",
+      "m21": "time_changed_en",
+      "m22": "time_changed_en",
+      "m23": "time_changed_en",
+      "m24": "time_changed_en",
+      "m25": "time_changed_en",
+      "m26": "time_changed_en",
+      "m27": "time_changed_en",
+      "m28": "time_changed_en",
+      "m29": "time_changed_en",
+      "m3": "time_changed_en",
+      "m30": "time_changed_en",
+      "m31": "time_changed_en",
+      "m32": "time_changed_en",
+      "m33": "time_changed_en",
+      "m34": "time_changed_en",
+      "m35": "time_changed_en",
+      "m36": "time_changed_en",
+      "m37": "time_changed_en",
+      "m38": "time_changed_en",
+      "m39": "time_changed_en",
+      "m4": "time_changed_en",
+      "m40": "time_changed_en",
+      "m41": "time_changed_en",
+      "m42": "time_changed_en",
+      "m43": "time_changed_en",
+      "m44": "time_changed_en",
+      "m45": "time_changed_en",
+      "m46": "time_changed_en",
+      "m47": "time_changed_en",
+      "m48": "time_changed_en",
+      "m49": "time_changed_en",
+      "m5": "time_changed_en",
+      "m50": "time_changed_en",
+      "m51": "time_changed_en",
+      "m52": "time_changed_en",
+      "m53": "time_changed_en",
+      "m54": "time_changed_en",
+      "m55": "time_changed_en",
+      "m56": "time_changed_en",
+      "m57": "time_changed_en",
+      "m58": "time_changed_en",
+      "m59": "time_changed_en",
+      "m6": "time_changed_en",
+      "m7": "time_changed_en",
+      "m8": "time_changed_en",
+      "m9": "time_changed_en"
     },
     "page": {
       "alert": "",
       "b": [
         [
           [
-            "00",
-            "a0",
-            "nav"
-          ],
-          [
-            "05",
-            "a1",
-            "nav"
-          ],
-          [
-            "10",
-            "a2",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "15",
-            "a3",
-            "nav"
-          ],
-          [
-            "20",
-            "a4",
-            "nav"
-          ],
-          [
-            "25",
-            "a5",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "30",
-            "a6",
-            "nav"
-          ],
-          [
-            "35",
-            "a7",
-            "nav"
-          ],
-          [
-            "40",
-            "a8",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "45",
-            "a9",
-            "nav"
-          ],
-          [
-            "50",
-            "a10",
-            "nav"
-          ],
-          [
-            "55",
-            "a11",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "−1",
-            "a12",
-            "nav"
-          ],
-          [
-            "+1",
-            "a13",
-            "nav"
-          ]
-        ],
-        [
-          [
             "Done",
-            "a14",
+            "a84",
             "nav"
           ]
         ]
       ],
-      "back": "a15",
-      "body": "05.11.2026 · 08:37\nBot time: UTC+03:00",
+      "back": "a85",
+      "body": "05.11.2026\nBot time: UTC+03:00",
       "context": "Start",
-      "kind": "minutes",
+      "kind": "time",
       "lang": "en",
       "next": null,
       "notice": "",
@@ -1649,7 +1513,11 @@
       "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "s": "AQMEDgoRAA",
       "seq": 1,
-      "title": "Choose minutes",
+      "t": [
+        8,
+        37
+      ],
+      "title": "Choose time",
       "v": 1
     }
   },
@@ -1658,9 +1526,9 @@
     "label": "range_error_en",
     "links": {
       "a0": "calendar_en",
-      "a1": "hours_en",
+      "a1": "time_en",
       "a2": "calendar_en",
-      "a3": "hours_en",
+      "a3": "time_en",
       "a4": "numeric_en",
       "a5": "numeric_en"
     },
@@ -1722,9 +1590,9 @@
     "label": "range_retry_en",
     "links": {
       "a0": "calendar_en",
-      "a1": "hours_en",
+      "a1": "time_en",
       "a2": "calendar_en",
-      "a3": "hours_en",
+      "a3": "time_en",
       "a4": "numeric_en",
       "a5": "numeric_en"
     },

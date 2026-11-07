@@ -45,6 +45,8 @@ pub struct Page {
     pub graph: Option<crate::charts::widget::WidgetChart>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "c")]
     pub calendar: Option<[u8; 5]>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "t")]
+    pub time: Option<[u8; 2]>,
     pub prev: Option<String>,
     pub next: Option<String>,
     pub page: usize,
@@ -376,6 +378,7 @@ pub fn prepare_with_pending(
         next: Some("p9999".into()),
         graph: None,
         calendar: None,
+        time: None,
         page: 9999,
         pages: 9999,
     };

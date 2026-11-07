@@ -20,8 +20,7 @@ use teloxide::types::{
 enum Mode {
     Overview,
     Calendar,
-    Hours,
-    Minutes,
+    Time,
 }
 #[derive(Clone)]
 pub(super) struct Draft {
@@ -192,7 +191,7 @@ impl Draft {
             }
             Edit::Time(end) => {
                 self.end = end;
-                self.mode = Mode::Hours;
+                self.mode = Mode::Time;
             }
             Edit::Month(delta) if self.mode == Mode::Calendar && [-1, 1].contains(&delta) => {
                 let next = if delta > 0 {
@@ -215,11 +214,10 @@ impl Draft {
                 self.change_local(date.and_time(local.time()))?;
                 self.mode = Mode::Overview;
             }
-            Edit::Hour(hour) if self.mode == Mode::Hours && hour < 24 => {
+            Edit::Hour(hour) if self.mode == Mode::Time && hour < 24 => {
                 self.change_local(local.naive_local().with_hour(hour.into()).ok_or("value")?)?;
-                self.mode = Mode::Minutes;
             }
-            Edit::Minute(minute) if self.mode == Mode::Minutes && minute < 60 => {
+            Edit::Minute(minute) if self.mode == Mode::Time && minute < 60 => {
                 self.change_local(
                     local
                         .naive_local()
@@ -227,7 +225,7 @@ impl Draft {
                         .ok_or("value")?,
                 )?;
             }
-            Edit::Nudge(delta) if self.mode == Mode::Minutes && [-1, 1].contains(&delta) => {
+            Edit::Nudge(delta) if self.mode == Mode::Time && [-1, 1].contains(&delta) => {
                 let minute = local.minute() as i32 + i32::from(delta);
                 if !(0..60).contains(&minute) {
                     return Err("value");
@@ -311,60 +309,28 @@ impl Draft {
                     self.month.year()
                 )
             }
-            Mode::Hours => {
-                for hour in (0..24).step_by(4) {
-                    rows.push(
-                        (hour..hour + 4)
-                            .map(|h| {
-                                self.button(
-                                    format!(
-                                        "{}{:02}",
-                                        if h == local.hour() { "✓ " } else { "" },
-                                        h
-                                    ),
-                                    Edit::Hour(h as u8),
-                                )
-                            })
-                            .collect(),
-                    );
+            Mode::Time => {
+                // Classic fallback keeps bounded rows; HTML transmits just h/m values
+                // and registers all exact selections as issued opaque keys.
+                for (count, hour) in [(24, true), (60, false)] {
+                    let choices = (0..count)
+                        .map(|n| {
+                            self.button(
+                                format!("{n:02}"),
+                                if hour { Edit::Hour(n) } else { Edit::Minute(n) },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    rows.extend(choices.chunks(6).map(|r| r.to_vec()));
                 }
-                words(lang, "Выберите час", "Choose hour")
-            }
-            Mode::Minutes => {
-                for minute in (0..60).step_by(15) {
-                    rows.push(
-                        (minute..minute + 15)
-                            .step_by(5)
-                            .map(|m| {
-                                self.button(
-                                    format!(
-                                        "{}{:02}",
-                                        if m == local.minute() { "✓ " } else { "" },
-                                        m
-                                    ),
-                                    Edit::Minute(m as u8),
-                                )
-                            })
-                            .collect(),
-                    );
-                }
-                let mut adjust = Vec::new();
-                if local.minute() > 0 {
-                    adjust.push(self.button("−1", Edit::Nudge(-1)));
-                }
-                if local.minute() < 59 {
-                    adjust.push(self.button("+1", Edit::Nudge(1)));
-                }
-                rows.push(adjust);
                 rows.push(vec![
                     self.button(words(lang, "Готово", "Done"), Edit::Overview)
                 ]);
-                words(lang, "Выберите минуты", "Choose minutes")
+                words(lang, "Выберите время", "Choose time")
             }
         };
         let back = match self.mode {
             Mode::Overview => Edit::Cancel,
-            Mode::Minutes => Edit::Time(self.end),
             _ => Edit::Overview,
         };
         rows.push(vec![self.button(t(lang, "common.back"), back)]);
@@ -378,6 +344,12 @@ impl Draft {
                 } else {
                     format!(" / UTC{b}")
                 }
+            )
+        } else if self.mode == Mode::Time {
+            format!(
+                "{}\n{zone}: UTC{}",
+                date(self.selected()),
+                local.format("%:z")
             )
         } else {
             format!(
@@ -398,13 +370,14 @@ impl Draft {
                 match self.mode {
                     Mode::Overview => "range",
                     Mode::Calendar => "calendar",
-                    Mode::Hours => "hours",
-                    Mode::Minutes => "minutes",
+                    Mode::Time => "time",
                 }
                 .into(),
             ),
             html_range: Some(self.bounds),
             html_calendar: calendar,
+            html_time: (self.mode == Mode::Time)
+                .then_some([local.hour() as u8, local.minute() as u8]),
             alert: self.error.clone(),
             text: body,
             kb: InlineKeyboardMarkup::new(rows),
@@ -548,24 +521,25 @@ pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
                 anyhow::bail!("Not a callback")
             };
             let p = Payload::from_string(&data)?;
-            let day = match &p {
+            let compact = match &p {
                 Payload::Control(ControlPayload::QuickAction {
-                    cmd:
-                        DeviceCmd::EditChartRange {
-                            edit: Edit::Day(day),
-                            ..
-                        },
+                    cmd: DeviceCmd::EditChartRange { edit, .. },
                     ..
-                }) => Some(*day),
+                }) => match edit {
+                    Edit::Day(n) => Some(format!("d{n}")),
+                    Edit::Hour(n) => Some(format!("h{n}")),
+                    Edit::Minute(n) => Some(format!("m{n}")),
+                    _ => None,
+                },
                 _ => None,
             };
-            let id = day
-                .map(|d| format!("d{d}"))
+            let id = compact
+                .clone()
                 .unwrap_or_else(|| format!("a{}", actions.len()));
             actions.insert(id.clone(), p);
             if button.text == t(view.lang, "common.back") {
                 back = Some(id);
-            } else if day.is_none() {
+            } else if compact.is_none() {
                 let selected = button.text.starts_with("✓ ");
                 buttons.push(Button {
                     text: button.text.trim_start_matches("✓ ").into(),
@@ -622,6 +596,7 @@ pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         status: Vec::new(),
         graph: view.html_chart.clone(),
         calendar: view.html_calendar,
+        time: view.html_time,
         rows,
         read: "read".into(),
         back,
@@ -711,9 +686,9 @@ mod tests {
             d.edit(&Edit::Month(-1)).unwrap();
             states.push(("calendar_previous", d.clone()));
             d.edit(&Edit::Time(false)).unwrap();
-            states.push(("hours", d.clone()));
+            states.push(("time", d.clone()));
             d.edit(&Edit::Hour(8)).unwrap();
-            states.push(("minutes", d.clone()));
+            states.push(("time_changed", d.clone()));
             d.mode = Mode::Overview;
             d.error = Some(message("order", lang));
             states.push(("range_error", d.clone()));
@@ -751,8 +726,8 @@ mod tests {
                     {
                         let target = match edit {
                             Edit::Date(_) => "calendar",
-                            Edit::Time(_) => "hours",
-                            Edit::Hour(_) | Edit::Minute(_) | Edit::Nudge(_) => "minutes",
+                            Edit::Time(_) => "time",
+                            Edit::Hour(_) | Edit::Minute(_) | Edit::Nudge(_) => "time_changed",
                             Edit::Month(-1) => "calendar_previous",
                             Edit::Month(_) => "calendar",
                             Edit::Apply | Edit::Cancel => "numeric",
@@ -760,6 +735,22 @@ mod tests {
                         };
                         links.insert(key.clone(), json!(format!("{target}{suffix}")));
                     }
+                }
+                if let Some(time) = page.time {
+                    assert_eq!(
+                        time,
+                        [
+                            at(draft.selected()).hour() as u8,
+                            at(draft.selected()).minute() as u8
+                        ]
+                    );
+                    for (prefix, max) in [("h", 24), ("m", 60)] {
+                        for n in 0..max {
+                            assert!(prepared.actions.contains_key(&format!("{prefix}{n}")));
+                        }
+                        assert!(!prepared.actions.contains_key(&format!("{prefix}{max}")));
+                    }
+                    assert_eq!(page.rows.len(), 1, "Only Done is transmitted as a row");
                 }
                 if let Some(c) = page.calendar {
                     for day in 1..=c[1] {

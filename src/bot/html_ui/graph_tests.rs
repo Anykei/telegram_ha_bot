@@ -125,7 +125,7 @@ async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboar
     Ok(())
 }
 #[tokio::test]
-async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same_message(
+async fn calendar_draft_keeps_one_editor_message_and_exact_bounds_across_graph_transitions(
 ) -> Result<()> {
     let (mut config, mock) = mock_config().await?;
     let ha = Arc::new(ChartHa {
@@ -169,18 +169,28 @@ async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same
     )
     .await?;
     let stale = current(&config);
+    assert_ne!(stale.message, original.message);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .rev()
+            .find(|(m, _)| m == "sendWidget")
+            .unwrap()
+            .1["html"],
+        RANGE_HTML
+    );
     for edit in [
         Edit::Date(false),
         Edit::Overview,
         Edit::Time(false),
         Edit::Hour(8),
         Edit::Minute(5),
-        Edit::Nudge(1),
-        Edit::Nudge(1),
+        Edit::Minute(6),
+        Edit::Minute(7),
         Edit::Overview,
     ] {
         press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
-        assert_eq!(current(&config).message, original.message);
+        assert_eq!(current(&config).message, stale.message);
     }
     let editor = current(&config);
     press(&fake, &config, &dialogue, query(&editor, "read")).await?;
@@ -221,8 +231,8 @@ async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same
         Edit::Time(false),
         Edit::Hour(8),
         Edit::Minute(5),
-        Edit::Nudge(1),
-        Edit::Nudge(1),
+        Edit::Minute(6),
+        Edit::Minute(7),
         Edit::Overview,
     ] {
         press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
@@ -232,7 +242,7 @@ async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same
         for edit in [
             Edit::Time(false),
             Edit::Hour(8),
-            Edit::Nudge(1),
+            Edit::Minute(8),
             Edit::Overview,
         ] {
             press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
@@ -250,7 +260,7 @@ async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same
     assert_eq!(current(&config).view.html_kind.as_deref(), Some("range"));
     assert_eq!(current(&config).view.html_range, Some(bounds));
     assert!(current(&config).view.alert.is_some());
-    assert_eq!(current(&config).message, original.message);
+    assert_eq!(current(&config).message, replacement.message);
     let reads = ha.reads.load(Ordering::SeqCst);
     let failed = current(&config);
     press(&fake, &config, &dialogue, query(&failed, "read")).await?;
@@ -274,7 +284,7 @@ async fn calendar_draft_cancel_apply_retry_and_refresh_keep_exact_bounds_in_same
             }
         )
     );
-    assert_eq!(applied.message, original.message);
+    assert_ne!(applied.message, replacement.message);
     press(&fake, &config, &dialogue, query(&applied, "read")).await?;
     assert_eq!(current(&config).view.html_range, Some(bounds));
     assert!(ha.ranges.lock().unwrap().iter().all(|r| *r == bounds));
@@ -408,15 +418,13 @@ async fn calendar_invalid_range_never_reads_history_and_regrant_invalidates_draf
     ] {
         press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
     }
-    for _ in 0..end.minute() % 5 {
-        press(
-            &fake,
-            &config,
-            &dialogue,
-            edit_query(&config, Edit::Nudge(1)),
-        )
-        .await?;
-    }
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        edit_query(&config, Edit::Minute(end.minute() as u8)),
+    )
+    .await?;
     for edit in [Edit::Overview, Edit::Apply] {
         press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
     }

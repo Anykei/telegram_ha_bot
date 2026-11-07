@@ -14,7 +14,7 @@ test('preview embedding preserves minified dollars, markup and marker-like text 
 });
 
 test('every generated preview contains exactly the shipped widget HTML', async () => {
-  for (const [screen, preview] of [['switch','preview'],['panel','panel-preview'],['release','release-preview'],['graph','graph-preview']]) {
+  for (const [screen, preview] of [['switch','preview'],['panel','panel-preview'],['release','release-preview'],['graph','graph-preview'],['range','range-preview']]) {
     const html = await readFile(new URL(`../dist/${screen}.html`, import.meta.url), 'utf8');
     const page = await readFile(new URL(`../dist/${preview}.html`, import.meta.url), 'utf8');
     const payload = page.match(/const payload\s*=\s*("(?:[^"\\]|\\.)*")/);
