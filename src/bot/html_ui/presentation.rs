@@ -43,6 +43,8 @@ pub struct Page {
     pub back: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<crate::charts::widget::WidgetChart>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "c")]
+    pub calendar: Option<[u8; 5]>,
     pub prev: Option<String>,
     pub next: Option<String>,
     pub page: usize,
@@ -110,6 +112,9 @@ impl Page {
 }
 
 pub fn supported(view: &View) -> bool {
+    if view.html_chart.is_some() && view.html_range.is_none() {
+        return false;
+    }
     if view.image.is_some() && view.html_chart.is_none() && !view.html_media_controls {
         return false;
     }
@@ -291,6 +296,9 @@ pub fn prepare_with_pending(
     pending: &HashMap<i64, &'static str>,
 ) -> Result<Prepared> {
     ensure!(supported(view), "Screen uses classic presentation");
+    if view.html_range.is_some() {
+        return super::range::prepare(view, rev, seq);
+    }
     let english = view.lang == Language::En;
     let title = view
         .html_title
@@ -367,6 +375,7 @@ pub fn prepare_with_pending(
         prev: Some("p9999".into()),
         next: Some("p9999".into()),
         graph: None,
+        calendar: None,
         page: 9999,
         pages: 9999,
     };

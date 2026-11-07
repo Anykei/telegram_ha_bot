@@ -1,6 +1,7 @@
 //! HTML is a presentation adapter for existing routes, not a second command engine.
 pub(crate) mod pending;
 mod presentation;
+pub(crate) mod range;
 #[cfg(test)]
 mod tests;
 pub(crate) mod transport;
@@ -49,6 +50,7 @@ struct WidgetSession {
 pub struct HtmlUi {
     pub enabled: bool,
     sessions: DashMap<u64, WidgetSession>,
+    ranges: DashMap<u64, range::Draft>,
     pub(crate) pending: pending::PendingCommands,
 }
 impl HtmlUi {
@@ -60,6 +62,7 @@ impl HtmlUi {
     }
     pub fn clear(&self, user: u64) {
         self.sessions.remove(&user);
+        self.ranges.remove(&user);
         self.pending.clear(user);
     }
     pub fn input_is_open(&self, user: u64, message: i32) -> bool {
@@ -82,7 +85,10 @@ pub fn renderer_matches(config: &AppConfig, user: u64, view: &View) -> bool {
         .html_ui
         .sessions
         .get(&user)
-        .is_some_and(|session| session.view.html_chart.is_some() == view.html_chart.is_some())
+        .is_some_and(|session| graph_renderer(&session.view) == graph_renderer(view))
+}
+fn graph_renderer(view: &View) -> bool {
+    view.html_chart.is_some() || view.html_range.is_some()
 }
 pub async fn reject(bot: &Bot, query: &CallbackQuery, text: &str) -> Result<()> {
     answer(bot, query, if is_widget(query) { "denied" } else { text }).await
@@ -173,7 +179,7 @@ pub async fn deliver(
         .await?;
         message
     } else {
-        let html = if view.html_chart.is_some() {
+        let html = if graph_renderer(view) {
             GRAPH_HTML
         } else {
             HTML
@@ -218,6 +224,12 @@ pub async fn deliver(
             let _ = bot.delete_message(chat, id).await;
         }
         return Ok(None);
+    }
+    if !matches!(
+        view.html_kind.as_deref(),
+        Some("range" | "calendar" | "hours" | "minutes")
+    ) {
+        config.html_ui.ranges.remove(&user);
     }
     config.html_ui.sessions.insert(
         user,

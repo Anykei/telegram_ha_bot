@@ -40,6 +40,12 @@ pub struct View {
     pub html_details_title: Option<String>,
     #[serde(default)]
     pub html_chart: Option<crate::charts::widget::WidgetChart>,
+    /// Exact displayed/draft boundaries; also identifies the shared chart editor renderer.
+    #[serde(default)]
+    pub html_range: Option<[i64; 2]>,
+    /// Monday-based offset, month length, selection, first/last selectable day.
+    #[serde(default)]
+    pub html_calendar: Option<[u8; 5]>,
     /// This screen offers its media through Telegram attachment actions. Keep
     /// image for the classic view/fallback while rendering its controls as HTML.
     #[serde(default)]

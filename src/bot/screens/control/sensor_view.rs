@@ -1,5 +1,5 @@
 use anyhow::Context;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 use crate::bot::models::View;
@@ -22,6 +22,13 @@ pub async fn render(
     cmd: DeviceCmd,
 ) -> anyhow::Result<View> {
     ctx.track_device(dev.id, &dev.entity_id);
+    let absolute = match cmd {
+        DeviceCmd::ShowChartRange { start, end } => {
+            crate::charts::range::validate(start, end, Utc::now()).map_err(anyhow::Error::msg)?;
+            Some([start, end])
+        }
+        _ => None,
+    };
     // 1. Извлекаем параметры из команды или ставим дефолт
     let params = match cmd {
         DeviceCmd::ShowChart { h, o } => ChartParams {
@@ -40,27 +47,22 @@ pub async fn render(
         "Invalid graph interval"
     );
 
-    crate::db::settings::set_string(
-        &format!("ui:chart:{}:{}", ctx.user_id, dev.id),
-        &Payload::Control(ControlPayload::QuickAction {
-            room: room_id,
-            device: dev.id,
-            cmd: DeviceCmd::ShowChart {
-                h: params.period_hours,
-                o: params.offset_hours,
-            },
-        })
-        .to_string(),
-        &ctx.config.db,
-    )
-    .await?;
-
     // 2. Получаем историю
-    let mut history = ctx
-        .config
-        .ha_client
-        .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
-        .await?;
+    let mut history = if let Some([start, end]) = absolute {
+        ctx.config
+            .ha_client
+            .fetch_history_range(
+                &entity.entity_id,
+                DateTime::from_timestamp(start, 0).context("Invalid history start")?,
+                DateTime::from_timestamp(end, 0).context("Invalid history end")?,
+            )
+            .await?
+    } else {
+        ctx.config
+            .ha_client
+            .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
+            .await?
+    };
 
     // Период относится к графику, а не к уведомлениям о состоянии системы.
     let start_local = history.start_time.with_timezone(&Local);
@@ -218,6 +220,11 @@ pub async fn render(
             .collect(),
     );
 
+    // An exact calendar interval has no implicit hour rounding in classic mode.
+    if absolute.is_some() {
+        rows.clear();
+    }
+
     // 7. Утилиты и Навигация
     rows.push(vec![InlineKeyboardButton::callback(
         localized(ctx.lang, "⌨️ Свой интервал", "⌨️ Custom range"),
@@ -271,11 +278,22 @@ pub async fn render(
     let current_state_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: dev.id,
-        cmd: DeviceCmd::ShowChart {
-            h: params.period_hours,
-            o: params.offset_hours,
+        cmd: match absolute {
+            Some([start, end]) => DeviceCmd::ShowChartRange { start, end },
+            None => DeviceCmd::ShowChart {
+                h: params.period_hours,
+                o: params.offset_hours,
+            },
         },
     });
+
+    // Persist only a successfully loaded selection, never a failed request/draft.
+    crate::db::settings::set_string(
+        &format!("ui:chart:{}:{}", ctx.user_id, dev.id),
+        &current_state_payload.to_string(),
+        &ctx.config.db,
+    )
+    .await?;
 
     rows.insert(
         rows.len() - 1,
@@ -289,6 +307,7 @@ pub async fn render(
         html_title: Some(chart_title),
         html_summary: Some(summary),
         html_chart: Some(html_chart),
+        html_range: Some([history.start_time.timestamp(), history.end_time.timestamp()]),
         image,
         notifications: ctx.notifications,
         text,
@@ -337,18 +356,24 @@ pub async fn saved_chart_payload(
             .and_then(|value| Payload::from_string(&value).ok());
     if let Some(Payload::Control(ControlPayload::QuickAction {
         device: saved_device,
-        cmd: DeviceCmd::ShowChart { h, o },
+        cmd,
         ..
     })) = saved
     {
-        if saved_device == device
-            && (1..=MAX_PERIOD_HOURS).contains(&h)
-            && (-MAX_BACK_HOURS..=0).contains(&o)
-        {
+        let valid = match cmd {
+            DeviceCmd::ShowChart { h, o } => {
+                (1..=MAX_PERIOD_HOURS).contains(&h) && (-MAX_BACK_HOURS..=0).contains(&o)
+            }
+            DeviceCmd::ShowChartRange { start, end } => {
+                crate::charts::range::validate(start, end, Utc::now()).is_ok()
+            }
+            _ => false,
+        };
+        if saved_device == device && valid {
             return Ok(Payload::Control(ControlPayload::QuickAction {
                 room,
                 device,
-                cmd: DeviceCmd::ShowChart { h, o },
+                cmd,
             }));
         }
     }

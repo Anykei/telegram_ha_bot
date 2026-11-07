@@ -197,6 +197,7 @@ pub(crate) fn begin(
         enabled,
         sessions,
         pending,
+        ..
     } = &config.html_ui;
     if !enabled
         || sessions

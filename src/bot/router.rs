@@ -173,6 +173,30 @@ pub enum DeviceCmd {
     EnterManualInput,
     // Append variants to preserve existing postcard callback encodings.
     AdjustTemp(i8),
+    ShowChartRange {
+        start: i64,
+        end: i64,
+    },
+    OpenChartRange,
+    EditChartRange {
+        draft: u64,
+        edit: ChartRangeEdit,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum ChartRangeEdit {
+    Read,
+    Overview,
+    Date(bool),
+    Time(bool),
+    Month(i8),
+    Day(u8),
+    Hour(u8),
+    Minute(u8),
+    Nudge(i8),
+    Apply,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -223,6 +247,13 @@ impl From<DeviceCmd> for devices::DeviceAction {
                 offset_hours: o,
             }),
             DeviceCmd::EnterManualInput => DeviceAction::EnterManualInput,
+            // Read-only chart routes are intercepted before device interaction.
+            DeviceCmd::ShowChartRange { .. }
+            | DeviceCmd::OpenChartRange
+            | DeviceCmd::EditChartRange { .. } => DeviceAction::GenerateChart(ChartParams {
+                period_hours: 24,
+                offset_hours: 0,
+            }),
         }
     }
 }
@@ -1358,7 +1389,10 @@ impl Payload {
         matches!(
             self,
             Self::Control(ControlPayload::QuickAction {
-                cmd: DeviceCmd::ShowChart { .. },
+                cmd: DeviceCmd::ShowChart { .. }
+                    | DeviceCmd::ShowChartRange { .. }
+                    | DeviceCmd::OpenChartRange
+                    | DeviceCmd::EditChartRange { .. },
                 ..
             })
         )
@@ -1543,7 +1577,8 @@ pub async fn router(
         }
     }
     let favorite = match &view.payload {
-        Payload::Control(ControlPayload::DeviceControl { room, device }) => {
+        Payload::Control(ControlPayload::DeviceControl { room, device })
+        | Payload::DeviceDetails { room, device } => {
             Some(super::personal::FavoriteAction::Device {
                 room: *room,
                 device: *device,
@@ -1552,7 +1587,7 @@ pub async fn router(
         Payload::Control(ControlPayload::QuickAction {
             room,
             device,
-            cmd: DeviceCmd::ShowChart { .. },
+            cmd: DeviceCmd::ShowChart { .. } | DeviceCmd::ShowChartRange { .. },
         }) => Some(super::personal::FavoriteAction::Device {
             room: *room,
             device: *device,
@@ -1621,6 +1656,10 @@ pub async fn router(
                 }
             }
         }
+        // Cancel can restore a fully decorated cached graph view.
+        view.kb
+            .inline_keyboard
+            .retain(|old| !old.iter().any(|b| b.kind == row[0].kind));
         let index = view.kb.inline_keyboard.len().saturating_sub(1);
         view.kb.inline_keyboard.insert(index, row);
     }
@@ -1665,11 +1704,26 @@ async fn router_control(ctx: RenderContext, payload: ControlPayload) -> anyhow::
 
 fn control_recovery_payload(payload: &ControlPayload) -> ControlPayload {
     match payload {
+        ControlPayload::QuickAction {
+            room,
+            device,
+            cmd: DeviceCmd::EditChartRange { draft, .. },
+        } => ControlPayload::QuickAction {
+            room: *room,
+            device: *device,
+            cmd: DeviceCmd::EditChartRange {
+                draft: *draft,
+                edit: ChartRangeEdit::Read,
+            },
+        },
         ControlPayload::ConfirmAction { id } | ControlPayload::CancelAction { id } => {
             ControlPayload::ReviewAction { id: *id }
         }
         ControlPayload::QuickAction {
-            cmd: DeviceCmd::ShowChart { .. } | DeviceCmd::EnterManualInput,
+            cmd:
+                DeviceCmd::ShowChart { .. }
+                | DeviceCmd::ShowChartRange { .. }
+                | DeviceCmd::EnterManualInput,
             ..
         } => payload.clone(),
         ControlPayload::QuickAction { room, device, cmd } => match cmd {
@@ -1850,7 +1904,16 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                 ));
             }
 
-            if matches!(cmd, DeviceCmd::ShowChart { .. }) {
+            if matches!(
+                cmd,
+                DeviceCmd::OpenChartRange | DeviceCmd::EditChartRange { .. }
+            ) {
+                return super::html_ui::range::render(ctx, room, device, cmd).await;
+            }
+            if matches!(
+                cmd,
+                DeviceCmd::ShowChart { .. } | DeviceCmd::ShowChartRange { .. }
+            ) {
                 return super::screens::control::device_control::render(ctx, room, device, cmd)
                     .await;
             }

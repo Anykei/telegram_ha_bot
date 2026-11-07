@@ -4,6 +4,7 @@ use image::{ExtendedColorType, ImageEncoder};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
+pub(crate) mod range;
 pub(crate) mod widget;
 
 // --- ЦВЕТОВАЯ ПАЛИТРА (HA DARK THEME) ---

@@ -7,51 +7,24 @@
       "rev": "00000000000000000000000000000001",
       "seq": 1,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Температура",
       "context": "Гостиная",
-      "body": "Сейчас: 23 °C",
+      "body": "Сейчас: 23 °C\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Ранее",
-            "shift",
-            "nav"
-          ],
-          [
-            "Сейчас",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -59,16 +32,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
         "top": "24 °C",
         "bottom": "18 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range"
     }
   },
   {
@@ -79,51 +55,24 @@
       "rev": "00000000000000000000000000000002",
       "seq": 2,
       "lang": "en",
-      "kind": "list",
+      "kind": "chart",
       "title": "Temperature",
       "context": "Living room",
-      "body": "Now: 23 °C",
+      "body": "Now: 23 °C\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Earlier",
-            "shift",
-            "nav"
-          ],
-          [
-            "Now",
-            "now",
+            "Date range",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
+            "Device details",
+            "details",
             "nav"
           ]
         ]
@@ -131,16 +80,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
         "top": "24 °C",
         "bottom": "18 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range_en"
     }
   },
   {
@@ -151,51 +103,24 @@
       "rev": "00000000000000000000000000000003",
       "seq": 3,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Окно",
       "context": "Гостиная",
-      "body": "Сейчас: Закрыто",
+      "body": "Сейчас: Закрыто\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Ранее",
-            "shift",
-            "nav"
-          ],
-          [
-            "Сейчас",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -203,16 +128,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "AAAAAAAAAAAAAAAAAAAAAA_AAAAAAA________________________AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "top": "Открыто",
         "bottom": "Закрыто",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range"
     }
   },
   {
@@ -223,51 +151,24 @@
       "rev": "00000000000000000000000000000004",
       "seq": 4,
       "lang": "en",
-      "kind": "list",
+      "kind": "chart",
       "title": "Window",
       "context": "Living room",
-      "body": "Now: Closed",
+      "body": "Now: Closed\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Earlier",
-            "shift",
-            "nav"
-          ],
-          [
-            "Now",
-            "now",
+            "Date range",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
+            "Device details",
+            "details",
             "nav"
           ]
         ]
@@ -275,16 +176,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "AAAAAAAAAAAAAAAAAAAAAA_AAAAAAA________________________AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "top": "Open",
         "bottom": "Closed",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range_en"
     }
   },
   {
@@ -295,51 +199,24 @@
       "rev": "00000000000000000000000000000005",
       "seq": 5,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Температура",
       "context": "Гостиная",
-      "body": "Сейчас: Нет данных",
+      "body": "Сейчас: Нет данных\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Ранее",
-            "shift",
-            "nav"
-          ],
-          [
-            "Сейчас",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -347,16 +224,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "................................................................................................",
         "top": "",
         "bottom": "",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range"
     }
   },
   {
@@ -367,51 +247,24 @@
       "rev": "00000000000000000000000000000006",
       "seq": 6,
       "lang": "en",
-      "kind": "list",
+      "kind": "chart",
       "title": "Temperature",
       "context": "Living room",
-      "body": "Now: No data",
+      "body": "Now: No data\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Earlier",
-            "shift",
-            "nav"
-          ],
-          [
-            "Now",
-            "now",
+            "Date range",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
+            "Device details",
+            "details",
             "nav"
           ]
         ]
@@ -419,16 +272,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "................................................................................................",
         "top": "",
         "bottom": "",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range_en"
     }
   },
   {
@@ -439,51 +295,24 @@
       "rev": "00000000000000000000000000000007",
       "seq": 7,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Температура",
       "context": "Гостиная",
-      "body": "Сейчас: 23 °C",
+      "body": "Сейчас: 23 °C\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Ранее",
-            "shift",
-            "nav"
-          ],
-          [
-            "Сейчас",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -491,88 +320,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "Xkcbogfskjwolyqn0so1to1t..................ViaS_fPcUNaSMZRMZRNaSPcUReW.........humlyqp2ur4wu7zv80",
         "top": "24 °C",
         "bottom": "18 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
-    }
-  },
-  {
-    "id": "gaps_en",
-    "label": "gaps · EN",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000008",
-      "seq": 8,
-      "lang": "en",
-      "kind": "list",
-      "title": "Temperature",
-      "context": "Living room",
-      "body": "Now: 23 °C",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "← Earlier",
-            "shift",
-            "nav"
-          ],
-          [
-            "Now",
-            "now",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": null,
-      "next": "controls",
-      "page": 1,
-      "pages": 3,
-      "graph": {
-        "plot": "Xkcbogfskjwolyqn0so1to1t..................ViaS_fPcUNaSMZRMZRNaSPcUReW.........humlyqp2ur4wu7zv80",
-        "top": "24 °C",
-        "bottom": "18 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
-      }
+    },
+    "links": {
+      "period": "range"
     }
   },
   {
@@ -583,51 +343,24 @@
       "rev": "00000000000000000000000000000009",
       "seq": 9,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Температура",
       "context": "Гостиная",
-      "body": "Сейчас: 21,5 °C",
+      "body": "Сейчас: 21,5 °C\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "← Ранее",
-            "shift",
-            "nav"
-          ],
-          [
-            "Сейчас",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -635,392 +368,19 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "top": "22,5 °C",
         "bottom": "20,5 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
-    }
-  },
-  {
-    "id": "constant_en",
-    "label": "constant · EN",
-    "page": {
-      "v": 1,
-      "rev": "0000000000000000000000000000000a",
-      "seq": 10,
-      "lang": "en",
-      "kind": "list",
-      "title": "Temperature",
-      "context": "Living room",
-      "body": "Now: 21.5 °C",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "← Earlier",
-            "shift",
-            "nav"
-          ],
-          [
-            "Now",
-            "now",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": null,
-      "next": "controls",
-      "page": 1,
-      "pages": 3,
-      "graph": {
-        "plot": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "top": "22,5 °C",
-        "bottom": "20,5 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
-      }
-    }
-  },
-  {
-    "id": "controls",
-    "label": "Управление историей",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000001",
-      "seq": 1,
-      "lang": "ru",
-      "kind": "list",
-      "title": "Температура",
-      "context": "Гостиная",
-      "body": "",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "Подробности",
-            "info",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "☆ Избранное",
-            "favorite",
-            "action"
-          ],
-          [
-            "Уведомления",
-            "alerts",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Дом",
-            "home",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": "plot",
-      "next": "info",
-      "page": 2,
-      "pages": 3,
-      "graph": null
-    }
-  },
-  {
-    "id": "info",
-    "label": "Сведения об истории",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000001",
-      "seq": 1,
-      "lang": "ru",
-      "kind": "list",
-      "title": "Температура",
-      "context": "Гостиная",
-      "body": "Температура · Гостиная\nПериод: 06.11 00:00 — 07.11 00:00.\nШтрихи показывают минимум и максимум каждого интервала, линия — последнее значение. Пропуски означают отсутствие достоверных данных.",
-      "notice": "",
-      "alert": "",
-      "b": [],
-      "back": "room",
-      "read": "read",
-      "prev": "controls",
-      "next": null,
-      "page": 3,
-      "pages": 3,
-      "graph": null
-    }
-  },
-  {
-    "id": "controls_en",
-    "label": "History controls",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000002",
-      "seq": 2,
-      "lang": "en",
-      "kind": "list",
-      "title": "Temperature",
-      "context": "Living room",
-      "body": "",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "Details",
-            "info",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "☆ Favorite",
-            "favorite",
-            "action"
-          ],
-          [
-            "Notifications",
-            "alerts",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Home",
-            "home",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": "plot",
-      "next": "info",
-      "page": 2,
-      "pages": 3,
-      "graph": null
-    }
-  },
-  {
-    "id": "info_en",
-    "label": "History details",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000002",
-      "seq": 2,
-      "lang": "en",
-      "kind": "list",
-      "title": "Temperature",
-      "context": "Living room",
-      "body": "Temperature · Living room\nPeriod: 06.11 00:00 — 07.11 00:00.\nBars show each interval’s minimum and maximum; the line shows its last value. Gaps indicate missing reliable data.",
-      "notice": "",
-      "alert": "",
-      "b": [],
-      "back": "room",
-      "read": "read",
-      "prev": "controls",
-      "next": null,
-      "page": 3,
-      "pages": 3,
-      "graph": null
-    }
-  },
-  {
-    "id": "numeric_past",
-    "label": "Прошлый период · RU",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000001",
-      "seq": 1,
-      "lang": "ru",
-      "kind": "list",
-      "title": "Температура",
-      "context": "Гостиная",
-      "body": "Сейчас: 23 °C",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "−24 ч",
-            "shift",
-            "nav"
-          ],
-          [
-            "Текущее",
-            "now",
-            "nav"
-          ],
-          [
-            "+24 ч",
-            "forward",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12 ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 дня",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 дней",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Свой интервал",
-            "range",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": null,
-      "next": "controls",
-      "page": 1,
-      "pages": 3,
-      "graph": {
-        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
-        "top": "24 °C",
-        "bottom": "18 °C",
-        "start": "05.11 00:00",
-        "end": "06.11 00:00"
-      }
-    }
-  },
-  {
-    "id": "numeric_past_en",
-    "label": "Past period · EN",
-    "page": {
-      "v": 1,
-      "rev": "00000000000000000000000000000002",
-      "seq": 2,
-      "lang": "en",
-      "kind": "list",
-      "title": "Temperature",
-      "context": "Living room",
-      "body": "Now: 23 °C",
-      "notice": "",
-      "alert": "",
-      "b": [
-        [
-          [
-            "−24 h",
-            "shift",
-            "nav"
-          ],
-          [
-            "Current",
-            "now",
-            "nav"
-          ],
-          [
-            "+24 h",
-            "forward",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "12 h",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 24 h",
-            "p24",
-            "selected"
-          ],
-          [
-            "3 days",
-            "p3",
-            "nav"
-          ],
-          [
-            "7 days",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Custom range",
-            "range",
-            "nav"
-          ]
-        ]
-      ],
-      "back": "room",
-      "read": "read",
-      "prev": null,
-      "next": "controls",
-      "page": 1,
-      "pages": 3,
-      "graph": {
-        "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
-        "top": "24 °C",
-        "bottom": "18 °C",
-        "start": "05.11 00:00",
-        "end": "06.11 00:00"
-      }
+    },
+    "links": {
+      "period": "range"
     }
   },
   {
@@ -1031,51 +391,24 @@
       "rev": "00000000000000000000000000000001",
       "seq": 1,
       "lang": "ru",
-      "kind": "list",
+      "kind": "chart",
       "title": "Термометр Температура (°C)",
       "context": "🛁 Ванная",
-      "body": "Сейчас: 24.7°C",
+      "body": "Сейчас: 24.7°C\n05.11.2026 10:37 — 07.11.2026 10:37\nUTC+03:00",
       "notice": "",
       "alert": "",
       "b": [
         [
           [
-            "⏪ -24ч",
-            "shift",
-            "nav"
-          ],
-          [
-            "🔄 Текущее",
-            "now",
+            "Период",
+            "period",
             "nav"
           ]
         ],
         [
           [
-            "🕒 12ч",
-            "p12",
-            "nav"
-          ],
-          [
-            "✓ 🕒 24ч",
-            "p24",
-            "selected"
-          ],
-          [
-            "📅 3д",
-            "p3",
-            "nav"
-          ],
-          [
-            "📅 7д",
-            "p7",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "⌨️ Свой интервал",
-            "range",
+            "Об устройстве",
+            "details",
             "nav"
           ]
         ]
@@ -1083,16 +416,1493 @@
       "back": "room",
       "read": "read",
       "prev": null,
-      "next": "controls",
+      "next": null,
       "page": 1,
-      "pages": 3,
+      "pages": 1,
       "graph": {
         "plot": "Xkcbogfskjwolyqn0so1to1to1tmzrjwogtlcphZmeViaS_fPcUNaSMZRMZRNaSPcUReWViaZmedqihumlyqp2ur4wu7zv80",
         "top": "24 °C",
         "bottom": "18 °C",
-        "start": "06.11 00:00",
-        "end": "07.11 00:00"
+        "start": "05.11 10:37",
+        "end": "07.11 10:37"
       }
+    },
+    "links": {
+      "period": "range"
+    }
+  },
+  {
+    "id": "range",
+    "label": "range",
+    "links": {
+      "a0": "calendar",
+      "a1": "hours",
+      "a2": "calendar",
+      "a3": "hours",
+      "a4": "numeric",
+      "a5": "numeric"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Начало\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Конец\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Показать график",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Время бота: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Период графика",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar",
+    "label": "calendar",
+    "links": {
+      "a0": "calendar_previous",
+      "a8": "range",
+      "d1": "range",
+      "d2": "range",
+      "d3": "range",
+      "d4": "range",
+      "d5": "range",
+      "d6": "range",
+      "d7": "range"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "‹ Октябрь",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "05.11.2026 · 10:37\nВремя бота: UTC+03:00",
+      "c": [
+        6,
+        30,
+        5,
+        1,
+        7
+      ],
+      "context": "Начало",
+      "kind": "calendar",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Ноябрь 2026",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_previous",
+    "label": "calendar_previous",
+    "links": {
+      "a0": "calendar",
+      "a15": "range",
+      "d18": "range",
+      "d19": "range",
+      "d20": "range",
+      "d21": "range",
+      "d22": "range",
+      "d23": "range",
+      "d24": "range",
+      "d25": "range",
+      "d26": "range",
+      "d27": "range",
+      "d28": "range",
+      "d29": "range",
+      "d30": "range",
+      "d31": "range"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› Ноябрь",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a15",
+      "body": "05.11.2026 · 10:37\nВремя бота: UTC+03:00",
+      "c": [
+        3,
+        31,
+        0,
+        18,
+        31
+      ],
+      "context": "Начало",
+      "kind": "calendar",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Октябрь 2026",
+      "v": 1
+    }
+  },
+  {
+    "id": "hours",
+    "label": "hours",
+    "links": {
+      "a0": "minutes",
+      "a1": "minutes",
+      "a10": "minutes",
+      "a11": "minutes",
+      "a12": "minutes",
+      "a13": "minutes",
+      "a14": "minutes",
+      "a15": "minutes",
+      "a16": "minutes",
+      "a17": "minutes",
+      "a18": "minutes",
+      "a19": "minutes",
+      "a2": "minutes",
+      "a20": "minutes",
+      "a21": "minutes",
+      "a22": "minutes",
+      "a23": "minutes",
+      "a24": "range",
+      "a3": "minutes",
+      "a4": "minutes",
+      "a5": "minutes",
+      "a6": "minutes",
+      "a7": "minutes",
+      "a8": "minutes",
+      "a9": "minutes"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "00",
+            "a0",
+            "nav"
+          ],
+          [
+            "01",
+            "a1",
+            "nav"
+          ],
+          [
+            "02",
+            "a2",
+            "nav"
+          ],
+          [
+            "03",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "04",
+            "a4",
+            "nav"
+          ],
+          [
+            "05",
+            "a5",
+            "nav"
+          ],
+          [
+            "06",
+            "a6",
+            "nav"
+          ],
+          [
+            "07",
+            "a7",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "08",
+            "a8",
+            "nav"
+          ],
+          [
+            "09",
+            "a9",
+            "nav"
+          ],
+          [
+            "10",
+            "a10",
+            "selected"
+          ],
+          [
+            "11",
+            "a11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12",
+            "a12",
+            "nav"
+          ],
+          [
+            "13",
+            "a13",
+            "nav"
+          ],
+          [
+            "14",
+            "a14",
+            "nav"
+          ],
+          [
+            "15",
+            "a15",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "16",
+            "a16",
+            "nav"
+          ],
+          [
+            "17",
+            "a17",
+            "nav"
+          ],
+          [
+            "18",
+            "a18",
+            "nav"
+          ],
+          [
+            "19",
+            "a19",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "20",
+            "a20",
+            "nav"
+          ],
+          [
+            "21",
+            "a21",
+            "nav"
+          ],
+          [
+            "22",
+            "a22",
+            "nav"
+          ],
+          [
+            "23",
+            "a23",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a24",
+      "body": "05.11.2026 · 10:37\nВремя бота: UTC+03:00",
+      "context": "Начало",
+      "kind": "hours",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Выберите час",
+      "v": 1
+    }
+  },
+  {
+    "id": "minutes",
+    "label": "minutes",
+    "links": {
+      "a0": "minutes",
+      "a1": "minutes",
+      "a10": "minutes",
+      "a11": "minutes",
+      "a12": "minutes",
+      "a13": "minutes",
+      "a14": "range",
+      "a15": "hours",
+      "a2": "minutes",
+      "a3": "minutes",
+      "a4": "minutes",
+      "a5": "minutes",
+      "a6": "minutes",
+      "a7": "minutes",
+      "a8": "minutes",
+      "a9": "minutes"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "00",
+            "a0",
+            "nav"
+          ],
+          [
+            "05",
+            "a1",
+            "nav"
+          ],
+          [
+            "10",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "15",
+            "a3",
+            "nav"
+          ],
+          [
+            "20",
+            "a4",
+            "nav"
+          ],
+          [
+            "25",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "30",
+            "a6",
+            "nav"
+          ],
+          [
+            "35",
+            "a7",
+            "nav"
+          ],
+          [
+            "40",
+            "a8",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "45",
+            "a9",
+            "nav"
+          ],
+          [
+            "50",
+            "a10",
+            "nav"
+          ],
+          [
+            "55",
+            "a11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "−1",
+            "a12",
+            "nav"
+          ],
+          [
+            "+1",
+            "a13",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Готово",
+            "a14",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a15",
+      "body": "05.11.2026 · 08:37\nВремя бота: UTC+03:00",
+      "context": "Начало",
+      "kind": "minutes",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Выберите минуты",
+      "v": 1
+    }
+  },
+  {
+    "id": "range_error",
+    "label": "range_error",
+    "links": {
+      "a0": "calendar",
+      "a1": "hours",
+      "a2": "calendar",
+      "a3": "hours",
+      "a4": "numeric",
+      "a5": "numeric"
+    },
+    "page": {
+      "alert": "Конец должен быть позже начала минимум на минуту.",
+      "b": [
+        [
+          [
+            "Начало\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "08:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Конец\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Показать график",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Время бота: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Период графика",
+      "v": 1
+    }
+  },
+  {
+    "id": "range_retry",
+    "label": "range_retry",
+    "links": {
+      "a0": "calendar",
+      "a1": "hours",
+      "a2": "calendar",
+      "a3": "hours",
+      "a4": "numeric",
+      "a5": "numeric"
+    },
+    "page": {
+      "alert": "Не удалось получить историю. Выбранный период сохранён в редакторе.",
+      "b": [
+        [
+          [
+            "Начало\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "08:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Конец\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Показать график",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Время бота: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Период графика",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_leap",
+    "label": "calendar_leap",
+    "links": {
+      "a0": "calendar",
+      "a20": "range",
+      "d11": "range",
+      "d12": "range",
+      "d13": "range",
+      "d14": "range",
+      "d15": "range",
+      "d16": "range",
+      "d17": "range",
+      "d18": "range",
+      "d19": "range",
+      "d20": "range",
+      "d21": "range",
+      "d22": "range",
+      "d23": "range",
+      "d24": "range",
+      "d25": "range",
+      "d26": "range",
+      "d27": "range",
+      "d28": "range",
+      "d29": "range"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› Март",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a20",
+      "body": "29.02.2024 · 10:37\nВремя бота: UTC+03:00",
+      "c": [
+        3,
+        29,
+        29,
+        11,
+        29
+      ],
+      "context": "Начало",
+      "kind": "calendar",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Февраль 2024",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_six_weeks",
+    "label": "calendar_six_weeks",
+    "links": {
+      "a0": "calendar",
+      "a20": "range",
+      "d13": "range",
+      "d14": "range",
+      "d15": "range",
+      "d16": "range",
+      "d17": "range",
+      "d18": "range",
+      "d19": "range",
+      "d20": "range",
+      "d21": "range",
+      "d22": "range",
+      "d23": "range",
+      "d24": "range",
+      "d25": "range",
+      "d26": "range",
+      "d27": "range",
+      "d28": "range",
+      "d29": "range",
+      "d30": "range",
+      "d31": "range"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› Сентябрь",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a20",
+      "body": "31.08.2026 · 10:37\nВремя бота: UTC+03:00",
+      "c": [
+        5,
+        31,
+        31,
+        13,
+        31
+      ],
+      "context": "Начало",
+      "kind": "calendar",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Август 2026",
+      "v": 1
+    }
+  },
+  {
+    "id": "range_en",
+    "label": "range_en",
+    "links": {
+      "a0": "calendar_en",
+      "a1": "hours_en",
+      "a2": "calendar_en",
+      "a3": "hours_en",
+      "a4": "numeric_en",
+      "a5": "numeric_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Start\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "End\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Show chart",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Bot time: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Chart range",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_en",
+    "label": "calendar_en",
+    "links": {
+      "a0": "calendar_previous_en",
+      "a8": "range_en",
+      "d1": "range_en",
+      "d2": "range_en",
+      "d3": "range_en",
+      "d4": "range_en",
+      "d5": "range_en",
+      "d6": "range_en",
+      "d7": "range_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "‹ October",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "05.11.2026 · 10:37\nBot time: UTC+03:00",
+      "c": [
+        6,
+        30,
+        5,
+        1,
+        7
+      ],
+      "context": "Start",
+      "kind": "calendar",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "November 2026",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_previous_en",
+    "label": "calendar_previous_en",
+    "links": {
+      "a0": "calendar_en",
+      "a15": "range_en",
+      "d18": "range_en",
+      "d19": "range_en",
+      "d20": "range_en",
+      "d21": "range_en",
+      "d22": "range_en",
+      "d23": "range_en",
+      "d24": "range_en",
+      "d25": "range_en",
+      "d26": "range_en",
+      "d27": "range_en",
+      "d28": "range_en",
+      "d29": "range_en",
+      "d30": "range_en",
+      "d31": "range_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› November",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a15",
+      "body": "05.11.2026 · 10:37\nBot time: UTC+03:00",
+      "c": [
+        3,
+        31,
+        0,
+        18,
+        31
+      ],
+      "context": "Start",
+      "kind": "calendar",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "October 2026",
+      "v": 1
+    }
+  },
+  {
+    "id": "hours_en",
+    "label": "hours_en",
+    "links": {
+      "a0": "minutes_en",
+      "a1": "minutes_en",
+      "a10": "minutes_en",
+      "a11": "minutes_en",
+      "a12": "minutes_en",
+      "a13": "minutes_en",
+      "a14": "minutes_en",
+      "a15": "minutes_en",
+      "a16": "minutes_en",
+      "a17": "minutes_en",
+      "a18": "minutes_en",
+      "a19": "minutes_en",
+      "a2": "minutes_en",
+      "a20": "minutes_en",
+      "a21": "minutes_en",
+      "a22": "minutes_en",
+      "a23": "minutes_en",
+      "a24": "range_en",
+      "a3": "minutes_en",
+      "a4": "minutes_en",
+      "a5": "minutes_en",
+      "a6": "minutes_en",
+      "a7": "minutes_en",
+      "a8": "minutes_en",
+      "a9": "minutes_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "00",
+            "a0",
+            "nav"
+          ],
+          [
+            "01",
+            "a1",
+            "nav"
+          ],
+          [
+            "02",
+            "a2",
+            "nav"
+          ],
+          [
+            "03",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "04",
+            "a4",
+            "nav"
+          ],
+          [
+            "05",
+            "a5",
+            "nav"
+          ],
+          [
+            "06",
+            "a6",
+            "nav"
+          ],
+          [
+            "07",
+            "a7",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "08",
+            "a8",
+            "nav"
+          ],
+          [
+            "09",
+            "a9",
+            "nav"
+          ],
+          [
+            "10",
+            "a10",
+            "selected"
+          ],
+          [
+            "11",
+            "a11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "12",
+            "a12",
+            "nav"
+          ],
+          [
+            "13",
+            "a13",
+            "nav"
+          ],
+          [
+            "14",
+            "a14",
+            "nav"
+          ],
+          [
+            "15",
+            "a15",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "16",
+            "a16",
+            "nav"
+          ],
+          [
+            "17",
+            "a17",
+            "nav"
+          ],
+          [
+            "18",
+            "a18",
+            "nav"
+          ],
+          [
+            "19",
+            "a19",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "20",
+            "a20",
+            "nav"
+          ],
+          [
+            "21",
+            "a21",
+            "nav"
+          ],
+          [
+            "22",
+            "a22",
+            "nav"
+          ],
+          [
+            "23",
+            "a23",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a24",
+      "body": "05.11.2026 · 10:37\nBot time: UTC+03:00",
+      "context": "Start",
+      "kind": "hours",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Choose hour",
+      "v": 1
+    }
+  },
+  {
+    "id": "minutes_en",
+    "label": "minutes_en",
+    "links": {
+      "a0": "minutes_en",
+      "a1": "minutes_en",
+      "a10": "minutes_en",
+      "a11": "minutes_en",
+      "a12": "minutes_en",
+      "a13": "minutes_en",
+      "a14": "range_en",
+      "a15": "hours_en",
+      "a2": "minutes_en",
+      "a3": "minutes_en",
+      "a4": "minutes_en",
+      "a5": "minutes_en",
+      "a6": "minutes_en",
+      "a7": "minutes_en",
+      "a8": "minutes_en",
+      "a9": "minutes_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "00",
+            "a0",
+            "nav"
+          ],
+          [
+            "05",
+            "a1",
+            "nav"
+          ],
+          [
+            "10",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "15",
+            "a3",
+            "nav"
+          ],
+          [
+            "20",
+            "a4",
+            "nav"
+          ],
+          [
+            "25",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "30",
+            "a6",
+            "nav"
+          ],
+          [
+            "35",
+            "a7",
+            "nav"
+          ],
+          [
+            "40",
+            "a8",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "45",
+            "a9",
+            "nav"
+          ],
+          [
+            "50",
+            "a10",
+            "nav"
+          ],
+          [
+            "55",
+            "a11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "−1",
+            "a12",
+            "nav"
+          ],
+          [
+            "+1",
+            "a13",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Done",
+            "a14",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a15",
+      "body": "05.11.2026 · 08:37\nBot time: UTC+03:00",
+      "context": "Start",
+      "kind": "minutes",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Choose minutes",
+      "v": 1
+    }
+  },
+  {
+    "id": "range_error_en",
+    "label": "range_error_en",
+    "links": {
+      "a0": "calendar_en",
+      "a1": "hours_en",
+      "a2": "calendar_en",
+      "a3": "hours_en",
+      "a4": "numeric_en",
+      "a5": "numeric_en"
+    },
+    "page": {
+      "alert": "End must be at least a minute after start.",
+      "b": [
+        [
+          [
+            "Start\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "08:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "End\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Show chart",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Bot time: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Chart range",
+      "v": 1
+    }
+  },
+  {
+    "id": "range_retry_en",
+    "label": "range_retry_en",
+    "links": {
+      "a0": "calendar_en",
+      "a1": "hours_en",
+      "a2": "calendar_en",
+      "a3": "hours_en",
+      "a4": "numeric_en",
+      "a5": "numeric_en"
+    },
+    "page": {
+      "alert": "Could not load history. Your selection remains in the editor.",
+      "b": [
+        [
+          [
+            "Start\n05.11.2026",
+            "a0",
+            "nav"
+          ],
+          [
+            "08:37",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "End\n07.11.2026",
+            "a2",
+            "nav"
+          ],
+          [
+            "10:37",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Show chart",
+            "a4",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Bot time: UTC+03:00",
+      "context": "",
+      "kind": "range",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "Chart range",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_leap_en",
+    "label": "calendar_leap_en",
+    "links": {
+      "a0": "calendar_en",
+      "a20": "range_en",
+      "d11": "range_en",
+      "d12": "range_en",
+      "d13": "range_en",
+      "d14": "range_en",
+      "d15": "range_en",
+      "d16": "range_en",
+      "d17": "range_en",
+      "d18": "range_en",
+      "d19": "range_en",
+      "d20": "range_en",
+      "d21": "range_en",
+      "d22": "range_en",
+      "d23": "range_en",
+      "d24": "range_en",
+      "d25": "range_en",
+      "d26": "range_en",
+      "d27": "range_en",
+      "d28": "range_en",
+      "d29": "range_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› March",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a20",
+      "body": "29.02.2024 · 10:37\nBot time: UTC+03:00",
+      "c": [
+        3,
+        29,
+        29,
+        11,
+        29
+      ],
+      "context": "Start",
+      "kind": "calendar",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "February 2024",
+      "v": 1
+    }
+  },
+  {
+    "id": "calendar_six_weeks_en",
+    "label": "calendar_six_weeks_en",
+    "links": {
+      "a0": "calendar_en",
+      "a20": "range_en",
+      "d13": "range_en",
+      "d14": "range_en",
+      "d15": "range_en",
+      "d16": "range_en",
+      "d17": "range_en",
+      "d18": "range_en",
+      "d19": "range_en",
+      "d20": "range_en",
+      "d21": "range_en",
+      "d22": "range_en",
+      "d23": "range_en",
+      "d24": "range_en",
+      "d25": "range_en",
+      "d26": "range_en",
+      "d27": "range_en",
+      "d28": "range_en",
+      "d29": "range_en",
+      "d30": "range_en",
+      "d31": "range_en"
+    },
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "› September",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a20",
+      "body": "31.08.2026 · 10:37\nBot time: UTC+03:00",
+      "c": [
+        5,
+        31,
+        31,
+        13,
+        31
+      ],
+      "context": "Start",
+      "kind": "calendar",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQMEDgoRAA",
+      "seq": 1,
+      "title": "August 2026",
+      "v": 1
     }
   }
 ]

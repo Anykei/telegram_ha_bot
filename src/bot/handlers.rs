@@ -86,6 +86,19 @@ pub async fn handle_command(
                     .and_then(|s| Payload::from_string(&s.current_context).ok())
                     .unwrap_or(Payload::Home)
                     .for_refresh();
+                // Calendar drafts belong to the HTML message. A mode change
+                // returns to the last applied graph rather than applying a draft.
+                if let Payload::Control(crate::bot::router::ControlPayload::QuickAction {
+                    room,
+                    device,
+                    cmd: crate::bot::router::DeviceCmd::EditChartRange { .. },
+                }) = payload
+                {
+                    payload = Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                        room,
+                        device,
+                    });
+                }
             } else {
                 dialogue.exit().await?;
             }
@@ -3174,12 +3187,16 @@ pub async fn handle_custom_interval(
             user_id, room_id, device_id, &config,
         )
         .await?;
-        if let Payload::Control(crate::bot::router::ControlPayload::QuickAction {
-            cmd: crate::bot::router::DeviceCmd::ShowChart { h, .. },
-            ..
-        }) = &mut new_payload
+        if let Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) =
+            &mut new_payload
         {
-            *h = hours;
+            match cmd {
+                crate::bot::router::DeviceCmd::ShowChart { h, .. } => *h = hours,
+                crate::bot::router::DeviceCmd::ShowChartRange { start, end } => {
+                    *start = *end - i64::from(hours) * 3600
+                }
+                _ => {}
+            }
         }
 
         // Завершаем диалог с ПЕРЕХОДОМ на новый график
