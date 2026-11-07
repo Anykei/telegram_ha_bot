@@ -31,6 +31,18 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(result.height,600,`${label}: fixed card height`);
     assert.ok(result.width<=result.available,`${label}: no overflow`);
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=44),`${label}: targets >=44px`);
+    const graph=await evaluate(`(() => {
+      if(${get('g-box')}.classList.contains('r-hidden')) return null;
+      const empty=${get('g-stage')}.classList.contains('r-hidden');
+      const plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
+      return {height:plot.height,stage:empty?plot.height:${get('g-stage')}.getBoundingClientRect().height,
+        gap:${doc}.querySelector('.r-footer').getBoundingClientRect().top-${get('r-content')}.getBoundingClientRect().bottom};
+    })()`);
+    if(graph) {
+      assert.ok(graph.height>=144,`${label}: plot keeps its readable minimum height`);
+      assert.ok(Math.abs(graph.height-graph.stage)<1,`${label}: the plot fills its expanded area`);
+      assert.ok(graph.gap>=-.1 && graph.gap<=8.1,`${label}: no unused spacer below graph controls (${graph.gap}px)`);
+    }
     assert.equal(await evaluate(`(() => {
       const a=${win}.TelegramWidget.contentSafeAreaInset,width=${get('release')}.clientWidth;
       return !!a && Array.from(${doc}.querySelectorAll('button,.r-text,#r-feedback')).some(n=>{
@@ -114,6 +126,24 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   }
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);
+  }
+  for(const id of ['numeric','empty']) {
+    await reload(id,{width:360,theme:'dark'});
+    await evaluate(`${win}.previewSetSafeArea(64,80)`);
+    const plot= id==='empty' ? get('g-empty') : `${doc}.querySelector('svg')`;
+    const available=await evaluate(`${plot}.getBoundingClientRect().height`);
+    assert.ok(available>200,`${id}: spare card height enlarges the graph instead of an empty block`);
+    await evaluate(`${win}.previewSetSafeArea(64)`);
+    const reserved=await evaluate(`${plot}.getBoundingClientRect().height`);
+    assert.ok(reserved<available && reserved>=144,`${id}: full time band shrinks only the graph`);
+    await dimensions(`${id}/full-time-band`);
+    await evaluate(`${win}.previewSetSafeArea(64,80)`);
+    await push({seq:100,alert:'Нет ответа. Обновите состояние.'});
+    assert.ok(await evaluate(`${plot}.getBoundingClientRect().height`)<available,`${id}: alert takes space from plot, not controls`);
+    await dimensions(`${id}/alert`);
+    await push({seq:101,alert:''});
+    assert.equal(await evaluate(`${plot}.getBoundingClientRect().height`),available,`${id}: cleared alert restores graph height`);
+    if(id==='numeric') await capture('graph-expanded-dark');
   }
   await reload('numeric_past',{width:320});await capture('graph-past-320');
   // Server-only details are readable in the same immutable graph asset.
