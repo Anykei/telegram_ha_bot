@@ -41,6 +41,16 @@ pub trait HomeAssistantClient: Send + Sync {
         offset: i32,
     ) -> Result<HistoryResult>;
 
+    /// Exact UTC boundaries, without converting a calendar selection to hours.
+    async fn fetch_history_range(
+        &self,
+        _entity_id: &str,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        anyhow::bail!("Exact history ranges are not supported by this client")
+    }
+
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>>;
 
     async fn fetch_action_entities(&self) -> Result<Vec<Entity>>;
@@ -134,6 +144,18 @@ impl HAClient {
         let now = Utc::now();
         let end_time = now + Duration::hours(offset as i64);
         let start_time = end_time - Duration::hours(hours as i64);
+
+        self.fetch_history_range(entity_id, start_time, end_time)
+            .await
+    }
+
+    pub async fn fetch_history_range(
+        &self,
+        entity_id: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        anyhow::ensure!(start_time < end_time, "History start must precede end");
 
         let start_iso = start_time.to_rfc3339();
         let end_iso = end_time.to_rfc3339();
@@ -312,6 +334,15 @@ impl HomeAssistantClient for HAClient {
         HAClient::fetch_history(self, entity_id, hours, offset).await
     }
 
+    async fn fetch_history_range(
+        &self,
+        entity_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        HAClient::fetch_history_range(self, entity_id, start, end).await
+    }
+
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
         HAClient::fetch_states_by_ids(self, entity_ids).await
     }
@@ -381,11 +412,23 @@ mod tests {
         let history = client.fetch_history("sensor.temperature", 24, -168).await?;
         assert!(history.points.is_empty());
         assert_eq!(history.end_time - history.start_time, Duration::hours(24));
+        let start = DateTime::parse_from_rfc3339("2026-11-06T20:31:00+03:00")?.with_timezone(&Utc);
+        let end = DateTime::parse_from_rfc3339("2026-11-07T08:07:00+03:00")?.with_timezone(&Utc);
+        let exact = client
+            .fetch_history_range("sensor.temperature", start, end)
+            .await?;
+        assert_eq!((exact.start_time, exact.end_time), (start, end));
+        assert!(client
+            .fetch_history_range("sensor.temperature", end, start)
+            .await
+            .is_err());
         let requests = server.await??;
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
         assert!(requests[0].contains("/api/history/period/"));
         assert!(requests[0].contains("significant_changes_only=0"));
         assert!(!requests[0].contains("skip_initial_state"));
+        assert!(requests[1].contains(&*encode(&start.to_rfc3339())));
+        assert!(requests[1].contains(&format!("end_time={}", encode(&end.to_rfc3339()))));
         Ok(())
     }
 }

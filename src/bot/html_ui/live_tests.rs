@@ -30,6 +30,15 @@ impl HomeAssistantClient for ReadOnlyHa {
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.inner.fetch_history(id, hours, offset).await
     }
+    async fn fetch_history_range(
+        &self,
+        id: &str,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> Result<HistoryResult> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.fetch_history_range(id, start, end).await
+    }
     async fn fetch_action_entities(&self) -> Result<Vec<Entity>> {
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.inner.fetch_action_entities().await

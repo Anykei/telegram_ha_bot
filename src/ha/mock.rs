@@ -290,9 +290,18 @@ impl HomeAssistantClient for MockHa {
             (1..=24 * 31).contains(&hours) && (-24 * 366..=0).contains(&offset),
             "Unsupported mock history interval"
         );
-        self.fetch_states_by_ids(&[id.into()]).await?;
         let end_time = Utc::now() + Duration::hours(offset.into());
         let start_time = end_time - Duration::hours(hours.into());
+        self.fetch_history_range(id, start_time, end_time).await
+    }
+    async fn fetch_history_range(
+        &self,
+        id: &str,
+        start_time: chrono::DateTime<Utc>,
+        end_time: chrono::DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        ensure!(start_time < end_time, "History start must precede end");
+        self.fetch_states_by_ids(&[id.into()]).await?;
         let rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT at, state FROM ha_mock_history WHERE entity_id = ? AND at <= ? AND (at >= ? OR id = (SELECT id FROM ha_mock_history WHERE entity_id = ? AND at < ? ORDER BY at DESC, id DESC LIMIT 1)) ORDER BY at, id")
             .bind(id).bind(end_time.timestamp_millis()).bind(start_time.timestamp_millis())

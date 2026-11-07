@@ -15,6 +15,44 @@ async fn state(mock: &MockHa, id: &str) -> Result<Entity> {
 }
 
 #[tokio::test]
+async fn exact_history_keeps_minute_boundaries_and_only_initial_state_before_start() -> Result<()> {
+    let (mock, _) = setup().await?;
+    let id = "light.floor_lamp";
+    sqlx::query("DELETE FROM ha_mock_history WHERE entity_id=?")
+        .bind(id)
+        .execute(&mock.pool)
+        .await?;
+    let start =
+        chrono::DateTime::parse_from_rfc3339("2026-11-06T20:31:00+03:00")?.with_timezone(&Utc);
+    let end = start + Duration::minutes(97);
+    for (at, value) in [
+        (start - Duration::minutes(10), "old"),
+        (start - Duration::minutes(1), "off"),
+        (start + Duration::minutes(3), "on"),
+        (end + Duration::minutes(1), "future"),
+    ] {
+        sqlx::query("INSERT INTO ha_mock_history(entity_id, at, state) VALUES(?, ?, ?)")
+            .bind(id)
+            .bind(at.timestamp_millis())
+            .bind(value)
+            .execute(&mock.pool)
+            .await?;
+    }
+    let result = mock.fetch_history_range(id, start, end).await?;
+    assert_eq!((result.start_time, result.end_time), (start, end));
+    assert_eq!(
+        result
+            .points
+            .iter()
+            .map(|(_, s)| s.as_str())
+            .collect::<Vec<_>>(),
+        vec!["off", "on"]
+    );
+    assert!(mock.fetch_history_range(id, end, start).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn commands_persist_across_reopen_and_publish_committed_events() -> Result<()> {
     let (mock, mut events) = setup().await?;
     mock.call_service("light", "turn_on", "light.floor_lamp")
