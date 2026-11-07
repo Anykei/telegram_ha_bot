@@ -31,6 +31,16 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(result.height,600,`${label}: fixed card height`);
     assert.ok(result.width<=result.available,`${label}: no overflow`);
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=44),`${label}: targets >=44px`);
+    const footer=await evaluate(`(() => {
+      if(!${get('release')}.classList.contains('r-corner')) return null;
+      const card=${get('release')}.getBoundingClientRect(),foot=${doc}.querySelector('.r-footer').getBoundingClientRect(),feedback=${get('r-feedback')};
+      return {gap:card.bottom-(feedback.classList.contains('r-hidden')?foot.bottom:feedback.getBoundingClientRect().bottom),
+        padding:${win}.getComputedStyle(${get('release')}).paddingBottom};
+    })()`);
+    if(footer) {
+      assert.equal(footer.padding,'16px',`${label}: corner layout replaces the full time band`);
+      assert.ok(Math.abs(footer.gap-16)<1,`${label}: only 16px remain below navigation/feedback, not a blank time band (${footer.gap}px)`);
+    }
     const graph=await evaluate(`(() => {
       if(${get('g-box')}.classList.contains('r-hidden')) return null;
       const empty=${get('g-stage')}.classList.contains('r-hidden');
@@ -135,6 +145,13 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false);
   await dimensions('wide-clock/fallback');
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<expanded);
+  // Safe-area changes may happen after first paint (for example an edited
+  // mark). Re-enter the corner layout from the full-band fallback, both sides.
+  for(const side of ['left','right']) {
+    await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?120:0},${side==='left'?120:0})`);
+    await dimensions(`wide-clock/reenter-${side}`);
+    assert.equal(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`),expanded);
+  }
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);
   }
