@@ -31,6 +31,14 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(result.height,600,`${label}: fixed card height`);
     assert.ok(result.width<=result.available,`${label}: no overflow`);
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=44),`${label}: targets >=44px`);
+    assert.equal(await evaluate(`(() => {
+      const a=${win}.TelegramWidget.contentSafeAreaInset,width=${get('release')}.clientWidth;
+      return !!a && Array.from(${doc}.querySelectorAll('button,.r-text,#r-feedback')).some(n=>{
+        const r=n.getBoundingClientRect();
+        return r.width && r.height && r.bottom>600-a.bottom+.1 &&
+          ((a.cornerLeft>0 && r.left<a.cornerLeft-.1) || (a.cornerRight>0 && r.right>width-a.cornerRight+.1));
+      });
+    })()`),false,`${label}: no text or controls under the native clock`);
   }
   async function collect(label) {
     let text='',actions=[],parts=0;
@@ -94,6 +102,15 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.deepEqual(content.actions,fixture.b.flat().filter(b=>b[1]!==fixture.back).map(b=>[b[1],b[0]]));
     assert.equal(await evaluate(`${win}.getComputedStyle(${get('release')}).paddingBottom`),'64px');
     assert.ok(await evaluate(`Math.max(...Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().bottom))<=536`));
+  }
+  for(const fixture of fixtures) for(const side of ['left','right']) {
+    await reload(fixture.id,{width:360,theme:'dark'});
+    await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
+    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true);
+    const content=await collect(`${fixture.id}/clock-${side}`);
+    assert.equal(content.text,fixture.page.alert+fixture.page.notice+fixture.page.body+(fixture.page.hint||''));
+    assert.deepEqual(content.actions,fixture.page.b.flat().filter(b=>b[1]!==fixture.page.back).map(b=>[b[1],b[0]]));
+    if(fixture.id==='numeric' && side==='right') await capture('graph-clock-corner');
   }
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);

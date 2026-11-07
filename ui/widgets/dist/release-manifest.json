@@ -1,8 +1,8 @@
 {
   "designVersion": "1.0.0",
   "screen": "release",
-  "bytes": 10257,
-  "zlibBytes": 4096,
+  "bytes": 10219,
+  "zlibBytes": 4091,
   "limit": 4096,
   "protocol": "r1",
   "transport": "TelegramWidget",

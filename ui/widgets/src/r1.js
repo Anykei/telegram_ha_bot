@@ -1,15 +1,15 @@
 import { validGraph, renderGraph } from './graph-render.js';
 // All actions are server-issued opaque keys. This file never interprets a device command.
 (() => {
-  const api = globalThis.TelegramWidget, el = id => document.getElementById(id), card = el('release');
+  const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
     ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Страница' : '', 'Часть'],
     en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'Page' : '', 'Part']
   };
-  let data = null, busy = false, waiting = false, uncertain = false, denied = Boolean(api && api.isForward);
+  let data = null, busy = false, waiting = false, uncertain = false, denied = !!api?.isForward;
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
   let frame = 0, painted = 0;
-  let lang = typeof navigator !== 'undefined' && navigator.language.startsWith('ru') ? 'ru' : 'en';
+  let lang = navigator.language.startsWith('ru') ? 'ru' : 'en';
   const w = n => words[lang][n], text = (id, value) => { el(id).textContent = value; };
   const node = (tag, style = '', value = '') => {
     const n = document.createElement(tag); n.className = style; n.textContent = value; return n;
@@ -67,13 +67,12 @@ import { validGraph, renderGraph } from './graph-render.js';
     content.textContent = '';
     let previous;
     nodes.forEach(block => {
-      if (!GRAPH && block.tagName === 'P') {
-        if (!previous || previous.className !== block.className) {
-          previous = node('p', block.className);
-          content.appendChild(previous);
-        }
-        previous.textContent += block.textContent;
-      } else { previous = null; content.appendChild(block); }
+      const paragraph = !GRAPH && block.tagName === 'P';
+      if (!paragraph || !previous || previous.className !== block.className) {
+        previous = paragraph ? node('p', block.className) : block;
+        content.appendChild(previous);
+      }
+      if (paragraph) previous.textContent += block.textContent;
     });
   }
   function layout() {
@@ -86,7 +85,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     for (const [value, style] of paragraphs) {
       // Bounded, Unicode-aware fragments prefer whitespace near the end. Mount
       // joins adjacent fragments again; pagination never drops source text.
-      for (const part of GRAPH ? [value].filter(Boolean) : value.match(/[\s\S]{60,99}\s|[\s\S]{1,100}/gu) || []) {
+      for (const part of GRAPH ? [value].filter(Boolean) : value.match(/.{60,99}\s|.{1,100}/gsu) || []) {
         blocks.push(node('p', 'r-text ' + style, part));
       }
     }
@@ -132,6 +131,9 @@ import { validGraph, renderGraph } from './graph-render.js';
   function render() {
     const locked = denied || !data || !api;
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
+    const area = api?.contentSafeAreaInset;
+    const corners = area && area.cornerLeft + area.cornerRight;
+    card.classList.toggle('r-corner', !locked && corners > 0 && card.clientWidth - corners >= 256);
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
     el('r-read').setAttribute('aria-label', w(!GRAPH && (busy || waiting) ? 3 : 2));
@@ -140,8 +142,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     hide('r-back', locked || !data.back);
     feedback(locked ? w(6) : note || (!GRAPH && data.rows.flat().some(b => b.kind === 'uncertain') ? w(4) : ''));
     if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
-    ['r-prev', 'r-local-prev'].forEach(id => el(id).setAttribute('aria-label', w(0)));
-    ['r-next', 'r-local-next'].forEach(id => el(id).setAttribute('aria-label', w(1)));
+    ['r-prev', 'r-next', 'r-local-prev', 'r-local-next'].forEach((id, i) => el(id).setAttribute('aria-label', w(i % 2)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);
     mount([]);
     if (locked) return;
@@ -219,7 +220,7 @@ import { validGraph, renderGraph } from './graph-render.js';
   if (typeof ResizeObserver === 'function') {
     let width = 0;
     new ResizeObserver(() => {
-      const next = card.getBoundingClientRect().width;
+      const next = card.clientWidth;
       if (next !== width) { width = next; render(); }
     }).observe(card);
   }

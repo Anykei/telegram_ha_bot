@@ -44,6 +44,16 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(result.width <= result.available, `${label}: no horizontal overflow`);
     assert.ok(result.textFits, `${label}: full text wraps without clipping`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
+    const overlap = await evaluate(`(() => {
+      const a=${win}.TelegramWidget.contentSafeAreaInset, width=${get('release')}.clientWidth;
+      if(!a) return false;
+      return Array.from(${doc}.querySelectorAll('button,.r-text,.r-status,#r-feedback')).some(n=>{
+        const r=n.getBoundingClientRect();
+        return r.width && r.height && r.bottom>600-a.bottom+.1 &&
+          ((a.cornerLeft>0 && r.left<a.cornerLeft-.1) || (a.cornerRight>0 && r.right>width-a.cornerRight+.1));
+      });
+    })()`);
+    assert.equal(overlap,false,`${label}: controls and text stay outside the native time corner`);
   }
   async function collectParts(label, page) {
     let text = '', actions = [], status = [], part = 0;
@@ -113,6 +123,48 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  // The time band belongs to every screen. Its uncovered side is usable when
+  // the client supplies a corner width; this is independent of the screen kind.
+  for (const fixture of fixtures) for (const side of ['left','right']) {
+    await reload(fixture.id,{width:360,theme:'dark'});
+    await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
+    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true);
+    await assertPreserved(fixture.page,`${fixture.id}/corner-${side}`);
+    const footer = await evaluate(`${doc}.querySelector('.r-footer').getBoundingClientRect().toJSON()`);
+    assert.ok(footer.bottom<=584.1,`${fixture.id}: footer keeps bottom padding`);
+    if(await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`)) {
+      assert.ok(footer.bottom>536,`${fixture.id}: footer uses the band beside the clock`);
+    }
+  }
+  for (const width of [320,360,390,430]) {
+    await reload('room_paginated',{width,theme:'dark'});
+    await evaluate(`${win}.previewSetSafeArea(64,64)`);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6,'Six full-size room rows use the available height');
+    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true);
+    await dimensions(`six rows/corner/${width}`);
+    if(width===390) {
+      await evaluate(`{const clock=${doc}.createElement('div');clock.textContent='07:41';clock.style.cssText='position:absolute;bottom:4px;right:4px;padding:4px 8px;border-radius:14px;background:#101b22;color:white';${doc}.body.appendChild(clock);}`);
+      await capture('release-room-six-rows-clock');
+    }
+    // More content, an error, or widened metadata must repaginate without losing
+    // a command, overlapping the clock or making the card taller.
+    await reload('room_paginated',{width});
+    await evaluate(`${win}.previewSetSafeArea(64,64)`);
+    const seven=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
+    seven.b.push([['Розетка\nВЫКЛ','extra_socket','nav']]);seven.seq=100;
+    await push(seven);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6);
+    assert.equal((await assertPreserved(seven,`seven rows/${width}`)).parts,2);
+    await push({seq:101,alert:'Нет ответа. Обновите состояние.'});
+    await assertPreserved({...seven,alert:'Нет ответа. Обновите состояние.'},`error/corner/${width}`);
+    await evaluate(`${win}.previewSetSafeArea(64,200)`);
+    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false,'A wide time label falls back to the full band');
+    await dimensions(`wide clock/${width}`);
+  }
+  await reload('room_paginated',{width:200});
+  await evaluate(`${win}.previewSetSafeArea(64,64)`);
+  assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false,'Narrow clients keep the whole time band clear');
+  await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'narrow/corner');
   // Media stays in Telegram attachments; the camera card preserves its controls
   // and navigation even at the client's largest reserved timestamp inset.
   for (const fixture of fixtures.filter(f=>f.camera)) {

@@ -82,8 +82,11 @@
         }
       };
       globalThis.previewSetData = emit;
-      globalThis.previewSetSafeArea = bottom => {
-        document.documentElement.style.setProperty('--tg-content-safe-area-inset-bottom', bottom + 'px');
+      globalThis.previewSetSafeArea = (bottom, cornerRight = 0, cornerLeft = 0) => {
+        TelegramWidget.contentSafeAreaInset = {top:0, right:0, bottom, left:0, cornerLeft, cornerRight};
+        for (const [name, value] of Object.entries({'inset-bottom':bottom, 'corner-right':cornerRight, 'corner-left':cornerLeft})) {
+          document.documentElement.style.setProperty('--tg-content-safe-area-' + name, value + 'px');
+        }
         handlers.contentSafeAreaChanged?.();
       };
     }
