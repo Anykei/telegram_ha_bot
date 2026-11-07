@@ -182,6 +182,7 @@ pub enum DeviceCmd {
         draft: u64,
         edit: ChartRangeEdit,
     },
+    ExportChart,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -250,6 +251,7 @@ impl From<DeviceCmd> for devices::DeviceAction {
             // Read-only chart routes are intercepted before device interaction.
             DeviceCmd::ShowChartRange { .. }
             | DeviceCmd::OpenChartRange
+            | DeviceCmd::ExportChart
             | DeviceCmd::EditChartRange { .. } => DeviceAction::GenerateChart(ChartParams {
                 period_hours: 24,
                 offset_hours: 0,

@@ -19,12 +19,17 @@
             "Период",
             "period",
             "nav"
+          ],
+          [
+            "Сведения",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Об устройстве",
-            "details",
+            "Отправить PNG",
+            "export",
             "nav"
           ]
         ]
@@ -67,12 +72,17 @@
             "Date range",
             "period",
             "nav"
+          ],
+          [
+            "Details",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Device details",
-            "details",
+            "Send PNG",
+            "export",
             "nav"
           ]
         ]
@@ -115,12 +125,17 @@
             "Период",
             "period",
             "nav"
+          ],
+          [
+            "Сведения",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Об устройстве",
-            "details",
+            "Отправить PNG",
+            "export",
             "nav"
           ]
         ]
@@ -163,12 +178,17 @@
             "Date range",
             "period",
             "nav"
+          ],
+          [
+            "Details",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Device details",
-            "details",
+            "Send PNG",
+            "export",
             "nav"
           ]
         ]
@@ -211,11 +231,9 @@
             "Период",
             "period",
             "nav"
-          ]
-        ],
-        [
+          ],
           [
-            "Об устройстве",
+            "Сведения",
             "details",
             "nav"
           ]
@@ -259,11 +277,9 @@
             "Date range",
             "period",
             "nav"
-          ]
-        ],
-        [
+          ],
           [
-            "Device details",
+            "Details",
             "details",
             "nav"
           ]
@@ -307,12 +323,17 @@
             "Период",
             "period",
             "nav"
+          ],
+          [
+            "Сведения",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Об устройстве",
-            "details",
+            "Отправить PNG",
+            "export",
             "nav"
           ]
         ]
@@ -355,12 +376,17 @@
             "Период",
             "period",
             "nav"
+          ],
+          [
+            "Сведения",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Об устройстве",
-            "details",
+            "Отправить PNG",
+            "export",
             "nav"
           ]
         ]
@@ -403,12 +429,17 @@
             "Период",
             "period",
             "nav"
+          ],
+          [
+            "Сведения",
+            "details",
+            "nav"
           ]
         ],
         [
           [
-            "Об устройстве",
-            "details",
+            "Отправить PNG",
+            "export",
             "nav"
           ]
         ]

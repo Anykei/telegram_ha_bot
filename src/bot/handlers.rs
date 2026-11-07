@@ -713,6 +713,15 @@ pub async fn handle_callback(
             return Ok(());
         }
     };
+    if matches!(
+        &payload,
+        Payload::Control(crate::bot::router::ControlPayload::QuickAction {
+            cmd: crate::bot::router::DeviceCmd::ExportChart,
+            ..
+        })
+    ) {
+        return super::html_ui::chart_export::send(&bot, &q, &config, &payload).await;
+    }
     let is_chart = payload.is_chart_navigation();
     let lang = db::get_user_language(user_id, &config.db)
         .await?

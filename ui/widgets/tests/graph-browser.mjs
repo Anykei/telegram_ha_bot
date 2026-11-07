@@ -24,6 +24,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
       document.getElementById('fixture').dispatchEvent(new Event('change'));
     })`);
     await until(`${get('r-title')}`);
+    await until(`document.getElementById('release-frame').clientHeight===Math.ceil(${get('release')}.getBoundingClientRect().height)`);
   }
   const push=patch=>evaluate(`${win}.previewSetData({...${state},...${JSON.stringify(patch)}})`);
   async function requests() {
@@ -94,7 +95,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await evaluate(`${win}.previewSetSafeArea(64,80)`);
   const height=await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`);
   assert.ok(height>200, `plot expands to ${height}px`);
-  assert.equal(await evaluate(`${doc}.querySelectorAll('[data-key]').length`),2);
+  assert.equal(await evaluate(`${doc}.querySelectorAll('[data-key]').length`),3);
   assert.equal(await evaluate(`${get('r-footer')}.classList.contains('r-hidden')`),true);
   const bottom=await evaluate(`${get('r-content')}.getBoundingClientRect().bottom`);
   await screenshot('graph-calendar-overview-dark');
@@ -102,6 +103,20 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await evaluate(`${win}.previewSetSafeArea(64)`);
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<height);
   await dimensions('unknown clock reserves full band');
+  // PNG export uses the current snapshot and leaves the complete chart controls in place.
+  for(const width of [200,320,360,430]) for(const id of ['numeric','numeric_en']) {
+    await reload(id,{width,theme:'dark'});
+    const before=await evaluate(`${state}.graph`);
+    await evaluate(`${button('export')}.click();${button('export')}.click()`);
+    assert.ok(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).every(b=>b.disabled)`));
+    await until(`${state}.notice.includes('PNG')`);
+    assert.deepEqual(await evaluate(`${state}.graph`),before);
+    const all=await collect(`PNG sent/${id}/${width}`);
+    if(width>=320) assert.equal(all.count,1,'export feedback and controls remain on one screen');
+    await push({notice:'',alert:id==='numeric'?'Отправка не подтверждена. Проверьте чат.':'Upload not confirmed. Check the chat.'});
+    const failed=await collect(`PNG failed/${id}/${width}`);
+    if(width>=320) assert.equal(failed.count,1,'upload error and controls remain on one screen');
+  }
   for(const id of ['range','calendar','calendar_previous','calendar_six_weeks','time','time_changed']) {
     await reload(id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,80)`);

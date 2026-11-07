@@ -1,4 +1,5 @@
 //! HTML is a presentation adapter for existing routes, not a second command engine.
+pub(crate) mod chart_export;
 pub(crate) mod pending;
 mod presentation;
 pub(crate) mod range;

@@ -486,7 +486,7 @@ pub async fn render(ctx: RenderContext, room: i64, device: i64, cmd: DeviceCmd) 
 }
 
 /// Chart/editor pages are already intentionally sized, not an adaptation of the
-/// classic preset keyboard. The only graph controls are range, details and Back.
+/// classic preset keyboard. Chart controls occupy two rows, including PNG export.
 pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     let mut actions = HashMap::new();
     let mut rows = Vec::new();
@@ -497,20 +497,27 @@ pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
             Payload::Control(ControlPayload::QuickAction { room, device, .. }) => (room, device),
             _ => anyhow::bail!("Chart route missing"),
         };
-        vec![
-            vec![key(
+        let mut keyboard = vec![vec![
+            key(
                 words(view.lang, "Период", "Date range"),
                 payload(room, device, DeviceCmd::OpenChartRange),
-            )],
-            vec![key(
-                words(view.lang, "Об устройстве", "Device details"),
+            ),
+            key(
+                words(view.lang, "Сведения", "Details"),
                 Payload::DeviceDetails { room, device },
-            )],
-            vec![key(
-                t(view.lang, "common.back"),
-                Payload::Control(ControlPayload::RoomDetail { room }),
-            )],
-        ]
+            ),
+        ]];
+        if view.image.as_ref().is_some_and(|image| !image.is_empty()) {
+            keyboard.push(vec![key(
+                words(view.lang, "Отправить PNG", "Send PNG"),
+                payload(room, device, DeviceCmd::ExportChart),
+            )]);
+        }
+        keyboard.push(vec![key(
+            t(view.lang, "common.back"),
+            Payload::Control(ControlPayload::RoomDetail { room }),
+        )]);
+        keyboard
     } else {
         view.kb.inline_keyboard.clone()
     };

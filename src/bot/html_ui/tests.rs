@@ -112,6 +112,7 @@ async fn config() -> Result<(Arc<AppConfig>, Arc<FakeHa>)> {
 struct FakeTelegram {
     bot: Bot,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
+    uploads: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
     fail: Arc<Mutex<Option<String>>>,
     update_batches: Arc<Mutex<std::collections::VecDeque<Vec<Value>>>>,
     task: tokio::task::JoinHandle<()>,
@@ -127,6 +128,8 @@ impl FakeTelegram {
         let address = listener.local_addr()?;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorded = calls.clone();
+        let uploads = Arc::new(Mutex::new(Vec::new()));
+        let recorded_uploads = uploads.clone();
         let fail = Arc::new(Mutex::new(None::<String>));
         let failing = fail.clone();
         let update_batches = Arc::new(Mutex::new(std::collections::VecDeque::new()));
@@ -161,11 +164,20 @@ impl FakeTelegram {
                 }
                 let mut bytes = vec![0; length];
                 reader.read_exact(&mut bytes).await.unwrap();
-                let body: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+                let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                    recorded_uploads
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), bytes));
+                    json!({})
+                });
                 recorded.lock().unwrap().push((method.clone(), body));
                 let fail = {
                     let mut method_to_fail = failing.lock().unwrap();
-                    if method_to_fail.as_deref() == Some(&method) {
+                    if method_to_fail
+                        .as_deref()
+                        .is_some_and(|m| m.eq_ignore_ascii_case(&method))
+                    {
                         method_to_fail.take();
                         true
                     } else {
@@ -205,6 +217,7 @@ impl FakeTelegram {
         Ok(Self {
             bot,
             calls,
+            uploads,
             fail,
             update_batches,
             task,
@@ -215,6 +228,7 @@ impl FakeTelegram {
     }
     fn clear(&self) {
         self.calls.lock().unwrap().clear();
+        self.uploads.lock().unwrap().clear();
     }
 }
 fn query(session: &WidgetSession, key: &str) -> CallbackQuery {

@@ -90,7 +90,11 @@ async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboar
             assert!(page.body.contains(view.html_summary.as_deref().unwrap()));
             assert!(page.body.contains("UTC"));
             assert!(page.json()?.len() <= 1000);
-            assert_eq!(prepared.actions.len(), 3);
+            assert_eq!(prepared.actions.len(), 4);
+            assert!(prepared
+                .actions
+                .values()
+                .any(|p| *p == action(room, device, DeviceCmd::ExportChart)));
             assert!(prepared
                 .actions
                 .values()
@@ -118,6 +122,10 @@ async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboar
     .await?;
     assert!(view.image.is_none());
     let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+    assert!(!prepared
+        .actions
+        .values()
+        .any(|p| *p == action(room, device, DeviceCmd::ExportChart)));
     assert_eq!(
         prepared.pages[0].graph.as_ref().unwrap().plot,
         ".".repeat(96)
@@ -441,5 +449,182 @@ async fn calendar_invalid_range_never_reads_history_and_regrant_invalidates_draf
     db::add_user(1, &config.db).await?;
     assert!(resolve(&fake.bot, &q, &config).await?.is_none());
     assert_eq!(ha.reads.load(Ordering::SeqCst), reads);
+    Ok(())
+}
+
+fn png_uploads(fake: &FakeTelegram) -> Vec<Vec<u8>> {
+    fake.uploads
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, _)| method.eq_ignore_ascii_case("sendDocument"))
+        .map(|(_, bytes)| bytes.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn png_export_preserves_exact_displayed_image_range_and_card_without_ha_reads() -> Result<()>
+{
+    let (mut config, mock) = mock_config().await?;
+    let ha = Arc::new(ChartHa {
+        inner: mock,
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        ranges: Default::default(),
+    });
+    Arc::get_mut(&mut config).unwrap().ha_client = ha.clone();
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    for (entity, exact, height) in [
+        ("sensor.bedroom_humidity", false, 600),
+        ("sensor.bedroom_humidity", true, 600),
+        ("binary_sensor.kitchen_window", true, 400),
+    ] {
+        let (room, device) = device(&config, entity).await?;
+        let end = Utc::now().timestamp() - 67;
+        let payload = action(
+            room,
+            device,
+            if exact {
+                DeviceCmd::ShowChartRange {
+                    start: end - 86_461,
+                    end,
+                }
+            } else {
+                DeviceCmd::ShowChart { h: 24, o: 0 }
+            },
+        );
+        let original = publish(&fake, &config, payload.clone()).await?;
+        let bytes = original.view.image.as_ref().unwrap();
+        let image = image::load_from_memory(bytes)?;
+        assert_eq!((image.width(), image.height()), (1000, height));
+        let [start, end] = original.view.html_range.unwrap();
+        let callback = action_query(&config, &action(room, device, DeviceCmd::ExportChart));
+        let before = ha.reads.load(Ordering::SeqCst);
+        fake.clear();
+        // The callback is issued once; concurrent delivery must not duplicate a file.
+        let (first, duplicate) = tokio::join!(
+            press(&fake, &config, &dialogue, callback.clone()),
+            press(&fake, &config, &dialogue, callback.clone())
+        );
+        first?;
+        duplicate?;
+        let uploads = png_uploads(&fake);
+        assert_eq!(uploads.len(), 1);
+        assert!(uploads[0].windows(bytes.len()).any(|part| part == bytes));
+        let multipart = String::from_utf8_lossy(&uploads[0]);
+        assert!(multipart.contains(&format!("graph_{start}_{end}.png")));
+        assert!(multipart.contains(original.view.html_title.as_deref().unwrap()));
+        assert!(multipart.contains("Тестовые данные"));
+        for date in [start, end] {
+            assert!(multipart.contains(
+                &DateTime::from_timestamp(date, 0)
+                    .unwrap()
+                    .with_timezone(&chrono::Local)
+                    .format("%d.%m.%Y %H:%M:%S UTC%:z")
+                    .to_string()
+            ));
+        }
+        assert!(
+            !multipart.contains("reply_markup"),
+            "forwarded file has no private controls"
+        );
+        let sent = current(&config);
+        assert_eq!(sent.message, original.message);
+        assert_eq!(sent.view.payload, original.view.payload);
+        assert_eq!(sent.view.html_range, original.view.html_range);
+        assert_eq!(sent.view.image, original.view.image);
+        assert_eq!(
+            serde_json::to_value(&sent.view.html_chart)?,
+            serde_json::to_value(&original.view.html_chart)?
+        );
+        assert_eq!(sent.view.notice.as_deref(), Some("PNG отправлен."));
+        assert!(!sent.claimed);
+        assert!(sent.pages[0].json()?.len() <= 1000);
+        assert_eq!(ha.reads.load(Ordering::SeqCst), before);
+        press(&fake, &config, &dialogue, callback).await?;
+        assert_eq!(png_uploads(&fake).len(), 1, "old revision cannot resend");
+        press(&fake, &config, &dialogue, query(&sent, "read")).await?;
+        assert_eq!(
+            png_uploads(&fake).len(),
+            1,
+            "Read refreshes the graph without exporting"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn png_export_failure_is_visible_and_only_a_fresh_explicit_tap_retries() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    let original = publish(
+        &fake,
+        &config,
+        action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let export = action(room, device, DeviceCmd::ExportChart);
+    let callback = action_query(&config, &export);
+    fake.clear();
+    *fake.fail.lock().unwrap() = Some("sendDocument".into());
+    press(&fake, &config, &dialogue, callback.clone()).await?;
+    let failed = current(&config);
+    assert!(failed
+        .view
+        .alert
+        .as_deref()
+        .unwrap()
+        .contains("Проверьте чат"));
+    assert_eq!(failed.message, original.message);
+    assert_eq!(failed.view.image, original.view.image);
+    assert_eq!(png_uploads(&fake).len(), 1);
+    press(&fake, &config, &dialogue, callback).await?;
+    press(&fake, &config, &dialogue, query(&failed, "read")).await?;
+    assert_eq!(png_uploads(&fake).len(), 1);
+    press(&fake, &config, &dialogue, action_query(&config, &export)).await?;
+    assert_eq!(png_uploads(&fake).len(), 2);
+    assert_eq!(
+        current(&config).view.notice.as_deref(),
+        Some("PNG отправлен.")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn png_export_rejects_native_callbacks_and_changed_admission() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    publish(
+        &fake,
+        &config,
+        action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let export = action(room, device, DeviceCmd::ExportChart);
+    let callback = action_query(&config, &export);
+    let mut native = callback.clone();
+    native.chat_instance = "native".into();
+    native.data = Some(export.to_string());
+    fake.clear();
+    press(&fake, &config, &dialogue, native).await?;
+    assert!(png_uploads(&fake).is_empty());
+    db::delete_user(1, &config.db).await?;
+    db::add_user(1, &config.db).await?;
+    press(&fake, &config, &dialogue, callback).await?;
+    assert!(png_uploads(&fake).is_empty());
     Ok(())
 }
