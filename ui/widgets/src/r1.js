@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', '', 'Часть'],
-    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', '', 'Part']
+    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Ещё' : '', 'Часть'],
+    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'More' : '', 'Part']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = !!api?.isForward;
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
@@ -29,7 +29,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && (!GRAPH || validGraph(v.graph))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
-      && list(v.rows, GRAPH ? 4 : 64, row => list(row, GRAPH ? 3 : 2,
+      && list(v.rows, GRAPH ? 4 : 64, row => list(row, GRAPH ? 4 : 2,
         b => b && string(b.text) && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain', 'status']).includes(b.kind)) && row.length > 0);
   }
   function accept(v) {
@@ -150,6 +150,10 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
     ['r-prev', 'r-next', 'r-local-prev', 'r-local-next'].forEach((id, i) => el(id).setAttribute('aria-label', w(i % 2)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked); hide('r-local', true);
+    if (GRAPH) {
+      hide('r-prev', !!data?.graph); hide('r-count', !!data?.graph);
+      text('r-next', data?.graph ? w(7) : '›');
+    }
     mount([]);
     if (locked) return;
     text('r-count', data.page + '/' + data.pages);

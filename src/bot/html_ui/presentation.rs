@@ -462,13 +462,9 @@ pub fn prepare_with_pending(
             }
         }
         // Preserve every button, including source rows wider than the widget.
-        // Graph time navigation (-day / current / +day) fits one 3-button row;
-        // keeping it together leaves both rows of range presets on the first page.
-        let columns = if view.html_chart.is_some() && row_index == 0 {
-            3
-        } else {
-            2
-        };
+        // Keep the classic chart layout: time navigation, four range presets,
+        // then custom range. The client wraps only on unusually narrow cards.
+        let columns = if view.html_chart.is_some() { 4 } else { 2 };
         for buttons in row.chunks(columns) {
             let mut rendered = Vec::new();
             for button in buttons {

@@ -92,6 +92,9 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`),f.page.lang==='ru'?'Обновить':'Refresh');
     const paths=await evaluate(`({line:${get('g-line')}.getAttribute('d'),range:${get('g-range')}.getAttribute('d'),gaps:${get('g-gaps')}.getAttribute('d')})`);
     if(f.page.graph) {
+      assert.equal(await evaluate(`${get('r-prev')}.classList.contains('r-hidden')`),true,`${label}: overview has no redundant previous-page arrow`);
+      assert.equal(await evaluate(`${get('r-count')}.classList.contains('r-hidden')`),true,`${label}: overview is not presented as a page of controls`);
+      assert.equal(await evaluate(`${get('r-next')}.textContent`),f.page.lang==='ru'?'Ещё':'More');
       const buckets=f.page.graph.plot.match(/.../g),known=buckets.filter(t=>t!=='...').length;
       const runs=buckets.filter((t,i)=>t!=='...'&&(i===0||buckets[i-1]==='...')).length;
       assert.equal((paths.range.match(/M/g)||[]).length,known,`${label}: every known range retained`);
@@ -106,7 +109,9 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
       if(width>=320) {
         assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true,`${label}: plot, Now and every primary period control fit together`);
         assert.equal(await evaluate(`${doc}.querySelectorAll('[data-key]').length`),f.page.b.flat().length);
-        for(const key of ['p12','p24','p3','p7']) assert.ok(await evaluate(`${button(key)}`),`${label}: ${key} available on the first part`);
+        for(const key of ['p12','p24','p3','p7','range']) assert.ok(await evaluate(`${button(key)}`),`${label}: ${key} available on the first part`);
+        const tops=await evaluate(`['p12','p24','p3','p7'].map(k=>${doc}.querySelector('[data-key="'+k+'"]').getBoundingClientRect().top)`);
+        assert.ok(tops.every(top=>Math.abs(top-tops[0])<1),`${label}: all four presets share one row`);
       }
     } else {
       assert.equal(await evaluate(`${get('g-box')}.classList.contains('r-hidden')`),true);
@@ -136,10 +141,8 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     if(fixture.id==='numeric' && side==='right') await capture('graph-clock-corner-'+width);
   }
   await reload('numeric',{width:320,theme:'dark'});
-  await push({page:9998,pages:9999});
   await evaluate(`${win}.previewSetSafeArea(64,120)`);
-  await dimensions('wide-clock/long-counter');
-  assert.ok(await evaluate(`${get('r-count')}.getBoundingClientRect().left>=${get('r-prev')}.getBoundingClientRect().right && ${get('r-count')}.getBoundingClientRect().right<=${get('r-next')}.getBoundingClientRect().left`));
+  await dimensions('wide-clock/overview');
   const expanded=await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`);
   await evaluate(`${win}.previewSetSafeArea(64,121)`);
   assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false);
@@ -155,6 +158,14 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   for(const [id,theme] of [['numeric','light'],['binary','dark'],['empty','light'],['gaps','light'],['constant','dark']]) {
     await reload(id,{theme});await capture('graph-'+id+'-'+theme);
   }
+  await reload('controls',{width:320});
+  await push({page:9998,pages:9999});
+  await evaluate(`${win}.previewSetSafeArea(64,120)`);
+  await dimensions('wide-clock/long-counter');
+  assert.ok(await evaluate(`${get('r-count')}.getBoundingClientRect().left>=${get('r-prev')}.getBoundingClientRect().right && ${get('r-count')}.getBoundingClientRect().right<=${get('r-next')}.getBoundingClientRect().left`));
+  await reload('thermometer',{width:430,theme:'dark'});
+  await evaluate(`${win}.previewSetSafeArea(64,54)`);
+  await capture('graph-thermometer-compact');
   for(const id of ['numeric','empty']) {
     await reload(id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,80)`);

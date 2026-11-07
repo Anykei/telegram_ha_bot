@@ -7,6 +7,14 @@ async fn graph_pages_keep_history_controls_and_native_image_for_classic_mode() -
         db::user::set_user_language(1, lang, &config.db).await?;
         for entity in ["sensor.bedroom_humidity", "binary_sensor.kitchen_window"] {
             let (room, device) = device(&config, entity).await?;
+            if entity == "sensor.bedroom_humidity" {
+                db::devices::set_manual_alias(
+                    device,
+                    "Датчик влажности ванной комнаты",
+                    &config.db,
+                )
+                .await?;
+            }
             let view = router(
                 Payload::Control(ControlPayload::DeviceControl { room, device }),
                 1,
@@ -27,6 +35,16 @@ async fn graph_pages_keep_history_controls_and_native_image_for_classic_mode() -
             assert_eq!(first.graph.as_ref().unwrap().plot.len(), 96);
             assert!(prepared.pages.iter().skip(1).all(|p| p.graph.is_none()));
             assert!(first.back.is_some());
+            assert_eq!(first.rows[1].len(), 4, "All presets share one row");
+            assert!(
+                first.rows.iter().flatten().any(|b| prepared.actions[&b.key]
+                    == Payload::Control(ControlPayload::QuickAction {
+                        room,
+                        device,
+                        cmd: DeviceCmd::EnterManualInput,
+                    })),
+                "Custom range must be on the graph overview"
+            );
             for hours in [12, 24, 72, 168] {
                 assert!(
                     first.rows.iter().flatten().any(|b| prepared.actions[&b.key]
