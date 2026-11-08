@@ -88,7 +88,8 @@ import { validGraph, renderGraph } from './graph-render.js';
     for (const [value, style] of paragraphs) {
       // Bounded, Unicode-aware fragments prefer whitespace near the end. Mount
       // joins adjacent fragments again; pagination never drops source text.
-      for (const part of GRAPH ? [value].filter(Boolean) : value.match(/.{60,99}\s|.{1,100}/gsu) || []) {
+      // Small fragments keep dense reports from leaving several unused lines.
+      for (const part of GRAPH ? [value].filter(Boolean) : value.match(/.{20,39}\s|.{1,40}/gsu) || []) {
         blocks.push(node('p', 'r-text ' + style, part));
       }
     }

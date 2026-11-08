@@ -414,7 +414,16 @@ fn append_text(
     field: &str,
     text: &str,
 ) -> Result<Page> {
-    for part in split_text(text, 180) {
+    // Ordinary widgets paginate by measured client height. Do not impose a
+    // second 200-character page limit or leave room for an entire 180-byte
+    // fragment on the server. Fill the Telegram wire budget at UTF-8 boundaries.
+    // Media templates keep their existing text/controls layout contract.
+    let fragments = if empty.bounded {
+        text.chars().map(|ch| ch.to_string()).collect()
+    } else {
+        split_text(text, 180)
+    };
+    for part in fragments {
         let mut candidate = current.clone();
         let target = match field {
             "alert" => &mut candidate.alert,
@@ -426,7 +435,7 @@ fn append_text(
             + candidate.alert.chars().count()
             + candidate.notice.chars().count()
             + candidate.hint.chars().count();
-        if candidate.json().is_err() || characters > 200 {
+        if candidate.json().is_err() || (!empty.bounded && characters > 200) {
             if !current.hint.is_empty()
                 || !current.body.is_empty()
                 || !current.alert.is_empty()

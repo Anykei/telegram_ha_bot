@@ -150,6 +150,7 @@ async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> 
                 target: db::action_groups::ActionTargetRef::BotGroup(group),
             },
             AdminPayload::UiBackground,
+            AdminPayload::Status,
             AdminPayload::ConfirmBackup,
             AdminPayload::ActivityLog {
                 filter: crate::bot::router::ActivityLogFilter::All,
@@ -235,6 +236,63 @@ async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> 
     }
     if let Some(path) = std::env::var_os("HA_WIDGET_AUDIT_PATH") {
         std::fs::write(path, serde_json::to_vec_pretty(&inventory)?)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn diagnostics_text_uses_wire_capacity_without_artificial_short_pages() -> Result<()> {
+    let (config, _ha) = mock_config().await?;
+    for index in 0..12 {
+        db::activity_log::log(
+            db::activity_log::NewActivity {
+                user_id: Some(1),
+                kind: "device",
+                entity_type: "device",
+                entity_id: Some("light.living"),
+                action: "turn_on",
+                status: "ok",
+                message: Some(&format!("Событие {index}: свет включён")),
+            },
+            &config.db,
+        )
+        .await?;
+    }
+    let mut fixtures = Vec::new();
+    for route in [
+        Payload::Admin(AdminPayload::Status),
+        Payload::Admin(AdminPayload::ActivityLog {
+            filter: crate::bot::router::ActivityLogFilter::All,
+        }),
+    ] {
+        let view = router(route.clone(), 1, config.clone()).await?;
+        let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+        assert_complete(&view, &prepared)?;
+        for (index, page) in prepared.pages.iter().enumerate() {
+            fixtures
+                .push(json!({"id":format!("{route:?}-{index}"),"renderer":"release","page":page}));
+        }
+        let first = &prepared.pages[0];
+        assert!(
+            first.body.chars().count() > 200,
+            "{route:?}: prematurely split text"
+        );
+        assert!(first.json()?.len() > 950, "{route:?}: unused wire capacity");
+        assert!(first.back.is_some());
+        for page in &prepared.pages {
+            assert!(page.json()?.len() <= 1000);
+        }
+        // A report that fits the wire budget must not be split into small
+        // server pages; the client can measure and paginate it if needed.
+        let mut short = view.clone();
+        short.text = "Состояние: в норме.\n".repeat(12);
+        short.kb.inline_keyboard.clear();
+        let report = presentation::prepare(&short, "b".repeat(32), 1)?;
+        assert_eq!(report.pages.len(), 1, "{route:?}: short report must fit");
+        assert_eq!(report.pages[0].body, short.text);
+    }
+    if let Some(path) = std::env::var_os("HA_WIDGET_DIAGNOSTICS_PATH") {
+        std::fs::write(path, serde_json::to_vec_pretty(&fixtures)?)?;
     }
     Ok(())
 }

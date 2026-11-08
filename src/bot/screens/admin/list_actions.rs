@@ -5156,6 +5156,7 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
     ]);
 
     Ok(View {
+        html_title: Some(label("Статус системы", "System status").into()),
         notifications: ctx.notifications,
         text,
         kb,
