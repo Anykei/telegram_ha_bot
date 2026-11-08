@@ -1,7 +1,9 @@
 use super::super::{
     models::View,
     personal::PersonalPayload,
-    router::{AdminPayload, CameraPayload, CommandPayload, ControlPayload, Payload},
+    router::{
+        AdminPayload, CameraPayload, CommandPayload, ControlPayload, Payload, SettingsPayload,
+    },
 };
 use crate::i18n::{t, Language};
 use anyhow::{ensure, Result};
@@ -138,6 +140,140 @@ pub fn supported(view: &View) -> bool {
 pub struct Prepared {
     pub pages: Vec<Page>,
     pub actions: HashMap<String, Payload>,
+}
+
+/// Match the route and its owner/filter, not translated arrow labels.
+fn list_target(payload: &Payload) -> Option<(Payload, u16)> {
+    let mut base = payload.clone();
+    let page = match &mut base {
+        Payload::Control(
+            ControlPayload::RoomsPage { page }
+            | ControlPayload::RoomPage { page, .. }
+            | ControlPayload::ActionGroupsPage { page },
+        )
+        | Payload::Settings(
+            SettingsPayload::RoomsPage { page } | SettingsPayload::RoomPage { page, .. },
+        )
+        | Payload::AdminSettings(
+            SettingsPayload::RoomsPage { page } | SettingsPayload::RoomPage { page, .. },
+        )
+        | Payload::Personal(
+            PersonalPayload::Favorites { page } | PersonalPayload::Notifications { page },
+        )
+        | Payload::GroupDevices { page, .. }
+        | Payload::Admin(
+            AdminPayload::ListUsersPage { page }
+            | AdminPayload::ActionGroupsPage { page }
+            | AdminPayload::ActionGroupItems { page, .. }
+            | AdminPayload::RecordingRuleGroupRules { page, .. }
+            | AdminPayload::RecordingRuleGroupRulesForRoom { page, .. },
+        ) => page,
+        _ => return None,
+    };
+    let index = *page;
+    *page = 0;
+    Some((base, index))
+}
+
+pub(crate) fn list_identity(payload: &Payload) -> Payload {
+    match payload {
+        Payload::Control(ControlPayload::RoomsPage { .. }) => Payload::Control(ControlPayload::ListRooms),
+        Payload::Control(ControlPayload::RoomPage { room, .. }) => Payload::Control(ControlPayload::RoomDetail { room: *room }),
+        Payload::Control(ControlPayload::ActionGroupsPage { .. }) => Payload::Control(ControlPayload::ActionGroups),
+        Payload::Settings(SettingsPayload::RoomsPage { .. }) => Payload::Settings(SettingsPayload::ListRooms),
+        Payload::AdminSettings(SettingsPayload::RoomsPage { .. }) => Payload::AdminSettings(SettingsPayload::ListRooms),
+        Payload::Settings(SettingsPayload::RoomPage { room, .. }) => Payload::Settings(SettingsPayload::RoomDetail { room: *room }),
+        Payload::AdminSettings(SettingsPayload::RoomPage { room, .. }) => Payload::AdminSettings(SettingsPayload::RoomDetail { room: *room }),
+        Payload::Admin(AdminPayload::ListUsersPage { .. }) => Payload::Admin(AdminPayload::ListUsers),
+        Payload::Admin(AdminPayload::ActionGroupsPage { .. }) => Payload::Admin(AdminPayload::ActionGroups),
+        _ => list_target(payload).map(|(base, _)| base).unwrap_or_else(|| payload.clone()),
+    }
+}
+
+struct SourcePager {
+    row: usize,
+    position: (String, Option<String>, Option<String>),
+}
+
+fn source_pager(view: &View) -> Option<SourcePager> {
+    let mut offset = 0;
+    for (index, row) in view.kb.inline_keyboard.iter().enumerate() {
+        let start = offset;
+        offset += row.len();
+        let targets = row
+            .iter()
+            .map(|button| {
+                let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                    return None;
+                };
+                list_target(&Payload::from_string(data).ok()?)
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(targets) = targets.filter(|t| !t.is_empty() && t.len() <= 3) else {
+            continue;
+        };
+        if !targets.iter().all(|(base, _)| base == &targets[0].0) {
+            continue;
+        }
+        for (button, (_, page)) in row.iter().zip(&targets) {
+            let Some((left, right)) = button.text.split_once('/') else {
+                continue;
+            };
+            let (Ok(current), Ok(pages)) =
+                (left.trim().parse::<u16>(), right.trim().parse::<u16>())
+            else {
+                continue;
+            };
+            if current != page + 1 || current > pages || pages < 2 {
+                continue;
+            }
+            let previous = targets
+                .iter()
+                .position(|(_, p)| p < page)
+                .map(|i| format!("a{}", start + i));
+            let next = targets
+                .iter()
+                .position(|(_, p)| p > page)
+                .map(|i| format!("a{}", start + i));
+            return Some(SourcePager {
+                row: index,
+                position: (
+                    format!(
+                        "{} {current}/{pages}",
+                        if view.lang == Language::Ru {
+                            "Список"
+                        } else {
+                            "List"
+                        }
+                    ),
+                    previous,
+                    next,
+                ),
+            });
+        }
+    }
+    None
+}
+
+pub(super) fn is_source_pager_button(view: &View, index: usize) -> bool {
+    source_pager(view).is_some_and(|pager| {
+        let start: usize = view.kb.inline_keyboard[..pager.row]
+            .iter()
+            .map(Vec::len)
+            .sum();
+        (start..start + view.kb.inline_keyboard[pager.row].len()).contains(&index)
+    })
+}
+
+pub(super) fn bounded_label(label: &str) -> String {
+    let mut lines = label.lines();
+    let first = lines.next().unwrap_or_default();
+    let rest = lines.collect::<Vec<_>>().join(" ");
+    if rest.is_empty() {
+        first.into()
+    } else {
+        format!("{first}\n{rest}")
+    }
 }
 fn kind(payload: &Payload) -> &'static str {
     match payload {
@@ -310,6 +446,10 @@ pub fn prepare_with_pending(
     let mut structured = view.clone();
     super::super::screen_structure::apply(&mut structured);
     let view = &structured;
+    let bounded = !view.html_media_controls
+        && view.html_chart.is_none()
+        && !matches!(view.payload, Payload::Camera(_));
+    let pager = bounded.then(|| source_pager(view)).flatten();
     let parent = super::super::screen_structure::parent(view);
     let back = parent.as_ref().map(|parent| {
         view.kb
@@ -389,8 +529,8 @@ pub fn prepare_with_pending(
         rows: Vec::new(),
         read: "read".into(),
         back,
-        list: None,
-        bounded: false,
+        list: pager.as_ref().map(|p| p.position.clone()),
+        bounded,
         prev: Some("p9999".into()),
         next: Some("p9999".into()),
         graph: None,
@@ -502,7 +642,8 @@ pub fn prepare_with_pending(
                 };
                 let payload = Payload::from_string(data)?;
                 let key = format!("a{}", actions.len());
-                let pinned = empty.back.as_deref() == Some(&key)
+                let pinned = pager.as_ref().is_some_and(|pager| pager.row == row_index)
+                    || empty.back.as_deref() == Some(&key)
                     || (button.text == t(view.lang, "control.refresh")
                         && payload == view.payload.for_refresh());
                 if !pinned {
@@ -515,11 +656,14 @@ pub fn prepare_with_pending(
                         _ => None,
                     };
                     rendered.push(Button {
-                        text: view
-                            .html_button_labels
-                            .get(data)
-                            .unwrap_or(&button.text)
-                            .clone(),
+                        text: {
+                            let label = view.html_button_labels.get(data).unwrap_or(&button.text);
+                            if bounded {
+                                bounded_label(label)
+                            } else {
+                                label.clone()
+                            }
+                        },
                         key: key.clone(),
                         kind: if let Some(status) = pending_kind {
                             status
@@ -548,10 +692,28 @@ pub fn prepare_with_pending(
                 && (candidate.rows.len() > if current.graph.is_some() { 3 } else { 4 }
                     || (candidate.rows.len() > 2 && text_chars > 80));
             if graph_overflow || candidate.json().is_err() {
-                parts.push(current);
-                current = empty.clone();
-                current.rows.push(rendered);
-                current.json()?;
+                let mut fresh = empty.clone();
+                fresh.rows.push(rendered.clone());
+                if !graph_overflow && fresh.json().is_err() && rendered.len() > 1 {
+                    // A wide row may exceed the wire budget even on an empty
+                    // page. Keep each labelled action intact rather than fall back.
+                    for button in rendered {
+                        let mut candidate = current.clone();
+                        candidate.rows.push(vec![button.clone()]);
+                        if candidate.json().is_err() {
+                            parts.push(current);
+                            current = empty.clone();
+                            current.rows.push(vec![button]);
+                            current.json()?;
+                        } else {
+                            current = candidate;
+                        }
+                    }
+                } else {
+                    parts.push(current);
+                    current = fresh;
+                    current.json()?;
+                }
             } else {
                 current = candidate;
             }

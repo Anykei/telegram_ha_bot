@@ -10,6 +10,9 @@ mod navigation_tests;
 #[path = "admin_confirmation_tests.rs"]
 mod admin_confirmation_tests;
 
+#[path = "list_navigation_tests.rs"]
+mod list_navigation_tests;
+
 #[tokio::test]
 async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> {
     let (config, _) = mock_config().await?;

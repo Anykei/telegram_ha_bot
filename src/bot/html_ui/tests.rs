@@ -387,8 +387,12 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         assert_eq!(prepared.actions[&key], Payload::from_string(data)?);
         if let Some(visible) = rendered.iter().find(|b| b.key == key) {
             assert_eq!(
-                &visible.text,
-                view.html_button_labels.get(data).unwrap_or(&button.text)
+                visible.text,
+                if prepared.pages[0].bounded {
+                    presentation::bounded_label(view.html_button_labels.get(data).unwrap_or(&button.text))
+                } else {
+                    view.html_button_labels.get(data).unwrap_or(&button.text).clone()
+                }
             );
             order.push(key);
         } else {
@@ -396,11 +400,12 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
                 prepared
                     .pages
                     .iter()
-                    .all(|p| p.back.as_deref() == Some(&key))
+                    .any(|p| p.back.as_deref() == Some(&key))
+                    || presentation::is_source_pager_button(view, index)
                     || (button.text == crate::i18n::t(view.lang, "control.refresh")
                         && prepared.actions[&key] == view.payload.for_refresh()),
-                "Missing action: {}",
-                button.text
+                "Missing action: {} on {:?}",
+                button.text, view.payload
             );
         }
     }

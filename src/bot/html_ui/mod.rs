@@ -48,6 +48,8 @@ struct WidgetSession {
     index: usize,
     claimed: bool,
     anchor: Option<Payload>,
+    /// One-shot source-list destination and direction (backwards opens its last part).
+    list_navigation: Option<(Payload, bool)>,
 }
 #[derive(Default)]
 pub struct HtmlUi {
@@ -176,8 +178,14 @@ pub async fn deliver(
         .html_ui
         .sessions
         .get(&user)
-        .filter(|old| old.view.payload.for_refresh() == view.payload.for_refresh())
+        .filter(|old| {
+            old.list_navigation.as_ref().is_some_and(|(target, _)| target == &presentation::list_identity(&view.payload.for_refresh()))
+                || old.view.payload.for_refresh() == view.payload.for_refresh()
+        })
         .map(|old| {
+            if let Some((_, backwards)) = old.list_navigation.as_ref().filter(|(target, _)| target == &presentation::list_identity(&view.payload.for_refresh())) {
+                return if *backwards { pages.len() - 1 } else { 0 };
+            }
             old.anchor
                 .as_ref()
                 .and_then(|anchor| {
@@ -263,6 +271,7 @@ pub async fn deliver(
             actions,
             index,
             claimed: false,
+            list_navigation: None,
             anchor: None,
         },
     );
@@ -393,6 +402,13 @@ pub async fn resolve(
     }
     if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
         session.claimed = true;
+        session.list_navigation = snapshot.pages[snapshot.index].list.as_ref().and_then(|(_, previous, next)| {
+            if previous.as_deref() == Some(parts[2]) {
+                Some((presentation::list_identity(&action.for_refresh()), true))
+            } else if next.as_deref() == Some(parts[2]) {
+                Some((presentation::list_identity(&action.for_refresh()), false))
+            } else { None }
+        });
         if let Payload::Control(super::router::ControlPayload::QuickAction { room, device, cmd }) =
             action
         {
