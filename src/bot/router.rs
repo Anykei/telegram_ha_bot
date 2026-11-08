@@ -1052,6 +1052,11 @@ pub enum AdminPayload {
         room: i64,
         device: i64,
     },
+    SetCameraManualArchive {
+        room: i64,
+        camera: i64,
+        enabled: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -1163,6 +1168,7 @@ fn legacy_admin_mutation(payload: &AdminPayload) -> bool {
         AdminPayload::CreateBackup
             | AdminPayload::AddUser { .. }
             | AdminPayload::DeleteCamera { .. }
+            | AdminPayload::SetCameraManualArchive { .. }
             | AdminPayload::ToggleRecordingRule { .. }
             | AdminPayload::DeleteRecordingRule { .. }
             | AdminPayload::CycleRecordingDefaultRetention { .. }
@@ -1249,6 +1255,12 @@ impl Payload {
     /// Refreshing them must only read state, including after a restart.
     pub fn for_refresh(&self) -> Self {
         match self {
+            Self::Admin(AdminPayload::SetCameraManualArchive { room, camera, .. }) => {
+                Self::Admin(AdminPayload::RoomCameraDetail {
+                    room: *room,
+                    camera: *camera,
+                })
+            }
             Self::Admin(AdminPayload::WizardDraft { id, .. }) => {
                 Self::Admin(AdminPayload::WizardResume { id: *id })
             }
@@ -3072,6 +3084,12 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
             super::screens::admin::list_actions::render_room_camera_detail(ctx, room, camera)
                 .await?,
         ),
+        AdminPayload::SetCameraManualArchive {
+            room, camera, enabled,
+        } => {
+            db::cameras::set_manual_clip_archive(camera, room, enabled, &ctx.config.db).await?;
+            super::screens::admin::list_actions::render_room_camera_detail(ctx, room, camera).await
+        }
         AdminPayload::PromptAddCamera { room } => {
             Ok(super::screens::admin::list_actions::render_add_camera_input(ctx, room).await?)
         }
@@ -5618,6 +5636,7 @@ mod tests {
             AdminPayload::CameraRooms,
             AdminPayload::RoomCameras { room: 1 },
             AdminPayload::RoomCameraDetail { room: 1, camera: 2 },
+            AdminPayload::SetCameraManualArchive { room: 1, camera: 2, enabled: true },
             AdminPayload::RoomCameraSnapshot { room: 1, camera: 2 },
             AdminPayload::RoomCameraClip {
                 room: 1,
@@ -6138,6 +6157,7 @@ mod tests {
             AdminPayload::CameraRooms => "AdminPayload::CameraRooms",
             AdminPayload::RoomCameras { .. } => "AdminPayload::RoomCameras",
             AdminPayload::RoomCameraDetail { .. } => "AdminPayload::RoomCameraDetail",
+            AdminPayload::SetCameraManualArchive { .. } => "AdminPayload::SetCameraManualArchive",
             AdminPayload::RoomCameraSnapshot { .. } => "AdminPayload::RoomCameraSnapshot",
             AdminPayload::RoomCameraClip { .. } => "AdminPayload::RoomCameraClip",
             AdminPayload::PromptAddCamera { .. } => "AdminPayload::PromptAddCamera",

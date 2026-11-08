@@ -2774,20 +2774,27 @@
         ],
         [
           [
-            "🩺 Диагностика",
+            "☐ Сохранять ручные видео в архив",
             "a5",
+            "action"
+          ]
+        ],
+        [
+          [
+            "🩺 Диагностика",
+            "a6",
             "nav"
           ]
         ],
         [
           [
             "🗑 Удалить камеру",
-            "a6",
+            "a7",
             "nav"
           ]
         ]
       ],
-      "back": "a7",
+      "back": "a8",
       "body": "Фото и видео придут в чат.",
       "context": "🛋 Гостиная",
       "kind": "list",
@@ -2928,20 +2935,27 @@
         ],
         [
           [
-            "🩺 Diagnostics",
+            "☐ Save manual videos to archive",
             "a5",
+            "action"
+          ]
+        ],
+        [
+          [
+            "🩺 Diagnostics",
+            "a6",
             "nav"
           ]
         ],
         [
           [
             "🗑 Delete camera",
-            "a6",
+            "a7",
             "nav"
           ]
         ]
       ],
-      "back": "a7",
+      "back": "a8",
       "body": "Photos and videos arrive in chat.",
       "context": "🛋 Гостиная",
       "kind": "list",

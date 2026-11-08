@@ -350,3 +350,67 @@ async fn camera_archive_thumbnails_keep_html_media_actions_and_recording_warning
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn manual_archive_setting_is_persistent_idempotent_and_admin_only() -> Result<()> {
+    let (config, camera) = camera_config().await?;
+    let detail = Payload::Admin(AdminPayload::RoomCameraDetail { room: 1, camera });
+    let set = |enabled| {
+        Payload::Admin(AdminPayload::SetCameraManualArchive {
+            room: 1,
+            camera,
+            enabled,
+        })
+    };
+    assert!(!db::cameras::archives_manual_clips(camera, &config.db).await?);
+    for enabled in [true, true, false] {
+        let view = router(set(enabled), 1, config.clone()).await?;
+        assert_eq!(view.payload, detail);
+        assert_eq!(set(enabled).for_refresh(), detail);
+        assert_eq!(
+            db::cameras::archives_manual_clips(camera, &config.db).await?,
+            enabled
+        );
+        let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+        assert_complete(&view, &prepared)?;
+        let key = prepared
+            .actions
+            .iter()
+            .find(|(_, p)| **p == set(!enabled))
+            .unwrap()
+            .0;
+        let button = prepared
+            .pages
+            .iter()
+            .flat_map(|p| p.rows.iter().flatten())
+            .find(|b| &b.key == key)
+            .unwrap();
+        assert!(button.text.starts_with(if enabled { "☑ " } else { "☐ " }));
+        assert_eq!(button.kind, if enabled { "selected" } else { "action" });
+        assert!(view
+            .kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .any(|b| b.text == button.text));
+    }
+    db::add_user(2, &config.db).await?;
+    let _ = router(set(true), 2, config.clone()).await?;
+    assert!(
+        !db::cameras::archives_manual_clips(camera, &config.db).await?,
+        "A non-admin cannot enable archive saves"
+    );
+    assert!(router(
+        Payload::Admin(AdminPayload::SetCameraManualArchive {
+            room: 999,
+            camera,
+            enabled: true
+        }),
+        1,
+        config.clone()
+    )
+    .await
+    .is_err());
+    assert!(!db::cameras::archives_manual_clips(camera, &config.db).await?);
+    Ok(())
+}

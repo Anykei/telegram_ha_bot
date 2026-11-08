@@ -1588,6 +1588,7 @@ async fn send_camera_clip(
         chat_id,
         bytes,
         &format!("🎞 {} · {}с", camera.name, seconds),
+        seconds,
         &access,
     )
     .await;
@@ -1651,6 +1652,7 @@ async fn send_manual_camera_video(
     chat_id: ChatId,
     bytes: Vec<u8>,
     caption: &str,
+    seconds: u32,
     access: &CameraDeliveryAccess,
 ) -> Result<bool> {
     access.check().await?;
@@ -1659,11 +1661,51 @@ async fn send_manual_camera_video(
     // the blocking writer is still creating or writing its input file.
     let writer_owner = owner.clone();
     tokio::task::spawn_blocking(move || std::fs::write(writer_owner.path(), bytes)).await??;
+    access.check().await?;
+    let archived = crate::core::camera_recording::archive_manual_clip(
+        access.config.clone(),
+        access.camera_id,
+        access.user_id,
+        seconds,
+        owner.clone(),
+    )
+    .await;
+    let lang = db::get_user_language(access.user_id, &access.config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(access.config.default_language);
+    let caption = match archived {
+        Ok(Some(_)) => format!(
+            "{caption}\n📁 {}",
+            if lang == crate::i18n::Language::En {
+                "Saved to archive"
+            } else {
+                "Сохранено в архив"
+            }
+        ),
+        Ok(None) => caption.to_owned(),
+        Err(error) => {
+            log::warn!(
+                "Manual video archive failed: camera={}, error={:#}",
+                access.camera_id,
+                error
+            );
+            format!(
+                "{caption}\n⚠️ {}",
+                if lang == crate::i18n::Language::En {
+                    "Could not save to archive. Check storage."
+                } else {
+                    "Не удалось сохранить в архив. Проверьте хранилище."
+                }
+            )
+        }
+    };
     send_camera_video_file(
         bot,
         chat_id,
         &owner.path(),
-        caption,
+        &caption,
         None,
         access,
         Some(owner.clone()),
@@ -5506,7 +5548,7 @@ mod tests {
         ])
         .await?;
         assert!(
-            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", &access).await?
+            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", 10, &access).await?
         );
         // Invalid oversized input must enter compression and produce a readable
         // error instead of sending a video that Telegram would reject.
@@ -5516,6 +5558,7 @@ mod tests {
                 ChatId(42),
                 vec![0; TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES as usize + 1],
                 "Manual 120s",
+                120,
                 &access
             )
             .await?

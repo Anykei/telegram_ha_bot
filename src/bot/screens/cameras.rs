@@ -302,9 +302,12 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
                 .num_seconds()
                 .max(0);
             format!(
-                "\n\nREC · {} #{} · {} {} · {}",
-                t(ctx.lang, "camera.recording.rule"),
-                session.rule_id,
+                "\n\nREC · {} · {} {} · {}",
+                session.rule_id
+                    .map(|id| format!("{} #{}", t(ctx.lang, "camera.recording.rule"), id))
+                    .unwrap_or_else(|| {
+                        localized(ctx.lang, "Ручная запись", "Manual recording").into()
+                    }),
                 t(ctx.lang, "camera.recording.remaining"),
                 crate::core::camera_recording::format_recording_duration(remaining),
                 session.trigger_summary
@@ -502,7 +505,7 @@ pub async fn render_recording_archive_page(
 
     for session in &sessions {
         rows.push(vec![InlineKeyboardButton::callback(
-            recording_session_label(session).await,
+            recording_session_label(session, ctx.lang).await,
             Payload::Camera(CameraPayload::RecordingSession {
                 camera: camera_id,
                 session: session.id,
@@ -1059,7 +1062,11 @@ pub async fn render_recording_session(
         t(ctx.lang, "camera.recording.camera"),
         camera.name,
         t(ctx.lang, "camera.recording.event"),
-        session.trigger_summary,
+        if session.rule_id.is_none() {
+            localized(ctx.lang, "Ручная запись", "Manual recording")
+        } else {
+            &session.trigger_summary
+        },
         t(ctx.lang, "camera.recording.start"),
         crate::bot::format::datetime(session.first_event_at),
         t(ctx.lang, "camera.recording.end"),
@@ -1312,6 +1319,7 @@ fn shorten_recording_error(error: &str) -> String {
 
 async fn recording_session_label(
     session: &crate::db::camera_recording_sessions::RecordingSession,
+    lang: Language,
 ) -> String {
     let status_icon = match session.status.as_str() {
         "ready" => "🎞",
@@ -1331,10 +1339,15 @@ async fn recording_session_label(
         .max(0);
 
     format!(
-        "{}{} {} · {}",
+        "{}{} {} · {}{}",
         pin_icon,
         status_icon,
         crate::bot::format::datetime(session.first_event_at),
-        crate::core::camera_recording::format_recording_duration(duration)
+        crate::core::camera_recording::format_recording_duration(duration),
+        if session.rule_id.is_none() {
+            localized(lang, " · Ручная", " · Manual")
+        } else {
+            ""
+        }
     )
 }

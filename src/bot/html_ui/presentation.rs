@@ -668,7 +668,7 @@ pub fn prepare_with_pending(
                         key: key.clone(),
                         kind: if let Some(status) = pending_kind {
                             status
-                        } else if button.text.starts_with("✓ ") {
+                        } else if button.text.starts_with("✓ ") || button.text.starts_with("☑ ") {
                             "selected"
                         } else {
                             kind(&payload)

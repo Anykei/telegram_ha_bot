@@ -572,7 +572,7 @@ mod tests {
             .await?
             .unwrap();
         assert_eq!(session.camera_id, independent_camera);
-        assert_eq!(session.rule_id, independent);
+        assert_eq!(session.rule_id, Some(independent));
         assert_eq!(session.status, "queued");
         let broken_sessions: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM camera_recording_sessions WHERE camera_id=?")

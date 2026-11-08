@@ -523,6 +523,25 @@ pub async fn render_room_camera_detail(
         rows.push(interval_row);
     }
 
+    let archive_manual =
+        crate::db::cameras::archives_manual_clips(camera.id, &ctx.config.db).await?;
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{} {}",
+            if archive_manual { "☑" } else { "☐" },
+            user_text(
+                ctx.lang,
+                "Сохранять ручные видео в архив",
+                "Save manual videos to archive"
+            )
+        ),
+        Payload::Admin(AdminPayload::SetCameraManualArchive {
+            room: room_id,
+            camera: camera.id,
+            enabled: !archive_manual,
+        })
+        .to_string(),
+    )]);
     rows.push(vec![InlineKeyboardButton::callback(
         t(ctx.lang, "admin.camera.health"),
         Payload::Admin(AdminPayload::CameraHealth {

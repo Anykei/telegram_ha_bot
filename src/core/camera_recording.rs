@@ -389,8 +389,10 @@ async fn process_recording_job(bot: Bot, config: Arc<AppConfig>, job: RecordingJ
         return Ok(());
     }
 
-    let Some(rule) = db::camera_recording_rules::get_rule(session.rule_id, &config.db).await?
-    else {
+    let Some(rule_id) = session.rule_id else {
+        return Ok(());
+    };
+    let Some(rule) = db::camera_recording_rules::get_rule(rule_id, &config.db).await? else {
         db::camera_recording_sessions::mark_failed(
             session.id,
             "recording rule not found",
@@ -838,6 +840,100 @@ fn segment_relative_path(camera_id: i64, session_id: i64, segment_index: i64) ->
     )
 }
 
+/// Save the captured source once, before Telegram compression. The tracked task
+/// owns its temporary input and completes even if the requesting widget closes.
+pub(crate) async fn archive_manual_clip(
+    config: Arc<AppConfig>,
+    camera_id: i64,
+    user_id: u64,
+    seconds: u32,
+    source: crate::core::cameras::TemporaryMedia,
+) -> Result<Option<i64>> {
+    if !db::cameras::archives_manual_clips(camera_id, &config.db).await? {
+        return Ok(None);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    crate::core::cameras::spawn_media_task(async move {
+        let result = store_manual_clip(&config, camera_id, user_id, seconds, source).await;
+        let _ = tx.send(result);
+    })?;
+    rx.await.context("Manual archive task stopped")?
+}
+
+async fn store_manual_clip(
+    config: &Arc<AppConfig>,
+    camera_id: i64,
+    user_id: u64,
+    seconds: u32,
+    source: crate::core::cameras::TemporaryMedia,
+) -> Result<Option<i64>> {
+    let retention = db::settings::get_u32_or(
+        db::settings::CAMERA_RECORDING_DEFAULT_RETENTION_DAYS,
+        30,
+        &config.db,
+    )
+    .await;
+    let Some(session) = db::camera_recording_sessions::create_manual_session(
+        camera_id, user_id, seconds, retention, &config.db,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let result = async {
+        let segment = db::camera_recording_segments::create_segment(
+            session,
+            camera_id,
+            1,
+            i64::from(seconds),
+            &config.db,
+        )
+        .await?;
+        let relative = segment_relative_path(camera_id, session, 1);
+        register_recording_paths(segment, &relative, &config.db).await?;
+        let writer = WriterLease::begin(segment, "manual_import", &config.db).await?;
+        let result = FILE_WRITER
+            .scope(writer.clone(), async {
+                let final_path = Path::new(&config.camera_recording_storage_root).join(&relative);
+                let tmp_path = tmp_segment_path(&final_path);
+                let size = crate::core::cameras::run_recording_io_job(move || {
+                    crate::core::cameras::check_native_cancelled()?;
+                    std::fs::create_dir_all(
+                        final_path.parent().context("Archive directory missing")?,
+                    )?;
+                    let size = std::fs::copy(source.path(), &tmp_path)?;
+                    ensure!(size > 0, "Manual recording is empty");
+                    std::fs::rename(&tmp_path, &final_path)?;
+                    Ok(i64::try_from(size)?)
+                })
+                .await?;
+                db::camera_recording_segments::mark_ready(
+                    segment,
+                    &relative,
+                    size,
+                    Utc::now(),
+                    &config.db,
+                )
+                .await
+            })
+            .await;
+        writer.finish().await?;
+        result?;
+        ensure!(
+            db::camera_recording_sessions::mark_ready_if_due(session, Utc::now(), &config.db)
+                .await?,
+            "Manual recording was removed before completion"
+        );
+        Ok(Some(session))
+    }
+    .await;
+    if let Err(ref error) = result {
+        let _ = db::camera_recording_sessions::mark_failed(session, &error.to_string(), &config.db)
+            .await;
+    }
+    result
+}
+
 fn tmp_segment_path(final_path: &Path) -> PathBuf {
     let file_name = final_path
         .file_name()
@@ -1239,8 +1335,10 @@ async fn send_ready_notification(bot: Bot, config: Arc<AppConfig>, session_id: i
         return Ok(());
     }
 
-    let Some(rule) = db::camera_recording_rules::get_rule(session.rule_id, &config.db).await?
-    else {
+    let Some(rule_id) = session.rule_id else {
+        return Ok(());
+    };
+    let Some(rule) = db::camera_recording_rules::get_rule(rule_id, &config.db).await? else {
         return Ok(());
     };
     if !rule.notifications_enabled() {

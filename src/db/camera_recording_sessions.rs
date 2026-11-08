@@ -548,7 +548,7 @@ pub enum SessionAction {
 pub struct RecordingSession {
     pub id: i64,
     pub event_group_id: String,
-    pub rule_id: i64,
+    pub rule_id: Option<i64>,
     pub camera_id: i64,
     pub extended_by_rule_ids: Option<String>,
     pub trigger_summary: String,
@@ -583,6 +583,33 @@ pub enum RecordingArchiveFilter {
     Failed,
     Pinned,
     Rule(i64),
+}
+
+/// Import the already captured clip independently of any event-driven session.
+/// Recheck the camera setting at the write boundary; manual imports never merge.
+pub async fn create_manual_session(
+    camera_id: i64,
+    user_id: u64,
+    seconds: u32,
+    retention_days: u32,
+    pool: &SqlitePool,
+) -> Result<Option<i64>> {
+    let now = Utc::now();
+    Ok(sqlx::query_scalar(
+        "INSERT INTO camera_recording_sessions(event_group_id,rule_id,camera_id,trigger_summary,status,first_event_at,last_event_at,stop_after_at,started_at,expires_at,notification_sent_at)
+         SELECT 'manual:' || lower(hex(randomblob(16))),NULL,id,?,'recording',?,?,?,?,?,?
+         FROM cameras WHERE id=? AND enabled != 0 AND archive_manual_clips != 0 RETURNING id",
+    )
+    .bind(format!("Manual video · user #{user_id} · {seconds}s"))
+    .bind(now - Duration::seconds(i64::from(seconds)))
+    .bind(now)
+    .bind(now)
+    .bind(now - Duration::seconds(i64::from(seconds)))
+    .bind(now + Duration::days(i64::from(retention_days.clamp(1,365))))
+    .bind(now)
+    .bind(camera_id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 pub async fn start_or_extend_session(
@@ -620,6 +647,7 @@ async fn start_or_extend_session_inner(
         WHERE camera_id = ?
           AND deleted_at IS NULL
           AND status IN ('queued', 'recording')
+          AND rule_id IS NOT NULL
         ORDER BY created_at DESC
         LIMIT 1
         "#,
@@ -860,6 +888,7 @@ pub async fn get_active_camera_session(
         WHERE camera_id = ?
           AND deleted_at IS NULL
           AND status IN ('queued', 'recording')
+          AND rule_id IS NOT NULL
         ORDER BY created_at DESC
         LIMIT 1
         "#,
@@ -887,6 +916,7 @@ pub async fn list_active_sessions_for_cameras(
         FROM camera_recording_sessions
         WHERE deleted_at IS NULL
           AND status IN ('queued', 'recording')
+          AND rule_id IS NOT NULL
           AND camera_id IN (
         "#,
     );

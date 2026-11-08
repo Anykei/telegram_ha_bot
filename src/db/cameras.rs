@@ -19,6 +19,31 @@ pub struct NewCamera<'a> {
     pub clip_seconds: u32,
 }
 
+pub async fn archives_manual_clips(camera_id: i64, pool: &SqlitePool) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT archive_manual_clips != 0 FROM cameras WHERE id=? AND enabled != 0",
+    )
+    .bind(camera_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(false))
+}
+
+pub async fn set_manual_clip_archive(
+    camera_id: i64,
+    room_id: i64,
+    enabled: bool,
+    pool: &SqlitePool,
+) -> Result<()> {
+    let updated = sqlx::query("UPDATE cameras SET archive_manual_clips=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND room_id=? AND enabled != 0")
+        .bind(enabled).bind(camera_id).bind(room_id).execute(pool).await?;
+    anyhow::ensure!(
+        updated.rows_affected() == 1,
+        "Camera is unavailable in this room"
+    );
+    Ok(())
+}
+
 pub struct CameraPreRollTarget {
     pub camera: Camera,
     pub pre_roll_seconds: i64,

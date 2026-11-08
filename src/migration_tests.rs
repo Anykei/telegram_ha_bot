@@ -104,3 +104,84 @@ async fn remediation_upgrade_preserves_legacy_data_and_is_idempotent() -> anyhow
     pool.close().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn manual_archive_upgrade_preserves_recordings_ownership_and_sequences() -> anyhow::Result<()>
+{
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    let mut baseline = sqlx::migrate::Migrator::new(Path::new("migrations")).await?;
+    baseline.migrations = Cow::Owned(
+        baseline
+            .iter()
+            .filter(|m| m.version < 20261108090000)
+            .cloned()
+            .collect(),
+    );
+    baseline.run(&pool).await?;
+    sqlx::raw_sql(r#"
+        INSERT INTO cameras(id,key,name,stream_url) VALUES(1,'test','Test','rtsp://unused');
+        INSERT INTO camera_recording_rules(id,name,camera_id) VALUES(1,'Rule',1);
+        INSERT INTO camera_recording_sessions(id,event_group_id,rule_id,camera_id,trigger_summary,status,first_event_at,last_event_at,stop_after_at,expires_at,pinned_at,pre_roll_actual_seconds)
+        VALUES(1,'event',1,1,'test','ready',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,datetime('now','+30 days'),CURRENT_TIMESTAMP,7);
+        INSERT INTO camera_recording_segments(id,session_id,camera_id,segment_index,file_path,duration_s,size_bytes,status,expires_at)
+        VALUES(1,1,1,1,'existing.mp4',10,1234,'ready',datetime('now','+30 days'));
+        INSERT INTO recording_files(path,session_id,segment_id,size_bytes,delete_pending,attempts,last_error) VALUES('existing.mp4',1,1,1234,1,2,'retry');
+        INSERT INTO recording_writers(id,session_id,segment_id,kind) VALUES(7,1,1,'capture');
+        UPDATE sqlite_sequence SET seq=100 WHERE name='camera_recording_sessions';
+    "#).execute(&pool).await?;
+    let upgrade = sqlx::migrate::Migrator::new(Path::new("migrations")).await?;
+    upgrade.run(&pool).await?;
+    upgrade.run(&pool).await?;
+    assert!(!crate::db::cameras::archives_manual_clips(1, &pool).await?);
+    let session = crate::db::camera_recording_sessions::get_session(1, &pool)
+        .await?
+        .unwrap();
+    assert_eq!(session.rule_id, Some(1));
+    assert_eq!(session.pre_roll_actual_seconds, 7);
+    assert!(session.pinned_at.is_some());
+    let segments = crate::db::camera_recording_segments::list_ready_segments(1, &pool).await?;
+    assert_eq!(segments[0].file_path.as_deref(), Some("existing.mp4"));
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64, String)>(
+            "SELECT size_bytes,delete_pending,attempts,last_error FROM recording_files"
+        )
+        .fetch_one(&pool)
+        .await?,
+        (1234, 1, 2, "retry".into())
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64, String)>(
+            "SELECT id,session_id,segment_id,kind FROM recording_writers"
+        )
+        .fetch_one(&pool)
+        .await?,
+        (7, 1, 1, "capture".into())
+    );
+    sqlx::query("UPDATE cameras SET archive_manual_clips=1 WHERE id=1")
+        .execute(&pool)
+        .await?;
+    assert_eq!(
+        crate::db::camera_recording_sessions::create_manual_session(1, 42, 10, 7, &pool).await?,
+        Some(101)
+    );
+    assert!(sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await?
+        .is_empty());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+            .fetch_one(&pool)
+            .await?,
+        "ok"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+            .fetch_one(&pool)
+            .await?,
+        1
+    );
+    Ok(())
+}
