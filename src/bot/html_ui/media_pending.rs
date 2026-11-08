@@ -220,6 +220,7 @@ struct Entry {
     generation: String,
     target: Target,
     outcome: Option<Outcome>,
+    shown: bool,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -262,6 +263,7 @@ impl Registry {
             generation: generation.into(),
             target: target.clone(),
             outcome: None,
+            shown: false,
         });
         Some(Operation {
             config: config.clone(),
@@ -282,25 +284,41 @@ impl Registry {
                 })
             })
     }
-    pub fn decorate(&self, user: u64, generation: &str, view: &mut View) {
+    pub fn decorate(&self, user: u64, generation: &str, view: &mut View) -> Option<u64> {
         let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(entries) = entries.get(&user) else {
-            return;
-        };
-        let Some(outcome) = entries
+        let entries = entries.get(&user)?;
+        let entry = entries
             .iter()
             .rev()
-            .find(|e| e.generation == generation && e.target.matches_view(&view.payload))
-            .and_then(|e| e.outcome)
-        else {
-            return;
-        };
+            .find(|e| e.generation == generation && e.target.matches_view(&view.payload))?;
+        let outcome = entry.outcome?;
         let text = outcome.text(view.lang == Language::En);
         if outcome.failed > 0 || outcome.uncertain {
             view.alert = Some(text);
         } else {
             view.notice = Some(text);
         }
+        Some(entry.id)
+    }
+    pub fn mark_shown(&self, user: u64, id: Option<u64>) {
+        let Some(id) = id else {
+            return;
+        };
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = entries
+            .get_mut(&user)
+            .and_then(|entries| entries.iter_mut().find(|e| e.id == id))
+        {
+            entry.shown = true;
+        }
+    }
+    fn is_shown(&self, user: u64, id: u64) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&user)
+            .and_then(|entries| entries.iter().find(|e| e.id == id))
+            .is_none_or(|e| e.shown)
     }
     fn finish(&self, user: u64, id: u64, outcome: Outcome) -> bool {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
@@ -334,8 +352,26 @@ impl Operation {
         }
     }
     pub async fn complete(mut self, outcome: Outcome) {
+        let Some(id) = self.id else {
+            return;
+        };
         self.release(outcome);
-        for _ in 0..20 {
+        // A queued refresh may be skipped while a callback owns the UI. Keep
+        // requesting a coalesced read until this exact receipt was displayed.
+        for _ in 0..120 {
+            if self.config.html_ui.media.is_shown(self.user, id) {
+                return;
+            }
+            if self
+                .config
+                .runtime_status
+                .read()
+                .await
+                .shutdown_requested_at
+                .is_some()
+            {
+                return;
+            }
             if !db::admission_is_current(self.user, &self.generation, &self.config.db)
                 .await
                 .unwrap_or(false)
@@ -351,13 +387,8 @@ impl Operation {
             if !compatible {
                 return;
             }
-            if crate::core::enqueue_current_refresh(&self.config, self.user)
-                .await
-                .unwrap_or(false)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = crate::core::enqueue_current_refresh(&self.config, self.user).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 }
@@ -488,17 +519,49 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            config.html_ui.media.decorate(1, "g", &mut view);
+            let _ = config.html_ui.media.decorate(1, "g", &mut view);
             assert!(view.alert.is_some());
             assert!(view.notice.is_none());
             let mut home = View {
                 payload: Payload::Home,
                 ..Default::default()
             };
-            config.html_ui.media.decorate(1, "g", &mut home);
+            let _ = config.html_ui.media.decorate(1, "g", &mut home);
             assert!(home.alert.is_none());
             assert!(!config.html_ui.media.blocks(1, "g", &target));
         }
+    }
+
+    #[tokio::test]
+    async fn an_older_pending_render_cannot_acknowledge_the_completion_receipt() {
+        let config = crate::test_support::config().await;
+        let mut operation = config
+            .html_ui
+            .media
+            .begin(
+                &config,
+                1,
+                "g",
+                Target::Clip {
+                    camera: 1,
+                    seconds: 10,
+                },
+            )
+            .unwrap();
+        let id = operation.id.unwrap();
+        let mut view = View {
+            payload: Payload::Camera(CameraPayload::CameraDetail { id: 1 }),
+            ..Default::default()
+        };
+        let pending = config.html_ui.media.decorate(1, "g", &mut view);
+        assert_eq!(pending, None);
+        operation.release(Outcome::sent());
+        config.html_ui.media.mark_shown(1, pending);
+        assert!(!config.html_ui.media.is_shown(1, id));
+        let receipt = config.html_ui.media.decorate(1, "g", &mut view);
+        assert_eq!(receipt, Some(id));
+        config.html_ui.media.mark_shown(1, receipt);
+        assert!(config.html_ui.media.is_shown(1, id));
     }
 
     #[test]

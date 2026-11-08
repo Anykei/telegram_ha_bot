@@ -146,7 +146,7 @@ pub async fn deliver(
         return Ok(None);
     };
     let mut decorated = view.clone();
-    config
+    let media_receipt = config
         .html_ui
         .media
         .decorate(user, &generation, &mut decorated);
@@ -252,6 +252,7 @@ pub async fn deliver(
     ) {
         config.html_ui.ranges.remove(&user);
     }
+    config.html_ui.media.mark_shown(user, media_receipt);
     config.html_ui.sessions.insert(
         user,
         WidgetSession {
