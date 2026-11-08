@@ -307,10 +307,10 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::En, "admin.delete_user") => "🗑 Delete user",
         (Language::Ru, "admin.language") => "🌐 Язык",
         (Language::En, "admin.language") => "🌐 Language",
-        (Language::Ru, "admin.ui_background") => "🖼 Фон UI",
-        (Language::En, "admin.ui_background") => "🖼 UI background",
-        (Language::Ru, "admin.ui_background.title") => "Фон интерфейса",
-        (Language::En, "admin.ui_background.title") => "Interface background",
+        (Language::Ru, "admin.ui_background") => "🖼 Фон обычного вида",
+        (Language::En, "admin.ui_background") => "🖼 Classic background",
+        (Language::Ru, "admin.ui_background.title") => "Фон обычного вида",
+        (Language::En, "admin.ui_background.title") => "Classic background",
         (Language::Ru, "admin.ui_background.current") => "Сейчас",
         (Language::En, "admin.ui_background.current") => "Current",
         (Language::Ru, "admin.ui_background.stock") => "стоковая картинка",
@@ -320,13 +320,13 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::Ru, "admin.ui_background.interval") => "⏱ Интервал",
         (Language::En, "admin.ui_background.interval") => "⏱ Interval",
         (Language::Ru, "admin.ui_background.hint") => {
-            "Кадр обновляется не чаще одного раза в выбранный интервал. Если свежего кадра еще нет, бот показывает предыдущий кадр или стоковую картинку."
+            "Только для обычного вида: фон HTML-карточек не меняется. Кадр обновляется не чаще одного раза в выбранный интервал. Если свежего кадра еще нет, бот показывает предыдущий кадр или стоковую картинку."
         }
         (Language::En, "admin.ui_background.hint") => {
-            "The frame is refreshed no more often than the selected interval. If a fresh frame is not ready yet, the bot shows the previous frame or the stock image."
+            "Classic view only: HTML card backgrounds stay unchanged. The frame is refreshed no more often than the selected interval. If a fresh frame is not ready yet, the bot shows the previous frame or the stock image."
         }
-        (Language::Ru, "admin.ui_background.updated") => "Фон интерфейса обновлен",
-        (Language::En, "admin.ui_background.updated") => "Interface background updated",
+        (Language::Ru, "admin.ui_background.updated") => "Фон обычного вида обновлён",
+        (Language::En, "admin.ui_background.updated") => "Classic background updated",
         (Language::Ru, "admin.ui_background.camera_missing") => "Камера не найдена",
         (Language::En, "admin.ui_background.camera_missing") => "Camera not found",
         (Language::Ru, "admin.ui_background.interval_changed") => "Интервал обновления",
