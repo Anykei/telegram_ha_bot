@@ -17,3 +17,4 @@ jobs:
     uses: ./.github/workflows/checks.yml
     with:
       rust-toolchain: stable
+      build-docker: false

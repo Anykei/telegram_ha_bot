@@ -6,6 +6,10 @@ on:
       rust-toolchain:
         type: string
         default: stable
+      build-docker:
+        description: Build and smoke-test the Linux image before a release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -111,6 +115,7 @@ jobs:
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
   docker:
+    if: inputs.build-docker
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

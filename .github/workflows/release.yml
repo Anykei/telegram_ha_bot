@@ -23,6 +23,7 @@ jobs:
     uses: ./.github/workflows/checks.yml
     with:
       rust-toolchain: '1.99.1'
+      build-docker: true
 
   release:
     if: github.ref == 'refs/heads/main'
