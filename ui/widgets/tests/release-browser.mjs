@@ -52,6 +52,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(result.labelsFit, `${label}: ordinary labels use at most two authored lines`);
     assert.ok(result.rowsFit, `${label}: ordinary rows retain 68px height`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
+    const refresh = await evaluate(`(() => {
+      const b=${get('r-read')},r=b.getBoundingClientRect();
+      return {width:r.width,height:r.height,right:r.right,parentRight:b.parentElement.getBoundingClientRect().right};
+    })()`);
+    assert.equal(refresh.width,44,`${label}: compact refresh width with or without pagination`);
+    assert.equal(refresh.height,44,`${label}: compact refresh height`);
+    assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
     const overlap = await evaluate(`(() => {
       const a=${win}.TelegramWidget.contentSafeAreaInset, width=${get('release')}.clientWidth;
       if(!a) return false;
