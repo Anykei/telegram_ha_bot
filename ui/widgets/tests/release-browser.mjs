@@ -567,7 +567,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     const bad={...fixtures[0].page}; delete bad.rows; Object.assign(bad,shape);
     await evaluate(`${win}.previewSetData(${JSON.stringify(bad)})`);
     assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
-    assert.equal(await evaluate(`${win}.__requests.length`), 0);
+    assert.deepEqual(await evaluate(`${win}.__requests.map(r=>r.value)`), ['r1:home'], 'Invalid state only requests a fresh Home');
   }
   // The thermostat's original Back lives on chunk 2; its persistent control works on both.
   for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
@@ -605,7 +605,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('climate'); await controlRequests(); await push({back:'bad:key'});
   assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
   await evaluate(`${get('r-back')}.click()`);
-  assert.equal(await evaluate(`${win}.__requests.length`), 0);
+  assert.deepEqual(await evaluate(`${win}.__requests.map(r=>r.value)`), ['r1:home']);
   await reload('climate'); await push({back:'unknown_key'});
   await evaluate(`${get('r-back')}.click()`);
   await until(`${get('r-title')}.textContent === 'Доступ закрыт'`);
@@ -730,12 +730,23 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await evaluate(`${win}.previewSetData({denied:true})`);
   await until(`${get('r-title')}.textContent === 'Доступ закрыт'`);
   assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
+  assert.equal(await evaluate(`${win}.__requests.at(-1).value`),'r1:home');
+  await reply({denied:true});
+  await evaluate(`${win}.previewSetData({denied:true})`);
+  assert.equal(await evaluate(`${win}.__requests.length`),2,'Denied recovery does not loop or replay the original action');
+  await reload('home'); await controlRequests(); await click('rooms');
+  await reply({denied:true});
+  await until(`${win}.__requests.length===2`);
+  assert.equal(await evaluate(`${win}.__requests[1].value`),'r1:home','Denied answer requests Home once');
+  await evaluate(`${win}.__requests[1].reject(Error('offline'))`);
+  await evaluate(`${win}.previewSetData({denied:true})`);
+  assert.equal(await evaluate(`${win}.__requests.length`),2,'Failed recovery is not retried automatically');
   await reload('home', {scenario:'denied'}); await click('rooms');
   await until(`${get('r-title')}.textContent === 'Доступ закрыт'`);
   assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
   await reload('home', {scenario:'forward'});
   assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
-  assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('/classic')`));
+  assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('/start')`));
   // Arbitrary strings stay text; long title/context stay available in local parts.
   await reload('home', {width:200});
   const longPage = {...fixtures[0].page,seq:50,title:'<img src=x onerror=alert(1)> '+'Ш'.repeat(80),context:'Г'.repeat(80),hint:'<img src=x onerror=alert(1)>'};

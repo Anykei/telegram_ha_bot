@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('release');
   const words = {
-    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', 'Откройте /classic.', GRAPH ? 'Ещё' : 'Отмена', 'Часть'],
-    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', 'Open /classic.', GRAPH ? 'More' : 'Cancel', 'Part']
+    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', '/start', GRAPH ? 'Ещё' : 'Отмена', 'Часть'],
+    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', '/start', GRAPH ? 'More' : 'Cancel', 'Part']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = !api || api.isForward;
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
@@ -182,6 +182,11 @@ import { validGraph, renderGraph } from './graph-render.js';
     frame = requestAnimationFrame(spin);
   };
   function stopWait() { waiting = false; clearTimeout(timer); }
+  function close() {
+    if (denied) return;
+    denied = true; data = null; stopWait();
+    api.request('r1:home').catch(() => {});
+  }
   function complete() { if (pendingRead) uncertain = false; pendingRead = false; stopWait(); note = ''; }
   function fail() { pendingRead = false; tail = false; stopWait(); uncertain = true; note = w(4); }
   async function send(k, last = false) {
@@ -191,7 +196,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     try {
       const result = await api.request('r1:' + rev + ':' + k);
       const answer = JSON.parse(result.result);
-      if (answer && answer.denied) { denied = true; data = null; stopWait(); }
+      if (answer && answer.denied) close();
       else if (answer && answer.page) {
         if (!accept(answer.page)) throw Error();
         if (answer.page.seq > seq) complete();
@@ -211,7 +216,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     try {
       if (!accept(JSON.parse(api.chatData))) throw Error();
       if (waiting && data.seq > requestSeq) complete();
-    } catch { denied = true; data = null; stopWait(); }
+    } catch { close(); }
     render();
   }
   function theme() {

@@ -114,6 +114,11 @@ import {validGraph, renderGraph} from './graph-render.js';
     }
   }
   function stop() {waiting=false;clearTimeout(timer);}
+  function close() {
+    if(denied)return;
+    denied=true;data=null;stop();
+    api.request('r1:home').catch(()=>{});
+  }
   function complete() {if(reading) uncertain=false;reading=false;stop();note='';}
   function fail() {reading=false;stop();uncertain=true;note=w(2);}
   async function send(k) {
@@ -121,7 +126,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     const rev=data.rev, seq=data.seq;requested=seq;reading=k==='read';busy=true;note='';render();
     try {
       const answer=JSON.parse((await api.request('r1:'+rev+':'+k)).result);
-      if(answer?.denied){denied=true;data=null;stop();}
+      if(answer?.denied)close();
       else if(answer?.page){if(!accept(answer.page))throw Error();if(answer.page.seq>seq)complete();else{reading=false;stop();}}
       else if(answer?.accepted){if(data&&data.seq>seq)complete();else{waiting=true;timer=setTimeout(()=>{fail();render();},12000);}}
       else throw Error();
@@ -131,7 +136,7 @@ import {validGraph, renderGraph} from './graph-render.js';
   function update() {
     if(denied)return;
     try {if(!accept(JSON.parse(api.chatData)))throw Error();if(waiting&&data.seq>requested)complete();}
-    catch {denied=true;data=null;stop();}render();
+    catch {close();}render();
   }
   const theme=()=>document.documentElement.setAttribute('data-theme',api?.colorScheme==='dark'?'dark':'light');
   el('r-back').onclick=()=>send(data?.back);el('r-read').onclick=()=>send('read');

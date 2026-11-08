@@ -5,6 +5,7 @@ mod origin;
 pub(crate) mod pending;
 mod presentation;
 pub(crate) mod range;
+mod recovery;
 #[cfg(test)]
 mod tests;
 pub(crate) mod transport;
@@ -340,6 +341,10 @@ pub async fn resolve(
     };
     let lock = config.ui_lock_for(user);
     let _guard = lock.lock().await;
+    if query.data.as_deref() == Some("r1:home") {
+        recovery::home(bot, query, config).await?;
+        return Ok(None);
+    }
     let snapshot = config
         .html_ui
         .sessions

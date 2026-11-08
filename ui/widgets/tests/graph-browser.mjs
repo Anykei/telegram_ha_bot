@@ -225,7 +225,12 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   // Revocation/forwarding removes private data, even if an older response arrives later.
   for(const id of ['numeric','calendar','time']) {
     await reload(id);await requests();await evaluate(`${get('r-back')}.click()`);
-    await evaluate(`${win}.previewSetData({denied:true})`);await reply({page:{...fixtures.find(f=>f.id===id).page,seq:100}});
+    await evaluate(`${win}.previewSetData({denied:true})`);
+    assert.equal(await evaluate(`${win}.__requests[1].value`),'r1:home');
+    // Resolve the original navigation after recovery started, not the recovery request.
+    await evaluate(`${win}.__requests[0].resolve({result:JSON.stringify(${JSON.stringify({page:{...fixtures.find(f=>f.id===id).page,seq:100}})})})`);
+    await reply({denied:true});await evaluate(`${win}.previewSetData({denied:true})`);
+    assert.equal(await evaluate(`${win}.__requests.length`),2,'One Home recovery; no late-response resurrection or loop');
     assert.ok(await evaluate(`!${get('g-line')} || ${get('g-line')}.getAttribute('d')===''`));
     assert.equal(await evaluate(`${get('r-content')}.textContent`),'');
     await reload(id,{scenario:'forward'});
@@ -239,7 +244,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     await reload(bad.kind?'range':'numeric');await requests();await push(bad);
     assert.equal(await evaluate(`${get('r-content')}.textContent`),'');
     assert.ok(await evaluate(`!${get('g-line')} || ${get('g-line')}.getAttribute('d')===''`));
-    assert.equal(await evaluate(`${win}.__requests.length`),0);
+    assert.deepEqual(await evaluate(`${win}.__requests.map(r=>r.value)`),['r1:home']);
   }
   await reload('numeric');await push({graph:{...fixtures[0].page.graph,top:'<img src=x onerror=alert(1)>'}});
   assert.equal(await evaluate(`${doc}.querySelector('img')`),null);

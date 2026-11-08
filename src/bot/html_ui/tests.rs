@@ -8,6 +8,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[path = "release_tests.rs"]
 mod release_tests;
 
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
+
 #[path = "live_tests.rs"]
 mod live_tests;
 
