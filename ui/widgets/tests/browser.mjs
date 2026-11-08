@@ -71,6 +71,8 @@ try {
   await command('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   if (process.env.HA_WIDGET_LIVE_FIXTURES) {
     await checkLive({root, command, evaluate, until, file:process.env.HA_WIDGET_LIVE_FIXTURES});
+  } else if (process.env.HA_WIDGET_GRAPH_ONLY) {
+    await checkGraph({root,command,evaluate,until,screenshot:async()=>{}});
   } else if (process.env.HA_WIDGET_UNIFIED) {
     await mkdir(root+'screenshots', {recursive:true});
     const screenshot=async name=>{

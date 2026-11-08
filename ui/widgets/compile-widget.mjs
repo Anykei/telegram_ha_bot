@@ -49,7 +49,9 @@ export async function compileWidget(screen, compression={passes:2,sequences:1,ke
   let body=await read('widget.html');
   if(!range)body=body.replace(' id="r-top"','');
   if(!chart)body=body.replace(/<!-- chart:start -->[\s\S]*?<!-- chart:end -->/,'');
-  body=body.replace(/<!--[\s\S]*?-->/g,'').replace(/>\s+</g,'><').replace(/="([A-Za-z0-9_-]+)"/g,'=$1').trim();
+  // A trailing slash belongs to an unquoted attribute value: class=x/>
+  // would lose both the SVG class and its self-closing marker. Keep those quotes.
+  body=body.replace(/<!--[\s\S]*?-->/g,'').replace(/>\s+</g,'><').replace(/="([A-Za-z0-9_-]+)"(?!\/)/g,'=$1').trim();
   const html='<!doctype html><meta charset=utf-8><style>'+compactRelease(css)+'</style>'+compactRelease(body)+'<script>'+script.code+'</script>';
   const bytes=Buffer.byteLength(html),zlibBytes=deflateSync(html,{level:9}).length;
   return {html,manifest:{designVersion:tokens.version,screen,bytes,zlibBytes,limit:4096,protocol:'r1',transport:'TelegramWidget',liveIntegrationVerified:false}};

@@ -74,6 +74,18 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
       })()`),true,`${label}: all graph actions align to the same two columns`);
     }
     if(await evaluate(`${get('g-box')} && !${get('g-box')}.classList.contains('r-hidden')`)) {
+      const paint=await evaluate(`(() => {
+        const line=${get('g-line')},range=${get('g-range')},gaps=${get('g-gaps')},svg=line.closest('svg');
+        const style=n=>{const s=${win}.getComputedStyle(n);return {stroke:s.stroke,fill:s.fill,width:s.strokeWidth,opacity:s.opacity};};
+        return {siblings:[line,range,gaps].every(n=>n.parentElement===svg),line:style(line),range:style(range),gaps:style(gaps)};
+      })()`);
+      assert.equal(paint.siblings,true,`${label}: SVG paths must be separate children, not accidentally nested`);
+      assert.notEqual(paint.line.stroke,'none',`${label}: graph line has a visible stroke`);
+      assert.equal(paint.line.fill,'none',`${label}: graph is a line, not a filled polygon`);
+      assert.equal(paint.line.width,'2px',`${label}: graph line keeps its stroke width`);
+      assert.equal(paint.range.stroke,paint.line.stroke,`${label}: range uses the graph accent`);
+      assert.equal(paint.range.opacity,'0.25',`${label}: range has its intended opacity`);
+
       const graph=await evaluate(`(() => {
         const stage=${get('g-stage')},empty=stage.classList.contains('r-hidden'),plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
         return {height:plot.height,stage:empty?plot.height:stage.getBoundingClientRect().height};
