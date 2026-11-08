@@ -277,4 +277,53 @@ pub(crate) fn apply(view: &mut View) {
             _ => String::new(),
         });
     }
+    if matches!(view.payload, P::Admin(_) | P::AdminSettings(_)) {
+        for button in view.kb.inline_keyboard.iter().flatten() {
+            let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                continue;
+            };
+            let label = if matches!(
+                P::from_string(data),
+                Ok(P::Admin(A::InheritUserDeviceAccess { .. }))
+            ) {
+                Some(w(
+                    "Наследовать права\nкомнаты / профиля",
+                    "Inherit access\nroom / profile",
+                ))
+            } else if button.text.contains(": ") {
+                // Keep the value (role, access, voice engine) visible on line 2
+                // instead of clipping it after a long setting name.
+                Some(button.text.replacen(": ", "\n", 1))
+            } else {
+                None
+            };
+            if let Some(label) = label {
+                view.html_button_labels.entry(data.clone()).or_insert(label);
+            }
+        }
+    }
+    for button in view.kb.inline_keyboard.iter().flatten() {
+        let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+            continue;
+        };
+        let label = match P::from_string(data).ok() {
+            Some(P::Personal(PersonalPayload::SetSubscription { enabled, .. })) => {
+                Some(if enabled {
+                    w("Включить\nуведомления", "Enable\nnotifications")
+                } else {
+                    w("Выключить\nуведомления", "Disable\nnotifications")
+                })
+            }
+            Some(P::Personal(PersonalPayload::FavoriteOptions { .. })) => {
+                Some(w("☆ В\nизбранное", "☆ Add\nfavorite"))
+            }
+            Some(P::Personal(PersonalPayload::Settings)) if matches!(view.payload, P::Home) => {
+                Some(w("Мои\nнастройки", "My\nsettings"))
+            }
+            _ => None,
+        };
+        if let Some(label) = label {
+            view.html_button_labels.entry(data.clone()).or_insert(label);
+        }
+    }
 }

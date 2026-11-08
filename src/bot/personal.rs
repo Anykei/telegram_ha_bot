@@ -500,8 +500,8 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 .and_then(|s| s.timezone.as_deref())
                 .unwrap_or(w("Время сервера", "Server time"));
             rows.push(vec![
-                button("Русский", PersonalPayload::Language { english: false }),
-                button("English", PersonalPayload::Language { english: true }),
+                button(if ctx.lang == Language::Ru { "✓ Русский" } else { "Русский" }, PersonalPayload::Language { english: false }),
+                button(if ctx.lang == Language::En { "✓ English" } else { "English" }, PersonalPayload::Language { english: true }),
             ]);
             rows.insert(
                 0,
