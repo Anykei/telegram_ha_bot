@@ -220,6 +220,15 @@ impl PersonalPayload {
 fn button(label: impl Into<String>, payload: PersonalPayload) -> Button {
     Button::callback(label, Payload::Personal(payload).to_string())
 }
+fn html_label(
+    labels: &mut std::collections::HashMap<String, String>,
+    button: &Button,
+    label: String,
+) {
+    if let teloxide::types::InlineKeyboardButtonKind::CallbackData(callback) = &button.kind {
+        labels.insert(callback.clone(), label);
+    }
+}
 fn base(ctx: &RenderContext, text: String, payload: Payload, mut rows: Vec<Vec<Button>>) -> View {
     rows.push(vec![super::screens::common::main_menu_button_lang(
         ctx.lang,
@@ -362,6 +371,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         .unwrap_or(ctx.lang);
     let w = |ru, en| words(ctx.lang, ru, en);
     let mut rows = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
     let mut next_state = None;
     let text = match &request {
         PersonalPayload::Interface => {
@@ -593,9 +603,14 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         }
         PersonalPayload::Favorites { page } => {
             let (items, page, pages) = favorite_buttons(&ctx, usize::from(*page), 10).await?;
-            for (id, action) in items {
+            for (index, (id, action)) in items.into_iter().enumerate() {
+                // A byte/height page break can separate the management row from
+                // its action. Repeat the full identity with the same visible
+                // position, keeping that position first when a label is clipped.
+                let context = format!("{}. {}", page * 10 + index + 1, action.text);
+                html_label(&mut html_button_labels, &action, context.clone());
                 rows.push(vec![action]);
-                rows.push(vec![
+                let controls = vec![
                     button(
                         w("На первое место", "Move first"),
                         PersonalPayload::FirstFavorite {
@@ -610,7 +625,15 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                             page: page as u16,
                         },
                     ),
-                ]);
+                ];
+                for control in &controls {
+                    html_label(
+                        &mut html_button_labels,
+                        control,
+                        format!("{}\n{context}", control.text),
+                    );
+                }
+                rows.push(controls);
             }
             rows.push(super::screens::common::page_row(page, pages, |page| {
                 Payload::Personal(PersonalPayload::Favorites { page })
@@ -659,6 +682,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     };
     let mut view = base(&ctx, text, Payload::Personal(request), rows);
     view.next_state = next_state;
+    view.html_button_labels = html_button_labels;
     view.notice = notice;
     view.alert = alert;
     Ok(view)
@@ -997,6 +1021,10 @@ pub async fn handle_input(
     config.finish_view_update(user, &token);
     result
 }
+
+#[cfg(test)]
+#[path = "personal_structure_tests.rs"]
+mod structure_tests;
 
 #[cfg(test)]
 mod tests {
