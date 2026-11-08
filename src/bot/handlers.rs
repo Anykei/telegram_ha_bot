@@ -2024,12 +2024,18 @@ async fn send_camera_video_file(
         request
     };
     access.check().await?;
-    request.await.map_err(|error| match error {
+    let sent = request.await.map_err(|error| match error {
         RequestError::Network(_) | RequestError::InvalidJson { .. } | RequestError::Io(_) => {
             anyhow::Error::new(UploadUncertain)
         }
         other => anyhow::Error::new(other),
     })?;
+    super::utils::spawn_delayed_delete(
+        bot.clone(),
+        chat_id,
+        sent.id,
+        access.config.delete_notification_messages_timeout_s,
+    );
     drop(media_owner);
 
     Ok(true)
@@ -5424,6 +5430,10 @@ async fn finalize_dialogue(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "video_delivery_tests.rs"]
+mod video_delivery_tests;
 
 #[cfg(test)]
 mod tests {
