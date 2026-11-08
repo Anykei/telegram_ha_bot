@@ -199,3 +199,73 @@ async fn origin_does_not_survive_a_new_admission_generation() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn origin_survives_critical_confirmation_without_replacing_cancel() -> Result<()> {
+    for confirm in [false, true] {
+        let (config, ha) = config().await?;
+        seed_origin_lists(&config).await?;
+        sqlx::query("UPDATE devices SET critical=1")
+            .execute(&config.db)
+            .await?;
+        let fake = FakeTelegram::new().await?;
+        let dialogue = Dialogue::new(
+            teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+            ChatId(1),
+        );
+        let favorites = Payload::Personal(PersonalPayload::Favorites { page: 1 });
+        publish(&fake, &config, favorites.clone()).await?;
+        let target = current(&config)
+            .actions
+            .values()
+            .find(|p| matches!(p, Payload::Control(ControlPayload::DeviceControl { .. })))
+            .unwrap()
+            .clone();
+        press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+        assert_eq!(back_target(&config), favorites);
+        let review = current(&config)
+            .actions
+            .values()
+            .find(|p| {
+                matches!(
+                    p,
+                    Payload::Control(
+                        ControlPayload::ReviewAction { .. }
+                            | ControlPayload::QuickAction {
+                                cmd: DeviceCmd::TurnOn,
+                                ..
+                            }
+                    )
+                )
+            })
+            .unwrap()
+            .clone();
+        press(&fake, &config, &dialogue, action_query(&config, &review)).await?;
+        let Payload::Control(ControlPayload::ReviewAction { id }) = current(&config).view.payload
+        else {
+            panic!("Critical write must open the persisted review before executing")
+        };
+        assert_eq!(
+            back_target(&config),
+            Payload::Control(ControlPayload::CancelAction { id })
+        );
+        assert!(ha.calls.lock().unwrap().is_empty());
+        let outcome = Payload::Control(if confirm {
+            ControlPayload::ConfirmAction { id }
+        } else {
+            ControlPayload::CancelAction { id }
+        });
+        press(&fake, &config, &dialogue, action_query(&config, &outcome)).await?;
+        assert_eq!(
+            back_target(&config),
+            target,
+            "Only the completed receipt uses the stored origin"
+        );
+        press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
+        assert_eq!(ha.calls.lock().unwrap().len(), usize::from(confirm));
+        press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+        assert_eq!(back_target(&config), favorites);
+        config.html_ui.clear(1);
+    }
+    Ok(())
+}

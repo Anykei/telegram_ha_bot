@@ -62,13 +62,32 @@ pub(super) fn prepare(old: Option<&WidgetSession>, generation: &str, view: &mut 
     if view.html_chart.is_some() || view.html_range.is_some() || view.html_media_controls {
         return Trail::default();
     }
+    let old = old.filter(|s| s.generation == generation);
+    if matches!(view.payload, Payload::Control(Control::ReviewAction { .. })) {
+        let trail = old.map(|s| s.origin.clone()).unwrap_or_default();
+        // Active confirmations retain their real Cancel callback. A completed
+        // receipt only needs a read-only return to the original screen.
+        if view.html_kind.as_deref() != Some("confirmation")
+            && crate::bot::screen_structure::parent(view)
+                .is_some_and(|p| !matches!(p, Payload::Home))
+        {
+            if let Some(parent) = trail
+                .routes
+                .iter()
+                .rev()
+                .find(|p| !matches!(p, Payload::TemperatureInput { .. }))
+            {
+                set_parent(view, parent.clone());
+            }
+        }
+        return trail;
+    }
     let Some(mut route) = read_route(&view.payload) else {
         return Trail::default();
     };
     if matches!(route, Payload::Home) {
         return Trail::default();
     }
-    let old = old.filter(|s| s.generation == generation);
     // Some source renderers normalize page routes to their base payload. Retain
     // the requested page (or the current one during Read) as the return target.
     if let Some(requested) = old
@@ -105,28 +124,31 @@ pub(super) fn prepare(old: Option<&WidgetSession>, generation: &str, view: &mut 
         trail.routes.drain(..trail.routes.len() - LIMIT);
     }
     if trail.routes.len() >= 2 {
-        let parent = trail.routes[trail.routes.len() - 2].clone();
-        let original = crate::bot::screen_structure::parent(view);
-        // Preserve an explicit Home action. Replace only the original parent
-        // footer, avoiding a second visible "Back" that still targets the room.
-        if let Some(original) = original.filter(|p| !matches!(p, Payload::Home) && p != &parent) {
-            if let Some(button) = view
-                .kb
-                .inline_keyboard
-                .iter_mut()
-                .flatten()
-                .rev()
-                .find(|b| {
-                    matches!(&b.kind, InlineKeyboardButtonKind::CallbackData(data)
-                    if Payload::from_string(data).ok().as_ref() == Some(&original))
-                })
-            {
-                button.kind = InlineKeyboardButtonKind::CallbackData(parent.to_string());
-            }
-        }
-        view.html_back = Some(parent);
+        set_parent(view, trail.routes[trail.routes.len() - 2].clone());
     }
     trail
+}
+
+fn set_parent(view: &mut View, parent: Payload) {
+    let original = crate::bot::screen_structure::parent(view);
+    // Preserve an explicit Home action. Replace only the original parent
+    // footer, avoiding a second visible "Back" that still targets the room.
+    if let Some(original) = original.filter(|p| !matches!(p, Payload::Home) && p != &parent) {
+        if let Some(button) = view
+            .kb
+            .inline_keyboard
+            .iter_mut()
+            .flatten()
+            .rev()
+            .find(|b| {
+                matches!(&b.kind, InlineKeyboardButtonKind::CallbackData(data)
+                if Payload::from_string(data).ok().as_ref() == Some(&original))
+            })
+        {
+            button.kind = InlineKeyboardButtonKind::CallbackData(parent.to_string());
+        }
+    }
+    view.html_back = Some(parent);
 }
 
 #[cfg(test)]
