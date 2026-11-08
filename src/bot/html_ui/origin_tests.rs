@@ -269,3 +269,46 @@ async fn origin_survives_critical_confirmation_without_replacing_cancel() -> Res
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn origin_direct_personal_child_exits_through_unvisited_parents_without_loops() -> Result<()>
+{
+    let (config, ha) = config().await?;
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    for (entry, parents) in [
+        (
+            Payload::Personal(PersonalPayload::FavoriteOptions {
+                target: FavoriteAction::Device { room: 1, device: 1 },
+            }),
+            vec![
+                Payload::Control(ControlPayload::DeviceControl { room: 1, device: 1 }),
+                Payload::Control(ControlPayload::RoomDetail { room: 1 }),
+                Payload::Control(ControlPayload::ListRooms),
+                Payload::Home,
+            ],
+        ),
+        (
+            Payload::Personal(PersonalPayload::Subscription { device: 1 }),
+            vec![
+                Payload::Personal(PersonalPayload::Notifications { page: 0 }),
+                Payload::Personal(PersonalPayload::Settings),
+                Payload::Home,
+            ],
+        ),
+    ] {
+        config.html_ui.clear(1);
+        publish(&fake, &config, entry).await?;
+        for parent in parents {
+            assert_eq!(back_target(&config), parent);
+            press(&fake, &config, &dialogue, action_query(&config, &parent)).await?;
+            assert_eq!(current(&config).view.payload, parent);
+        }
+        assert!(current(&config).pages[0].back.is_none());
+    }
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}

@@ -102,6 +102,17 @@ pub(super) fn prepare(old: Option<&WidgetSession>, generation: &str, view: &mut 
         route = current.clone();
     }
     let mut trail = old.map(|s| s.origin.clone()).unwrap_or_default();
+    if !trail.routes.iter().any(|p| same_screen(p, &route))
+        && old
+            .and_then(|s| crate::bot::screen_structure::parent(&s.view))
+            .is_some_and(|parent| same_screen(&parent, &route))
+    {
+        // A direct/deep entry has no recorded ancestors. Its explicit Back is
+        // still an upward transition, never a new child of the screen we left.
+        return Trail {
+            routes: vec![route],
+        };
+    }
     if trail.routes.is_empty() {
         if let Some(previous) = old
             .filter(|s| {
