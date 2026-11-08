@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { releaseExpression } from '../private-names.mjs';
+import { checkNativeLayout } from './native-layout.mjs';
 
 export async function checkRelease({root, command, evaluate, until, screenshot}) {
   const rawEvaluate = evaluate, rawUntil = until;
@@ -230,6 +231,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await evaluate(`${win}.previewSetSafeArea(64,64)`);
     assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true,'Six-row room must reclaim the clock band after establishing its pager');
     assert.equal(await evaluate(`${get('r-server')}.getBoundingClientRect().bottom`),584,'Room pager uses the free clock corner');
+    await checkNativeLayout({evaluate,doc,target:get('r-next'),label:`room/${width}`,bottom:584});
     assert.ok(await evaluate(`${doc}.querySelectorAll('.r-row').length>=5`),'Room rows retain their full size with the fixed header');
     await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,`six rows/header/${width}`);
     await dimensions(`six rows/corner/${width}`);
@@ -261,6 +263,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
     assert.equal(await evaluate(`${get('r-content')}.textContent`),lastRoomPart,'Clock changes preserve the local room part');
     await dimensions(`room part/clock ${left}/${right}`);
+    await checkNativeLayout({evaluate,doc,target:get('r-next'),label:`room/clock/${left}/${right}`,bottom:360-left-right>=200?584:536});
   }
   // Media stays in Telegram attachments; the camera card preserves its controls
   // and navigation even at the client's largest reserved timestamp inset.

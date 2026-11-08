@@ -2,7 +2,8 @@
 body { margin: 0; padding:0; overflow-wrap:anywhere; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
 /* Telegram's UA layer supplies the pointer cursor. */
 button { font: inherit; }
-.r-root { min-height: 600px; padding: var(--ha-space-3); }
+/* Measure with auto height; JS fixes the completed layout at 600px for native flex. */
+.r-root { min-height:600px; padding:12px 12px 16px; }
 #r-context { flex: 1; color: var(--ha-muted); font-size: 12px; }
 h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight:600; }
 #r-context, h1 { white-space: nowrap; }
@@ -32,12 +33,11 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-wait { position:relative; opacity:1; }
 .r-wait span { opacity:0; }
 .r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
-.r-root { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }
 
 /* Every screen keeps navigation at the bottom; only home stretches its rows. */
-.r-root { display:flex; flex-direction:column; }
-.r-root > * { flex-shrink:0; }
-#r-content { flex:1; display:flex; flex-direction:column; }
+.r-root > * { flex:none; }
+.r-root, #r-content { display:flex; flex-direction:column; }
+#r-content { flex:1; }
 [data-kind="home"] .r-row { flex:1; }
 [data-kind="home"] h1 { margin:-44px 56px 8px 0; line-height:44px; }
 .r-status { display:block; padding:10px; font-size:15px; }

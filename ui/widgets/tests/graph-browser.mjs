@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { checkNativeLayout } from './native-layout.mjs';
 
 export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const fixtures=JSON.parse(await readFile(root+'preview/graph-fixtures.json','utf8'));
@@ -131,6 +132,9 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const bottom=await evaluate(`${get('r-content')}.getBoundingClientRect().bottom`);
   await screenshot('graph-calendar-overview-dark');
   assert.ok(Math.abs(600-bottom-16)<1,`last control uses space beside clock: bottom=${bottom}, height=${height}, padding=${await evaluate(win+".getComputedStyle("+get('release')+").paddingBottom")}`);
+  // SDK litehtml does not implement CSS grid; check its vertical flex sizing.
+  // The full action grid and clock intersection are checked in dimensions().
+  await checkNativeLayout({evaluate,doc,target:`${doc}.querySelector('.r-row:last-child button')`,label:'graph/PNG',bottom:584,checkClock:false});
   for(const [left,right] of [[0,80],[80,0],[0,160],[80,80],[0,200]]) {
     await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
     await dimensions(`action grid/clock ${left}/${right}`);
@@ -208,6 +212,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     const values=await collect(`minute picker/clock ${left}/${right}`);
     for(let n=0;n<60;n++) assert.ok(values.keys.has('m'+n),'All minutes remain reachable beside the clock');
     assert.equal(await evaluate(`${get('r-footer')}.getBoundingClientRect().bottom`),360-left-right>=200?584:536,'Picker reclaims the clock band only when its group fits');
+    await checkNativeLayout({evaluate,doc,target:get('r-local-next'),label:`time/${left}/${right}`,bottom:360-left-right>=200?584:536});
   }
   await reload('range');
   await evaluate(`${win}.__sameDocument=123`);

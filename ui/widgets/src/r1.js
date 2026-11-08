@@ -32,7 +32,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
       && integer(v.page) && integer(v.pages) && v.page > 0 && v.page <= v.pages
       && list(v.rows, GRAPH ? 4 : 64, row => list(row, GRAPH ? 4 : 2,
-        b => b && string(b.text) && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain', 'status']).includes(b.kind)) && row.length > 0);
+        b => b && string(b.text) && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain', 'status']).includes(b.kind)) && row.length);
   }
   function accept(v) {
     if (v && v.b !== undefined) {
@@ -46,7 +46,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     return true;
   }
   function disable(node, value) {
-    node.setAttribute('aria-disabled', String(value));
+    node.setAttribute('aria-disabled', value);
   }
   const blocked = read => denied || !data || busy || waiting || (!read && uncertain);
   const external = i => data[i ? 'next' : 'prev'] || data.q?.[i+1];
@@ -55,7 +55,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     const unavailable = !GRAPH && (awaiting || b.kind === 'uncertain');
     const button = node('button', 'r-button r-' + b.kind + (awaiting ? ' r-wait' : ''));
     if (!GRAPH) {
-      button.setAttribute('aria-busy', String(awaiting));
+      button.setAttribute('aria-busy', awaiting);
     }
     button.setAttribute('data-key', b.key);
     if (b.kind === 'selected') button.setAttribute('aria-pressed', 'true');
@@ -134,9 +134,11 @@ import { validGraph, renderGraph } from './graph-render.js';
     ['prev','next'].forEach((key,i) => disable(el('r-'+key), blocked(false) || (i ? local === deck.length-1 : !local) && !external(i)));
   }
   function inset(corner) {
-    card.classList.toggle('r-corner',corner);card.style.paddingBottom=corner?'16px':'';
+    card.classList.toggle('r-corner',corner);
+    card.style.paddingBottom=(corner?16:Math.max(16,api?.contentSafeAreaInset?.bottom||0))+'px';
   }
   function render() {
+    card.style.height='';
     const locked = denied || !data;
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     card.classList.toggle('r-bounded', !locked && (data.l || data.kind === 'room'));
@@ -152,7 +154,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     inset(false);
     if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
     ['r-prev', 'r-next'].forEach((id, i) => el(id).setAttribute('aria-label', w(i)));
-    hide('r-server', locked || data.pages <= 1); hide('r-read', locked);
+    hide('r-server', true); hide('r-read', locked);
     if (GRAPH) {
       hide('r-prev', !!data?.graph); hide('r-count', !!data?.graph);
       text('r-next', data?.graph ? w(7) : '›');
@@ -172,6 +174,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       feedback(w(6));
     }
     if (!GRAPH && !frame) frame = requestAnimationFrame(spin);
+    card.style.height='600px';
   }
   // Update a real element so progress does not rely on native CSS animation
   // playback. One frame loop serves all currently mounted rings.

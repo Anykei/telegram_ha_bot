@@ -87,14 +87,19 @@ import {validGraph, renderGraph} from './graph-render.js';
     hide('r-footer',count<=1);text('r-local-count',(local+1)+'/'+count);
     el('r-local-prev').disabled=local===0;el('r-local-next').disabled=local+1>=count;
   }
+  function inset(corner) {
+    card.classList.toggle('r-corner',corner);
+    card.style.paddingBottom=(corner?16:Math.max(16,api?.contentSafeAreaInset?.bottom||0))+'px';
+  }
   function render() {
+    card.style.height='';
     const locked=denied||!data||!api, a=api?.contentSafeAreaInset, corners=a&&a.cornerLeft+a.cornerRight;
     card.dataset.kind=locked?'chart':data.kind;
     const png=CHART&&!locked&&data.b.at(-1)?.length===1&&corners>0
       &&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
     const paging=!locked&&!note&&corners>0&&card.clientWidth-corners>=200;
     if(CHART)card.classList.toggle('r-left',png&&a.cornerLeft>0);
-    card.classList.toggle('r-corner',png);card.style.paddingBottom=png?'16px':'';
+    inset(png);
     text('r-title',locked?w(3):data.title);text('r-context',locked?'':data.context);
     text('r-back','‹ '+w(data?.kind==='range'?5:0));text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(1));
     hide('r-back',locked);hide('r-read',locked);
@@ -105,10 +110,11 @@ import {validGraph, renderGraph} from './graph-render.js';
     hide('r-footer',true);mount([]);if(!locked) layout();
     // Once paging is needed, reuse the free corner when the compact group fits.
     if(!el('r-footer').classList.contains('r-hidden')) {
-      card.classList.toggle('r-corner',paging);card.style.paddingBottom=paging?'16px':'';
+      inset(paging);
       if(CHART&&!paging)card.classList.remove('r-left');
       local=position;layout();
     }
+    card.style.height='600px';
     if(!CHART) {
       cancelAnimationFrame(frame);
       if(!locked&&data.t&&motion) {
