@@ -44,6 +44,15 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.equal(refresh.width,44,`${label}: compact refresh width`);
     assert.equal(refresh.height,44,`${label}: compact refresh height`);
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
+    if(await evaluate(`${get('release')}.dataset.kind==='chart'`)) {
+      assert.equal(await evaluate(`(() => {
+        const content=${get('r-content')}.getBoundingClientRect(),column=(content.width-8)/2;
+        return Array.from(${doc}.querySelectorAll('.r-row button')).every(b=>{
+          const r=b.getBoundingClientRect();
+          return Math.abs(r.width-column)<1 && (Math.abs(r.left-content.left)<1 || Math.abs(r.right-content.right)<1);
+        });
+      })()`),true,`${label}: all graph actions align to the same two columns`);
+    }
     if(await evaluate(`${get('g-box')} && !${get('g-box')}.classList.contains('r-hidden')`)) {
       const graph=await evaluate(`(() => {
         const stage=${get('g-stage')},empty=stage.classList.contains('r-hidden'),plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
@@ -107,6 +116,10 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   const bottom=await evaluate(`${get('r-content')}.getBoundingClientRect().bottom`);
   await screenshot('graph-calendar-overview-dark');
   assert.ok(Math.abs(600-bottom-16)<1,`last control uses space beside clock: bottom=${bottom}, height=${height}, padding=${await evaluate(win+".getComputedStyle("+get('release')+").paddingBottom")}`);
+  for(const [left,right] of [[0,80],[80,0],[0,160],[80,80],[0,200]]) {
+    await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
+    await dimensions(`action grid/clock ${left}/${right}`);
+  }
   await evaluate(`${win}.previewSetSafeArea(64)`);
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<height);
   await dimensions('unknown clock reserves full band');

@@ -90,7 +90,9 @@ import {validGraph, renderGraph} from './graph-render.js';
   function render() {
     const locked=denied||!data||!api, a=api?.contentSafeAreaInset, corners=a&&a.cornerLeft+a.cornerRight;
     card.dataset.kind=locked?'chart':data.kind;
-    const corner=!locked&&data.kind==='chart'&&corners>0&&card.clientWidth-corners>=200;
+    const corner=CHART&&!locked&&data.b.at(-1)?.length===1&&corners>0
+      &&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
+    if(CHART)card.classList.toggle('r-left',corner&&a.cornerLeft>0);
     card.classList.toggle('r-corner',corner);card.style.paddingBottom=corner?'16px':'';
     text('r-title',locked?w(3):data.title);text('r-context',locked?'':data.context);
     text('r-back','‹ '+w(data?.kind==='range'?5:0));text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(1));
