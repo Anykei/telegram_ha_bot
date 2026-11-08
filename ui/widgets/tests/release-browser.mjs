@@ -61,14 +61,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
     assert.equal(refresh.top,12,`${label}: refresh always in the header`);
     assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the card edge, including clock insets`);
-    const pager=await evaluate(`({prev:${get('r-prev')}.getBoundingClientRect().toJSON(),next:${get('r-next')}.getBoundingClientRect().toJSON(),count:${get('r-count')}.getBoundingClientRect().toJSON(),bottom:${win}.TelegramWidget.contentSafeAreaInset?.bottom||0})`);
+    const pager=await evaluate(`({prev:${get('r-prev')}.getBoundingClientRect().toJSON(),next:${get('r-next')}.getBoundingClientRect().toJSON(),count:${get('r-count')}.getBoundingClientRect().toJSON(),area:${win}.TelegramWidget.contentSafeAreaInset,shared:${get('release')}.classList.contains('r-corner')})`);
     if(pager.prev.width) {
+      const center=(result.available+(pager.shared?pager.area.cornerLeft-pager.area.cornerRight:0))/2;
       assert.deepEqual([pager.prev.width,pager.prev.height,pager.next.width,pager.next.height],[44,44,44,44],`${label}: identical compact arrows`);
-      assert.equal(pager.prev.left,12,`${label}: previous at the left card edge`);
-      assert.equal(pager.next.right,result.available-12,`${label}: next at the right card edge`);
+      assert.ok(Math.abs(pager.prev.left-(center-88))<1,`${label}: previous anchors compact group`);
+      assert.ok(Math.abs(pager.next.right-(center+88))<1,`${label}: next anchors compact group`);
       assert.equal(pager.prev.top,pager.next.top,`${label}: arrows share a row`);
-      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-result.available/2)<1,`${label}: counter centered in card`);
-      assert.ok(pager.next.bottom<=600-Math.max(16,pager.bottom)+.1,`${label}: arrows above the timestamp band`);
+      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-center)<1,`${label}: counter centered in the free width`);
+      assert.ok(pager.next.bottom<=600-(pager.shared?16:Math.max(16,pager.area?.bottom||0))+.1,`${label}: arrows respect the timestamp`);
     }
     if(await evaluate(`${get('release')}.dataset.kind==='home'`)) {
       assert.equal(await evaluate(`(()=>{const h=${get('r-title')}.getBoundingClientRect(),r=${get('r-read')}.getBoundingClientRect();return h.top===r.top&&h.right<=r.left-8})()`),true,`${label}: Home title shares the header without overlapping refresh`);
@@ -214,17 +215,21 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await click('bounded_detail');
   await until(`${get('r-title')}.textContent==='Гостевая спальня на втором этаже рядом с лестницей'`);
   await assertPreserved(fixtures.find(f=>f.id==='bounded_detail').page,'Complete name after opening its card');
-  // Clock widths never shift the pager horizontally; keep its full band clear.
+  // A compact group uses the free side of the clock band when it fits.
   for (const fixture of fixtures) for (const side of ['left','right']) {
     await reload(fixture.id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
     await assertPreserved(fixture.page,`${fixture.id}/corner-${side}`);
     const footer = await evaluate(`${doc}.querySelector('.r-footer').getBoundingClientRect().toJSON()`);
-    assert.ok(footer.bottom<=536.1,`${fixture.id}: footer keeps the full timestamp band clear`);
+    const shared=await evaluate(`${get('release')}.classList.contains('r-corner')`);
+    assert.ok(footer.bottom<=(shared?584.1:536.1),`${fixture.id}: footer respects the clock`);
+    if(shared) assert.ok(footer.bottom>536,`${fixture.id}: pager actually uses the clock band`);
   }
   for (const width of [320,360,390,430]) {
     await reload('room_paginated',{width,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,64)`);
+    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true,'Six-row room must reclaim the clock band after establishing its pager');
+    assert.equal(await evaluate(`${get('r-server')}.getBoundingClientRect().bottom`),584,'Room pager uses the free clock corner');
     assert.ok(await evaluate(`${doc}.querySelectorAll('.r-row').length>=5`),'Room rows retain their full size with the fixed header');
     await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,`six rows/header/${width}`);
     await dimensions(`six rows/corner/${width}`);
@@ -249,6 +254,14 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('room_paginated',{width:200});
   await evaluate(`${win}.previewSetSafeArea(64,64)`);
   await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'narrow/corner');
+  await reload('room_paginated',{width:360,theme:'dark'});
+  await evaluate(`${win}.previewSetSafeArea(64,80);${get('r-next')}.click()`);
+  const lastRoomPart=await evaluate(`${get('r-content')}.textContent`);
+  for(const [left,right] of [[80,0],[80,80],[0,200],[0,80]]) {
+    await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
+    assert.equal(await evaluate(`${get('r-content')}.textContent`),lastRoomPart,'Clock changes preserve the local room part');
+    await dimensions(`room part/clock ${left}/${right}`);
+  }
   // Media stays in Telegram attachments; the camera card preserves its controls
   // and navigation even at the client's largest reserved timestamp inset.
   for (const fixture of fixtures.filter(f=>f.camera)) {

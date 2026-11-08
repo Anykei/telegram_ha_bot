@@ -48,15 +48,16 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the right`);
     const pager=await evaluate(`(() => {
       const rect=id=>${doc}.getElementById(id).getBoundingClientRect().toJSON();
-      return {prev:rect('r-local-prev'),next:rect('r-local-next'),count:rect('r-local-count'),bottom:${win}.TelegramWidget.contentSafeAreaInset?.bottom||0};
+      return {prev:rect('r-local-prev'),next:rect('r-local-next'),count:rect('r-local-count'),area:${win}.TelegramWidget.contentSafeAreaInset,shared:${get('release')}.classList.contains('r-corner')};
     })()`);
     if(pager.prev.width) {
+      const center=(result.available+(pager.shared?pager.area.cornerLeft-pager.area.cornerRight:0))/2;
       assert.deepEqual([pager.prev.width,pager.prev.height,pager.next.width,pager.next.height],[44,44,44,44],`${label}: identical compact arrows`);
-      assert.equal(pager.prev.left,12,`${label}: previous at the left card edge`);
-      assert.equal(pager.next.right,result.available-12,`${label}: next at the right card edge`);
+      assert.ok(Math.abs(pager.prev.left-(center-88))<1,`${label}: previous anchors compact group`);
+      assert.ok(Math.abs(pager.next.right-(center+88))<1,`${label}: next anchors compact group`);
       assert.equal(pager.prev.top,pager.next.top,`${label}: arrows share a row`);
-      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-result.available/2)<1,`${label}: counter centered in card`);
-      assert.ok(pager.next.bottom<=600-Math.max(16,pager.bottom)+.1,`${label}: arrows above the timestamp band`);
+      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-center)<1,`${label}: counter centered in the free width`);
+      assert.ok(pager.next.bottom<=600-(pager.shared?16:Math.max(16,pager.area?.bottom||0))+.1,`${label}: arrows respect the timestamp`);
     }
     if(await evaluate(`${get('release')}.dataset.kind==='chart'`)) {
       assert.equal(await evaluate(`(() => {
@@ -137,8 +138,8 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await evaluate(`${win}.previewSetSafeArea(64)`);
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<height);
   await dimensions('unknown clock reserves full band');
-  // Long descriptions require paging even beside a clock. Both arrows keep
-  // their card-edge anchors, and re-measuring must not reset the selected part.
+  // Long descriptions require paging even beside a clock. Re-measuring keeps
+  // the compact group outside the clock and preserves the selected part.
   for(const [left,right] of [[0,80],[80,0],[80,80],[0,200]]) {
     await reload('numeric',{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
@@ -202,6 +203,12 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await screenshot('time-fields-dark');await evaluate(`${button('u0')}.click()`);
   await dimensions('expanded time/clock');await screenshot('time-hours-dropdown-dark');
   await evaluate(`${button('u1')}.click()`);await screenshot('time-minutes-dropdown-dark');
+  for(const [left,right] of [[0,80],[80,0],[80,80],[0,200]]) {
+    await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
+    const values=await collect(`minute picker/clock ${left}/${right}`);
+    for(let n=0;n<60;n++) assert.ok(values.keys.has('m'+n),'All minutes remain reachable beside the clock');
+    assert.equal(await evaluate(`${get('r-footer')}.getBoundingClientRect().bottom`),360-left-right>=200?584:536,'Picker reclaims the clock band only when its group fits');
+  }
   await reload('range');
   await evaluate(`${win}.__sameDocument=123`);
   const range=fixtures.find(f=>f.id==='range');

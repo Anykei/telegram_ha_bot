@@ -3,8 +3,8 @@ import { validGraph, renderGraph } from './graph-render.js';
 (() => {
   const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('r-root');
   const words = {
-    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', '/start', GRAPH ? 'Ещё' : 'Отмена', 'Часть'],
-    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', '/start', GRAPH ? 'More' : 'Cancel', 'Part']
+    ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', '/start', GRAPH ? 'Ещё' : 'Отмена'],
+    en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', '/start', GRAPH ? 'More' : 'Cancel']
   };
   let data = null, busy = false, waiting = false, uncertain = false, denied = !api || api.isForward;
   let local = 0, deck = [], timer, requestSeq = -1, pendingRead = false, note = '', activeKey = '';
@@ -16,11 +16,11 @@ import { validGraph, renderGraph } from './graph-render.js';
   };
   const hide = (id, value) => el(id).classList.toggle('r-hidden', value);
   const feedback = value => { text('r-feedback', value); hide('r-feedback', !value); };
-  const string = value => typeof value === 'string';
+  const integer = Number.isSafeInteger, string = value => typeof value === 'string';
   const list = (value, max, test) => Array.isArray(value) && value.length <= max && value.every(test);
   const key = value => string(value) && /^[A-Za-z0-9_-]{1,28}$/.test(value);
   function valid(v) {
-    return v && v.v === 1 && string(v.rev) && /^[a-f0-9]{32}$/.test(v.rev) && Number.isSafeInteger(v.seq) && v.seq >= 0
+    return v && v.v === 1 && string(v.rev) && /^[a-f0-9]{32}$/.test(v.rev) && integer(v.seq) && v.seq >= 0
       && ['ru', 'en'].includes(v.lang) && ['title', 'context', 'body', 'notice', 'alert'].every(k => string(v[k]))
       && (v.kind === undefined || (GRAPH ? v.kind === 'list' : string(v.kind)))
       && (GRAPH || v.status === undefined || list(v.status, 2, s => list(s, 3, string) && s.length === 3))
@@ -30,7 +30,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       && (v.back == null || key(v.back))
       && (!GRAPH || validGraph(v.graph))
       && v.read === 'read' && [v.prev, v.next].every(k => k === null || key(k))
-      && Number.isSafeInteger(v.page) && Number.isSafeInteger(v.pages) && v.page > 0 && v.page <= v.pages
+      && integer(v.page) && integer(v.pages) && v.page > 0 && v.page <= v.pages
       && list(v.rows, GRAPH ? 4 : 64, row => list(row, GRAPH ? 4 : 2,
         b => b && string(b.text) && key(b.key) && (GRAPH ? ['action', 'nav', 'danger', 'selected'] : ['action', 'nav', 'danger', 'selected', 'wait', 'uncertain', 'status']).includes(b.kind)) && row.length > 0);
   }
@@ -124,14 +124,17 @@ import { validGraph, renderGraph } from './graph-render.js';
     if (part.length || !deck.length) deck.push(part);
     local = Math.min(local, deck.length - 1);
     mount(deck[local]);
-    pager();
+    pager(reserve);
   }
   function pager(reserve) {
     const q = data.q;
     hide('r-server', !q && !reserve && deck.length <= 1 && data.pages <= 1);
     // The last-part sentinel must not widen the counter while measuring rows.
-    text('r-count', (q ? q[0] + '\n' : '') + w(8) + ' ' + data.page + '.' + (local % 9999 + 1));
+    text('r-count', (q ? q[0] + '\n' : '') + data.page + '.' + (local % 9999 + 1));
     ['prev','next'].forEach((key,i) => disable(el('r-'+key), blocked(false) || (i ? local === deck.length-1 : !local) && !external(i)));
+  }
+  function inset(corner) {
+    card.classList.toggle('r-corner',corner);card.style.paddingBottom=corner?'16px':'';
   }
   function render() {
     const locked = denied || !data;
@@ -144,6 +147,9 @@ import { validGraph, renderGraph } from './graph-render.js';
     text('r-back', '‹ ' + w(!GRAPH && ['form','confirmation'].includes(data?.kind) ? 7 : 0));
     hide('r-back', locked || !data.back);
     feedback(locked ? w(6) : note || (!GRAPH && data.rows.flat().some(b => b.kind === 'uncertain') ? w(4) : ''));
+    const area=api?.contentSafeAreaInset, corners=area&&area.cornerLeft+area.cornerRight;
+    const corner=!el('r-feedback').textContent&&corners>0&&card.clientWidth-corners>=200;
+    inset(false);
     if (GRAPH) renderGraph(locked ? null : data.graph, lang, el, hide);
     ['r-prev', 'r-next'].forEach((id, i) => el(id).setAttribute('aria-label', w(i)));
     hide('r-server', locked || data.pages <= 1); hide('r-read', locked);
@@ -154,7 +160,14 @@ import { validGraph, renderGraph } from './graph-render.js';
     mount([]);
     if (locked) return;
     ['read', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
-    if (layout()) {
+    const position=local;
+    let overflow=layout();
+    // Establish whether paging is needed before reclaiming the clock band.
+    // Reserve its height while re-measuring so it cannot disappear mid-layout.
+    if(corner&&!el('r-server').classList.contains('r-hidden')) {
+      inset(true);local=position;overflow=layout(true);
+    }
+    if (overflow) {
       mount([]); hide('r-server', true);
       feedback(w(6));
     }

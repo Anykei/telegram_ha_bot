@@ -90,10 +90,11 @@ import {validGraph, renderGraph} from './graph-render.js';
   function render() {
     const locked=denied||!data||!api, a=api?.contentSafeAreaInset, corners=a&&a.cornerLeft+a.cornerRight;
     card.dataset.kind=locked?'chart':data.kind;
-    const corner=CHART&&!locked&&data.b.at(-1)?.length===1&&corners>0
+    const png=CHART&&!locked&&data.b.at(-1)?.length===1&&corners>0
       &&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
-    if(CHART)card.classList.toggle('r-left',corner&&a.cornerLeft>0);
-    card.classList.toggle('r-corner',corner);card.style.paddingBottom=corner?'16px':'';
+    const paging=!locked&&!note&&corners>0&&card.clientWidth-corners>=200;
+    if(CHART)card.classList.toggle('r-left',png&&a.cornerLeft>0);
+    card.classList.toggle('r-corner',png);card.style.paddingBottom=png?'16px':'';
     text('r-title',locked?w(3):data.title);text('r-context',locked?'':data.context);
     text('r-back','‹ '+w(data?.kind==='range'?5:0));text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(1));
     hide('r-back',locked);hide('r-read',locked);
@@ -102,10 +103,11 @@ import {validGraph, renderGraph} from './graph-render.js';
     if(CHART)renderGraph(locked?null:data.graph,lang,el,hide);
     const position=local;
     hide('r-footer',true);mount([]);if(!locked) layout();
-    // Full-width arrows stay above the clock; only an unpaged graph action
-    // may share its free corner. Re-measure once, preserving the chosen part.
-    if(CHART&&corner&&!el('r-footer').classList.contains('r-hidden')) {
-      card.classList.remove('r-corner','r-left');card.style.paddingBottom='';local=position;layout();
+    // Once paging is needed, reuse the free corner when the compact group fits.
+    if(!el('r-footer').classList.contains('r-hidden')) {
+      card.classList.toggle('r-corner',paging);card.style.paddingBottom=paging?'16px':'';
+      if(CHART&&!paging)card.classList.remove('r-left');
+      local=position;layout();
     }
     if(!CHART) {
       cancelAnimationFrame(frame);

@@ -21,9 +21,10 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-action { color: var(--ha-accent); background: var(--ha-accent-soft); border-color: var(--ha-accent-soft); }
 .r-selected { background: var(--ha-accent-soft); border-color: var(--ha-accent); }
 .r-danger { border-color: var(--ha-error); color: var(--ha-error); background: var(--ha-error-soft); }
-.r-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--ha-space-2); }
-.r-pager span { flex:1; min-width:0; color: var(--ha-muted); font-size: 11px; text-align: center; white-space:pre-line; }
-.r-pager button { min-width: 44px; min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
+.r-pager { display: flex; align-items: center; justify-content: center; gap: var(--ha-space-2); }
+.r-pager span { flex:0 0 72px; color: var(--ha-muted); font-size: 11px; text-align: center; white-space:pre-line; }
+.r-corner .r-footer { margin:0 var(--tg-content-safe-area-corner-right) 0 var(--tg-content-safe-area-corner-left); }
+.r-pager button { min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
 #r-read, .r-footer button { flex:none; width:44px; height:44px; font-size:22px; line-height:1; }
 #r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); }
 [aria-disabled="true"] { opacity: .45; cursor: auto; }

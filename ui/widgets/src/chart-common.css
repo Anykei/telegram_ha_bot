@@ -16,6 +16,7 @@ h1 { margin:8px 0 12px; font-size:24px; line-height:1.2; }
 .r-alert { font-weight:600; }
 #r-read,footer button { flex:none; width:44px; height:44px; font-size:22px; line-height:1; }
 #r-feedback { margin:8px 0 0; }
-footer { justify-content:space-between; margin-top:8px; }
-footer span { flex:1; min-width:0; text-align:center; }
+footer { justify-content:center; margin-top:8px; }
+footer span { flex:none; width:72px; text-align:center; }
+.r-corner footer { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }
 .r-hidden { display:none!important; }
