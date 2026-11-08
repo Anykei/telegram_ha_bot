@@ -25,6 +25,9 @@ pub struct View {
     pub html_title: Option<String>,
     #[serde(default)]
     pub html_context: Option<String>,
+    /// Explicit parent or cancellation route. Independent of translated button labels.
+    #[serde(default)]
+    pub html_back: Option<Payload>,
     #[serde(default)]
     pub html_kind: Option<String>,
     /// Short confirmed state shown with controls; full text stays in details.

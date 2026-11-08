@@ -141,7 +141,7 @@ pub async fn render(ctx: RenderContext, room_id: i64, device_id: i64) -> Result<
         device: device_id,
     });
     Ok(View {
-        // header: Some("⚙️ Параметры".into()),
+        html_context: Some(dev.alias.as_deref().unwrap_or(&dev.entity_id).to_string()),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -322,6 +322,7 @@ pub async fn render_state_aliases(
         device: device_id,
     });
     Ok(View {
+        html_context: Some(dev.alias.as_deref().unwrap_or(&dev.entity_id).to_string()),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),

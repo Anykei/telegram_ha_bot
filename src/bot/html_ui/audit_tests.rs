@@ -4,6 +4,9 @@ use super::*;
 use crate::bot::personal::FavoriteAction;
 use crate::i18n::Language;
 
+#[path = "navigation_tests.rs"]
+mod navigation_tests;
+
 #[tokio::test]
 async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> {
     let (config, _) = mock_config().await?;

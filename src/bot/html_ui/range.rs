@@ -603,6 +603,8 @@ pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         status: Vec::new(),
         graph: view.html_chart.clone(),
         calendar: view.html_calendar,
+        list: None,
+        bounded: false,
         time: view.html_time,
         rows,
         read: "read".into(),

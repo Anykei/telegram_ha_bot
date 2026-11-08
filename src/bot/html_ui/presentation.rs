@@ -41,6 +41,12 @@ pub struct Page {
     pub read: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<String>,
+    /// Source-list position and opaque previous/next callbacks; shared by wire pages.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "q")]
+    pub list: Option<(String, Option<String>, Option<String>)>,
+    /// Ordinary controls follow the two-line layout; media keeps its existing layout.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not", rename = "l")]
+    pub bounded: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<crate::charts::widget::WidgetChart>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "c")]
@@ -301,6 +307,26 @@ pub fn prepare_with_pending(
     if view.html_range.is_some() {
         return super::range::prepare(view, rev, seq);
     }
+    let mut structured = view.clone();
+    super::super::screen_structure::apply(&mut structured);
+    let view = &structured;
+    let parent = super::super::screen_structure::parent(view);
+    let back = parent.as_ref().map(|parent| {
+        view.kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .enumerate()
+            .find_map(|(index, button)| match &button.kind {
+                InlineKeyboardButtonKind::CallbackData(data)
+                    if Payload::from_string(data).ok().as_ref() == Some(parent) =>
+                {
+                    Some(format!("a{index}"))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| "back".into())
+    });
     let english = view.lang == Language::En;
     let title = view
         .html_title
@@ -362,18 +388,9 @@ pub fn prepare_with_pending(
         alert: String::new(),
         rows: Vec::new(),
         read: "read".into(),
-        // The shared screen builder labels its existing parent callback with
-        // common.back. Pin the last such button (the footer), without inventing
-        // a parent route or losing list/wizard context. Keys keep their row order.
-        back: view
-            .kb
-            .inline_keyboard
-            .iter()
-            .flatten()
-            .enumerate()
-            .filter(|(_, button)| button.text == t(view.lang, "common.back"))
-            .map(|(index, _)| format!("a{index}"))
-            .last(),
+        back,
+        list: None,
+        bounded: false,
         prev: Some("p9999".into()),
         next: Some("p9999".into()),
         graph: None,
@@ -626,6 +643,11 @@ pub fn prepare_with_pending(
         page.prev = (index > 0).then(|| format!("p{}", index - 1));
         page.next = (index + 1 < pages).then(|| format!("p{}", index + 1));
         page.json()?;
+    }
+    if let Some(parent) = parent {
+        if !actions.values().any(|action| action == &parent) {
+            actions.insert("back".into(), parent);
+        }
     }
     Ok(Prepared {
         pages: parts,

@@ -374,7 +374,10 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         .into_iter()
         .filter(|b| prepared.actions.contains_key(&b.key))
         .collect::<Vec<_>>();
-    assert_eq!(prepared.actions.len(), original.len());
+    assert_eq!(prepared.actions.len(), original.len() + usize::from(prepared.actions.contains_key("back")));
+    if let Some(back) = prepared.actions.get("back") {
+        assert_eq!(Some(back), crate::bot::screen_structure::parent(view).as_ref());
+    }
     let mut order = Vec::new();
     for (index, button) in original.iter().enumerate() {
         let key = format!("a{index}");

@@ -1666,6 +1666,7 @@ pub async fn router(
         view.kb.inline_keyboard.insert(index, row);
     }
     view.lang = final_lang;
+    super::screen_structure::apply(&mut view);
     view.rendered_at = Some(chrono::Utc::now());
     super::text_pages::prepare(&mut view, user_id, &config).await?;
     Ok(view)

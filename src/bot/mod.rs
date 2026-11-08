@@ -9,6 +9,7 @@ pub(crate) mod personal;
 pub(crate) mod recording_rule_wizard;
 pub(crate) mod router;
 pub(crate) mod schedule_drafts;
+pub(crate) mod screen_structure;
 mod screens;
 pub(crate) mod text_commands;
 pub(crate) mod text_pages;
