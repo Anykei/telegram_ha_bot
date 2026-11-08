@@ -5,7 +5,7 @@ button { font: inherit; }
 /* Measure with auto height; JS fixes the completed layout at 600px for native flex. */
 .r-root { min-height:600px; padding:12px 12px 16px; }
 #r-context { flex: 1; color: var(--ha-muted); font-size: 12px; }
-h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight:600; }
+h1 { margin: var(--ha-space-1) 0 var(--ha-space-2); font-size: 28px; line-height: 1.2; font-weight:600; }
 #r-context, h1 { white-space: nowrap; }
 #r-context, h1, .r-button span { text-overflow: ellipsis; overflow: hidden; }
 .r-text { margin: 0 0 var(--ha-space-2); white-space: pre-wrap; }
@@ -47,6 +47,6 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 
 /* Ordinary labels have at most two server-authored lines. Legacy room pages
    use this same geometry; media pages keep their existing controls. */
-.r-bounded .r-row { height:68px; flex-shrink:0; }
-.r-bounded .r-row .r-button { padding:8px var(--ha-space-3); }
+.r-bounded .r-row { height:64px; flex-shrink:0; }
+.r-bounded .r-row .r-button { padding:7px var(--ha-space-3); }
 .r-bounded .r-row .r-button span { white-space:pre; }

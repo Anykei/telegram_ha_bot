@@ -121,7 +121,7 @@ import { validGraph, renderGraph } from './graph-render.js';
         if (card.scrollHeight > 600) return true;
       }
     }
-    if (part.length || !deck.length) deck.push(part);
+    deck.push(part);
     local = Math.min(local, deck.length - 1);
     mount(deck[local]);
     pager(reserve);

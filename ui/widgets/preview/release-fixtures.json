@@ -876,6 +876,73 @@
     }
   },
   {
+    "id": "rooms_six",
+    "label": "Шесть комнат на одном экране",
+    "page": {
+      "v": 1,
+      "rev": "33333333333333333333333333333333",
+      "seq": 3,
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "rows": [
+        [
+          {
+            "text": "🏠 🍳 Кухня",
+            "key": "room0",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "🏠 🛏 Спальня",
+            "key": "room1",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "🏠 🛁 Ванная",
+            "key": "room2",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "🏠 🧥 Коридор",
+            "key": "room3",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "🏠 🚽 Туалет",
+            "key": "room4",
+            "kind": "nav"
+          }
+        ],
+        [
+          {
+            "text": "🏠 Балкон",
+            "key": "room5",
+            "kind": "nav"
+          }
+        ]
+      ],
+      "read": "read",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "back": "home",
+      "l": true,
+      "kind": "list"
+    }
+  },
+  {
     "id": "room",
     "label": "Комната",
     "page": {

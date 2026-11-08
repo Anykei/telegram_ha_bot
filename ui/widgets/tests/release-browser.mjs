@@ -44,14 +44,14 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       available:${doc}.documentElement.clientWidth,
       textFits:Array.from(${doc}.querySelectorAll('.r-text,.r-status')).every(p=>p.scrollWidth<=p.clientWidth),
       labelsFit:Array.from(${doc}.querySelectorAll('.r-bounded .r-row .r-button span')).every(p=>p.getBoundingClientRect().height<=2*parseFloat(${win}.getComputedStyle(p).lineHeight)+1),
-      rowsFit:Array.from(${doc}.querySelectorAll('.r-bounded:not([data-kind="home"]) .r-row')).every(p=>Math.abs(p.getBoundingClientRect().height-68)<1),
+      rowsFit:Array.from(${doc}.querySelectorAll('.r-bounded:not([data-kind="home"]) .r-row')).every(p=>Math.abs(p.getBoundingClientRect().height-64)<1),
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))
     })`);
     assert.equal(result.height, 600, `${label}: fixed card height`);
     assert.ok(result.width <= result.available, `${label}: no horizontal overflow`);
     assert.ok(result.textFits, `${label}: full text wraps without clipping`);
     assert.ok(result.labelsFit, `${label}: ordinary labels use at most two authored lines`);
-    assert.ok(result.rowsFit, `${label}: ordinary rows retain 68px height`);
+    assert.ok(result.rowsFit, `${label}: ordinary rows retain 64px height`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
     const refresh = await evaluate(`(() => {
       const b=${get('r-read')},r=b.getBoundingClientRect();
@@ -227,14 +227,25 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     if(shared) assert.ok(footer.bottom>536,`${fixture.id}: pager actually uses the clock band`);
   }
   for (const width of [320,360,390,430]) {
-    await reload('room_paginated',{width,theme:'dark'});
+    await reload('rooms_six',{width,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,64)`);
-    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true,'Six-row room must reclaim the clock band after establishing its pager');
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6,'All six rooms fit on the first screen');
+    assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),true,'Six rooms need no extra part');
+    await dimensions(`six rooms/${width}`);
+    const lastRoom=button('room5');
+    await checkNativeLayout({evaluate,doc,target:lastRoom,label:`six rooms/${width}`,bottom:await evaluate(`${lastRoom}.getBoundingClientRect().bottom`),hitTest:true});
+    if(width===390) await capture('release-six-rooms');
+    await reload('room_paginated',{width,theme:'dark'});
+    const page=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
+    page.b.push([['Розетка\nВЫКЛ','extra_socket','nav']]);page.seq=100;
+    await push(page);
+    await evaluate(`${win}.previewSetSafeArea(64,64)`);
+    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true,'Seven-row room must reclaim the clock band after establishing its pager');
     assert.equal(await evaluate(`${get('r-server')}.getBoundingClientRect().bottom`),584,'Room pager uses the free clock corner');
     await checkNativeLayout({evaluate,doc,target:get('r-next'),label:`room/${width}`,bottom:584});
-    assert.ok(await evaluate(`${doc}.querySelectorAll('.r-row').length>=5`),'Room rows retain their full size with the fixed header');
-    await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,`six rows/header/${width}`);
-    await dimensions(`six rows/corner/${width}`);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6,'Six full-size rows fit beside the clock');
+    await assertPreserved(page,`seven rows/header/${width}`);
+    await dimensions(`seven rows/corner/${width}`);
     if(width===390) {
       await evaluate(`{const clock=${doc}.createElement('div');clock.textContent='07:41';clock.style.cssText='position:absolute;bottom:4px;right:4px;padding:4px 8px;border-radius:14px;background:#101b22;color:white';${doc}.body.appendChild(clock);}`);
       await capture('release-room-six-rows-clock');
@@ -246,7 +257,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     const seven=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
     seven.b.push([['Розетка\nВЫКЛ','extra_socket','nav']]);seven.seq=100;
     await push(seven);
-    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),5);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6);
     assert.equal((await assertPreserved(seven,`seven rows/${width}`)).parts,2);
     await push({seq:101,alert:'Нет ответа. Обновите состояние.'});
     await assertPreserved({...seven,alert:'Нет ответа. Обновите состояние.'},`error/corner/${width}`);
@@ -257,11 +268,17 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await evaluate(`${win}.previewSetSafeArea(64,64)`);
   await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'narrow/corner');
   await reload('room_paginated',{width:360,theme:'dark'});
+  const clockPage=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
+  clockPage.b.push([['Розетка','extra_socket','nav']]);clockPage.seq=100;
+  await push(clockPage);
   await evaluate(`${win}.previewSetSafeArea(64,80);${get('r-next')}.click()`);
   const lastRoomPart=await evaluate(`${get('r-content')}.textContent`);
   for(const [left,right] of [[80,0],[80,80],[0,200],[0,80]]) {
     await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
-    assert.equal(await evaluate(`${get('r-content')}.textContent`),lastRoomPart,'Clock changes preserve the local room part');
+    // A wider clock can reduce the first part from six to five rows. The last
+    // part then gains a preceding row, but the selected end of the list stays.
+    assert.ok(await evaluate(`${get('r-content')}.textContent.endsWith(${JSON.stringify(lastRoomPart)})`),'Clock changes preserve the selected end of the list');
+    assert.equal(await evaluate(`${get('r-count')}.textContent`),'1.2','Clock changes keep the selected part');
     await dimensions(`room part/clock ${left}/${right}`);
     await checkNativeLayout({evaluate,doc,target:get('r-next'),label:`room/clock/${left}/${right}`,bottom:360-left-right>=200?584:536});
   }
@@ -323,7 +340,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     })`);
     assert.ok(labels.length >= 5);
     for (const label of labels) {
-      assert.equal(label.height, 68, 'Every room button has the same fixed height');
+      assert.equal(label.height, 64, 'Every room button has the same fixed height');
       assert.equal(label.text.split('\n').length, 2, 'Name and state stay on separate authored lines');
       assert.ok(label.labelHeight <= label.lineHeight * 2 + 1, 'Visible label never exceeds two lines');
       assert.equal(label.wrap, 'pre');
