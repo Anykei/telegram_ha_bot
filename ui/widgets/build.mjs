@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { transform, build as bundle } from 'esbuild';
 import { minify } from 'terser';
 import { embed } from './preview/embed.mjs';
+import { compactRelease } from './private-names.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const read = path => readFile(root + path, 'utf8');
@@ -38,9 +39,10 @@ async function build(screen, stylesheet, title) {
   // iframe), so its document needs neither a browser viewport hint nor a title.
   // HTML permits omitted html/head/body tags. The parser still creates all
   // three elements; keep the doctype and UTF-8 declaration.
-  const html = r1
+  let html = r1
     ? `<!doctype html><meta charset=utf-8><style>${css.code.trim()}</style>${body}<script>${script.code.trim()}</script>`
     : `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
+  if (screen === 'release') html = compactRelease(html);
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);

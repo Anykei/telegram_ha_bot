@@ -2,8 +2,13 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { releaseExpression } from '../private-names.mjs';
 
 export async function checkLive({root, command, evaluate, until, file}) {
+  let release=false;
+  const rawEvaluate=evaluate, rawUntil=until;
+  evaluate=source=>rawEvaluate(release?releaseExpression(source):source);
+  until=source=>rawUntil(release?releaseExpression(source):source);
   const fixtures = JSON.parse(await readFile(file, 'utf8'));
   assert.ok(fixtures.length > 0, 'Live test exported pages');
   const assets = Object.fromEntries(await Promise.all(['release','graph'].map(async name => [name, await readFile(root+`dist/${name}.html`, 'utf8')])));
@@ -19,6 +24,7 @@ export async function checkLive({root, command, evaluate, until, file}) {
   for (const theme of ['light','dark']) for (const width of [200,320,360,430]) {
     await command('Emulation.setDeviceMetricsOverride', {width,height:640,deviceScaleFactor:1,mobile:true});
     for (const fixture of fixtures) {
+      release=fixture.renderer==='release';
       const label = `${fixture.id}/${theme}/${width}`, page = fixture.page;
       try {
         // All source actions remain visible; no action can reach HA or Telegram from this harness.
@@ -27,6 +33,9 @@ export async function checkLive({root, command, evaluate, until, file}) {
         await evaluate(`new Promise(resolve=>{const f=document.getElementById('live');f.onload=()=>resolve(true);f.srcdoc=${JSON.stringify(html)}})`);
         await until(`${get('r-title')} && ${get('r-title')}.textContent===${JSON.stringify(page.title)}`);
         let text = '', actions = [], local = 0;
+        const overflow=await evaluate(`({context:${get('r-context')}.scrollWidth>${get('r-context')}.clientWidth,title:${get('r-title')}.scrollWidth>${get('r-title')}.clientWidth})`);
+        const expectedText=(release&&overflow.context?page.context:'')+(release&&overflow.title?page.title:'')+page.alert+page.notice+page.body+(page.hint||'');
+        const expectedActions=page.b.flat().filter(b=>b[1]!==page.back).map(b=>[b[1],b[0]]);
         while (true) {
           assert.ok(++local < 100, `${label}: finite local pagination`);
           const actual = await evaluate(`({
@@ -35,8 +44,7 @@ export async function checkLive({root, command, evaluate, until, file}) {
             textFits:Array.from(${doc}.querySelectorAll('.r-text')).every(n=>n.scrollWidth<=n.clientWidth),
             actions:Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent]),
             targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height})),
-            back:${get('r-back')}.getBoundingClientRect().height,
-            last:${get('r-local')}.classList.contains('r-hidden') || ${get('r-local-next')}.getAttribute('aria-disabled')==='true'
+            back:${get('r-back')}.getBoundingClientRect().height
           })`);
           assert.ok(actual.height<=600, `${label}: card height ${actual.height}`);
           assert.ok(actual.width<=actual.available && actual.textFits, `${label}: no clipped text or horizontal overflow`);
@@ -49,8 +57,8 @@ export async function checkLive({root, command, evaluate, until, file}) {
             await writeFile(join(folder,sample+'.png'),Buffer.from(data,'base64'));
             captured.add(sample);
           }
-          if (actual.last) break;
-          await evaluate(`${get('r-local-next')}.click()`);
+          if (text===expectedText && actions.length===expectedActions.length) break;
+          await evaluate(`${get(release?'r-next':'r-local-next')}.click()`);
         }
         assert.ok(text.endsWith(page.alert+page.notice+page.body+(page.hint||'')), `${label}: all text preserved`);
         assert.deepEqual(actions,page.b.flat().filter(b=>b[1]!==page.back).map(b=>[b[1],b[0]]),`${label}: all actions preserved`);

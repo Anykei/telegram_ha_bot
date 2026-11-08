@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { releaseExpression } from '../private-names.mjs';
 
 export async function checkRelease({root, command, evaluate, until, screenshot}) {
+  const rawEvaluate = evaluate, rawUntil = until;
+  evaluate = source => rawEvaluate(releaseExpression(source));
+  until = source => rawUntil(releaseExpression(source));
   const fixtures = JSON.parse(await readFile(root + 'preview/release-fixtures.json', 'utf8'));
   const rows = page => page.b ? page.b.map(row=>row.map(([text,key,kind])=>({text,key,kind}))) : page.rows;
   const visibleActions = page => rows(page).flat().filter(b=>b.key!==page.back).map(b=>[b.key,b.text]);
   const doc = `document.getElementById('release-frame').contentDocument`;
   const win = `document.getElementById('release-frame').contentWindow`;
-  const get = id => `${doc}.getElementById('${id}')`;
+  const get = id => `${doc}.getElementById('${({'r-local':'r-server','r-local-prev':'r-prev','r-local-next':'r-next','r-local-count':'r-count'})[id] || id}')`;
   const button = key => `${doc}.querySelector('[data-key="${key}"]')`;
   const state = `JSON.parse(${win}.TelegramWidget.chatData)`;
   const click = key => evaluate(`${button(key)}.click()`);
@@ -38,11 +42,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       width:${doc}.documentElement.scrollWidth,
       available:${doc}.documentElement.clientWidth,
       textFits:Array.from(${doc}.querySelectorAll('.r-text,.r-status')).every(p=>p.scrollWidth<=p.clientWidth),
+      labelsFit:Array.from(${doc}.querySelectorAll('.r-bounded .r-row .r-button span')).every(p=>p.getBoundingClientRect().height<=2*parseFloat(${win}.getComputedStyle(p).lineHeight)+1),
+      rowsFit:Array.from(${doc}.querySelectorAll('.r-bounded:not([data-kind="home"]) .r-row')).every(p=>Math.abs(p.getBoundingClientRect().height-68)<1),
       targets:Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect()).filter(r=>r.width).map(r=>({width:r.width,height:r.height}))
     })`);
     assert.equal(result.height, 600, `${label}: fixed card height`);
     assert.ok(result.width <= result.available, `${label}: no horizontal overflow`);
     assert.ok(result.textFits, `${label}: full text wraps without clipping`);
+    assert.ok(result.labelsFit, `${label}: ordinary labels use at most two authored lines`);
+    assert.ok(result.rowsFit, `${label}: ordinary rows retain 68px height`);
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
     const overlap = await evaluate(`(() => {
       const a=${win}.TelegramWidget.contentSafeAreaInset, width=${get('release')}.clientWidth;
@@ -57,26 +65,38 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   async function collectParts(label, page) {
     let text = '', actions = [], status = [], part = 0;
+    const overflow = await evaluate(`({title:${get('r-title')}.scrollWidth>${get('r-title')}.clientWidth,context:${get('r-context')}.scrollWidth>${get('r-context')}.clientWidth})`);
+    const expected = (overflow.context?page.context:'')+(overflow.title?page.title:'')+page.alert+page.notice+page.body+(page.hint||'');
     while (true) {
       assert.ok(++part <= 40, `${label}: finite local pagination`);
       await dimensions(`${label}/part${part}`);
       if (page && page.back) {
         const back = await evaluate(`({text:${get('r-back')}.textContent,rect:${get('r-back')}.getBoundingClientRect().toJSON()})`);
-        assert.equal(back.text, page.lang === 'ru' ? '‹ Назад' : '‹ Back');
+        const cancel=['form','confirmation'].includes(page.kind);
+        assert.equal(back.text, '‹ '+(page.lang === 'ru' ? cancel?'Отмена':'Назад' : cancel?'Cancel':'Back'));
         assert.ok(back.rect.width >= 44 && back.rect.height >= 44 && back.rect.top < 30, `${label}/part${part}: persistent Back at the top`);
       }
       const content = await evaluate(`({
         text:Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join(''),
         actions:Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent]),
-        status:Array.from(${doc}.querySelectorAll('div.r-status')).map(s=>Array.from(s.children,n=>n.textContent)),
-        last:${get('r-local')}.classList.contains('r-hidden') || ${get('r-local-next')}.getAttribute('aria-disabled')==='true'
+        status:Array.from(${doc}.querySelectorAll('div.r-status')).map(s=>Array.from(s.children,n=>n.textContent))
       })`);
       text += content.text; actions.push(...content.actions); status.push(...content.status);
-      if (content.last) break;
+      if (text===expected && actions.length===visibleActions(page).length && status.length===(page.status||[]).length) break;
+      assert.notEqual(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')`),'true',`${label}: content remains reachable`);
       await evaluate(`${get('r-local-next')}.click()`);
     }
     for (let i = 1; i < part; i++) await evaluate(`${get('r-local-prev')}.click()`);
     return {text, actions, status, parts: part};
+  }
+  async function serverStep(direction='next') {
+    for(let part=0;part<40;part++) {
+      await evaluate(`${get('r-'+direction)}.click()`);
+      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) {
+        await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`); return;
+      }
+    }
+    assert.fail('Server page remains reachable through the unified pager');
   }
   async function assertPreserved(page, label) {
     const content = await collectParts(label, page);
@@ -114,7 +134,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
         assert.equal(await evaluate(`${doc}.documentElement.getAttribute('data-theme')`), theme, `${fixture.id}/${theme}/${width}: widget initialized`);
         if (fixture.page.b && (['device','climate'].includes(fixture.page.kind) || fixture.home?.primary) && fixture.page.page===1 && width>=320) {
           assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.firstChild.textContent])`), visibleActions(fixture.page), `${fixture.id}/${theme}/${width}: all primary controls on the first local part`);
-          assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
+          assert.ok(await evaluate(`${get('r-count')}.textContent.endsWith('.1')`));
           assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0, 'Idle feedback takes no space');
         }
         const content = await assertPreserved(fixture.page, `${fixture.id}/${theme}/${width}`);
@@ -123,6 +143,56 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     }
   }
   assert.ok(localPaginationSeen, 'Long fixture exercises local pagination');
+  // One set of arrows traverses local parts, server chunks and source pages.
+  // Previous source keys return the last server chunk, then the last local part.
+  for(const lang of ['ru','en']) for(const theme of ['light','dark']) for(const width of [200,320,360,430]) {
+    await reload('list_1_1'+(lang==='en'?'_en':''),{theme,width});
+    await evaluate(`${win}.previewSetSafeArea(64)`);
+    await evaluate(`{const w=${win},request=w.TelegramWidget.request.bind(w.TelegramWidget),timeout=w.setTimeout.bind(w);w.__requests=[];w.setTimeout=(fn,ms,...args)=>timeout(fn,ms===250?0:ms,...args);w.TelegramWidget.request=raw=>{w.__requests.push(raw);return request(raw);};}`);
+    const parts=[];let steps=0;
+    while(true) {
+      assert.ok(++steps<40,'Finite forward traversal of 21 items');
+      await dimensions(`source/${lang}/${theme}/${width}/${steps}`);
+      assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer > .r-pager').length`),1);
+      const part=await evaluate(`({keys:Array.from(${doc}.querySelectorAll('[data-key]'),b=>b.dataset.key),label:${get('r-count')}.textContent})`);
+      assert.ok(part.label.startsWith(lang==='ru'?'Список ':'List '),'Source position is explicit');parts.push(part);
+      if(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')==='true'`)) break;
+      await evaluate(`${get('r-next')}.click()`);
+      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+    }
+    assert.deepEqual(parts.flatMap(p=>p.keys),Array.from({length:21},(_,i)=>'item'+(i+1)),'All 21 items appear exactly once');
+    assert.equal(await evaluate(`${win}.__requests.length`),4,'Only wire/source boundaries request the server');
+    for(const expected of parts.slice(0,-1).reverse()) {
+      await evaluate(`${get('r-prev')}.click()`);
+      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+      assert.deepEqual(await evaluate(`({keys:Array.from(${doc}.querySelectorAll('[data-key]'),b=>b.dataset.key),label:${get('r-count')}.textContent})`),expected,'Backwards traversal returns the exact previous part');
+    }
+    assert.equal(await evaluate(`${win}.__requests.length`),8);
+    assert.equal(await evaluate(`${get('r-prev')}.getAttribute('aria-disabled')`),'true');
+    if(lang==='ru' && theme==='light' && width===320) await capture('release-list-unified');
+  }
+  for(const order of ['ack-first','data-first']) {
+    const target=fixtures.find(f=>f.id==='list_2_2').page;
+    await reload('list_2_2',{width:200});await evaluate(`${win}.previewSetSafeArea(64)`);
+    const {parts}=await collectParts('source return target',target);
+    for(let i=1;i<parts;i++)await evaluate(`${get('r-next')}.click()`);
+    const last=await evaluate(`${get('r-content')}.textContent`);
+    await reload('list_3_1',{width:200});await evaluate(`${win}.previewSetSafeArea(64)`);await controlRequests();
+    await evaluate(`${get('r-prev')}.click();${get('r-prev')}.click()`);
+    assert.equal(await evaluate(`${win}.__requests.length`),1,'Source Back deduplicates requests');
+    await push({seq:0}); // Stale pushes cannot consume the requested end position.
+    await push({seq:2,rev:'b'.repeat(32)}); // Same-screen refresh before navigation.
+    if(order==='ack-first')await reply({accepted:true});
+    await evaluate(`${win}.previewSetData(${JSON.stringify({...target,seq:3,rev:'c'.repeat(32)})})`);
+    if(order==='data-first')await reply({accepted:true});
+    await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+    assert.equal(await evaluate(`${get('r-content')}.textContent`),last,'Source Back opens the last local part despite refresh/ACK ordering');
+  }
+  await reload('bounded_names',{width:200});
+  assert.ok(await evaluate(`${button('negative')}.firstChild.textContent.startsWith('Не включать')`),'The complete negated command is retained before the object');
+  await click('bounded_detail');
+  await until(`${get('r-title')}.textContent==='Гостевая спальня на втором этаже рядом с лестницей'`);
+  await assertPreserved(fixtures.find(f=>f.id==='bounded_detail').page,'Complete name after opening its card');
   // The time band belongs to every screen. Its uncovered side is usable when
   // the client supplies a corner width; this is independent of the screen kind.
   for (const fixture of fixtures) for (const side of ['left','right']) {
@@ -191,8 +261,8 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   await reload('six_rows', {width:390});
   await evaluate(`${win}.previewSetSafeArea(24)`);
-  assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 6, 'More than five rows fit without another page');
-  assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true);
+  assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5, 'Five stable 68px rows fit before continuation');
+  assert.equal((await assertPreserved(fixtures.find(f=>f.id==='six_rows').page,'six bounded rows')).parts,2);
   await dimensions('six rows');
   // Authored two-line labels make every device row predictable, even with long
   // names, duplicate aliases and custom states. Native clock space stays clear.
@@ -200,7 +270,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload('room_five_rows', {theme:'dark', width});
     await evaluate(`${win}.previewSetSafeArea(24)`);
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5, 'Five room rows fit on a phone');
-    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), true, 'No extra local page on a phone');
+    assert.ok(await evaluate(`${get('r-count')}.textContent.endsWith('.1')`), 'No extra local part on a phone');
     const footer = await evaluate(`(() => {
       const read=${get('r-read')}.getBoundingClientRect(), pager=${get('r-server')}.getBoundingClientRect();
       return {sameRow:Math.abs(read.top-pager.top)<1,bottom:Math.max(read.bottom,pager.bottom),label:${get('r-read')}.getAttribute('aria-label')};
@@ -243,7 +313,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.equal(await evaluate(`${win}.getComputedStyle(${doc}.body).paddingBottom`), '0px');
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5);
     assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), false);
-    assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`), true);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer > .r-pager').length`), 1, 'A single pager represents all continuation');
     const footer = await evaluate(`({local:${get('r-local')}.getBoundingClientRect().toJSON(),read:${get('r-read')}.getBoundingClientRect().toJSON()})`);
     assert.equal(footer.local.top, footer.read.top, 'Local navigation and refresh occupy one row');
     assert.ok(footer.local.right <= footer.read.left, 'Navigation cannot overlap refresh');
@@ -254,7 +324,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   // Old snapshots without optional kind/hint still have the default menu presentation.
   await reload('home');
-  await evaluate(`{const page=${state};delete page.kind;delete page.status;${win}.previewSetData(page);}`);
+  await evaluate(`{const page=${state};delete page.kind;delete page.status;delete page.l;delete page.q;${win}.previewSetData(page);}`);
   assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
   assert.equal(await evaluate(`${doc}.querySelector('.r-hint')`), null);
   assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
@@ -263,12 +333,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${get('r-count')}.textContent === '2/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${state}.page === 2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'Избранное');
   assert.ok(await evaluate(`${button('device')} && ${button('climate')}`));
   await capture('release-home-favorites');
   await evaluate(`${get('r-prev')}.click()`);
-  await until(`${get('r-count')}.textContent === '1/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${state}.page === 1 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
   assert.ok(await evaluate(`${button('rooms')}`));
   // Role and favorites never move the six primary sections off the first page.
   const primaryKeys=['rooms','scenes','cameras','favorites','settings','help'];
@@ -284,7 +354,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     await reload(fixture.id,{width:320});
     if(filled) {
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent === '2/2' && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${state}.page === 2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
       assert.equal(await evaluate(`${get('r-title')}.textContent`),ru?'Избранное':'Favorites');
       assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
       await evaluate(`${get('r-back')}.click()`);
@@ -300,7 +370,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       const fixture=fixtures.find(f=>f.id===id+suffix);
       await reload(fixture.id,{width,theme:'dark'});
       await evaluate(`${win}.previewSetSafeArea(64)`);
-      assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true,'Status never pushes primary sections to a local continuation');
+      assert.ok(await evaluate(`${get('r-count')}.textContent.endsWith('.1')`),'Status never pushes primary sections to a local continuation');
       assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),(id==='home_statuses'?['all_statuses']:[]).concat(primaryKeys,'admin'));
       await dimensions(fixture.id+'/'+width);
       if (id==='home_statuses') {
@@ -326,7 +396,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       const geometry=await evaluate(`(() => {
         const d=${doc}, rows=Array.from(d.querySelectorAll('.r-row'),n=>n.getBoundingClientRect());
         return {footer:d.querySelector('.r-footer').getBoundingClientRect().toJSON(),last:rows.at(-1).toJSON(),
-          heights:rows.map(r=>r.height),parts:${get('r-local')}.classList.contains('r-hidden')};
+          heights:rows.map(r=>r.height),parts:${get('r-count')}.textContent.endsWith('.1')};
       })()`);
       assert.equal(geometry.parts,true,`${id}/${width}/${safe}: main sections fit`);
       assert.equal(geometry.footer.bottom,600-Math.max(16,safe),`${id}/${width}/${safe}: footer above the native clock`);
@@ -470,20 +540,21 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await evaluate(`${get('r-local-next')}.click()`);
   const partBefore = await evaluate(`${get('r-local-count')}.textContent`);
   const textBefore = await evaluate(`${get('r-content')}.textContent`);
-  assert.ok(partBefore.includes(' 2/'));
+  assert.ok(partBefore.endsWith('.2'));
   await push({s:'room-1',seq:101,rev:'b'.repeat(32)});
   assert.equal(await evaluate(`${get('r-local-count')}.textContent`),partBefore);
   assert.equal(await evaluate(`${get('r-content')}.textContent`),textBefore);
   await push({s:'room-2',seq:102,rev:'c'.repeat(32)});
-  assert.ok(await evaluate(`${get('r-local-count')}.textContent.includes(' 1/')`));
+  assert.ok(await evaluate(`${get('r-local-count')}.textContent.endsWith('.1')`));
   await evaluate(`${get('r-local-next')}.click()`);
   await push({s:'room-2',seq:103,page:2,pages:2});
-  assert.ok(await evaluate(`${get('r-local-count')}.textContent.includes(' 1/')`));
+  assert.ok(await evaluate(`${get('r-local-count')}.textContent.endsWith('.1')`));
   // Both wire shapes together, malformed tuples and invalid typed values fail closed.
   for (const shape of [
     {rows:[],b:[]}, {b:null}, {b:[null]}, {b:[[{}]]}, {b:[[['short','key']]]},
     {b:[[['extra','key','nav','extra']]]}, {b:[[[4,'key','nav']]]},
-    {b:[[['Label','bad:key','nav']]]}, {b:[[['Label','key','unknown']]]}
+    {b:[[['Label','bad:key','nav']]]}, {b:[[['Label','key','unknown']]]},
+    {q:null},{q:[]},{q:['List',null]},{q:['List',null,'bad:key']},{q:[1,null,null]},{l:'yes'}
   ]) {
     await reload('home'); await controlRequests();
     const bad={...fixtures[0].page}; delete bad.rows; Object.assign(bad,shape);
@@ -495,8 +566,8 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
     await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
     if (serverPage === 2) {
-      await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith('2/2') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await serverStep();
+      await until(`${state}.page===2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');
     assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'false');
@@ -542,12 +613,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   for (const lang of ['ru','en']) {
     await reload(lang === 'ru' ? 'admin' : 'admin_en');
     for (const page of [2,3]) {
-      await evaluate(`${get('r-next')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith('${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await serverStep();
+      await until(`${state}.page===${page} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     for (const page of [2,1]) {
-      await evaluate(`${get('r-prev')}.click()`);
-      await until(`${get('r-count')}.textContent.endsWith('${page}/3') && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await serverStep('prev');
+      await until(`${state}.page===${page} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), lang === 'ru' ? 'Обновить' : 'Refresh');
   }

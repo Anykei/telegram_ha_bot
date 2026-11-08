@@ -67,7 +67,8 @@
           "Закрыта",
           "×4 · 5м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -138,7 +139,8 @@
           "Закрыта",
           "×4 · 5м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -216,7 +218,8 @@
           "Закрыта",
           "×4 · 5м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -294,7 +297,8 @@
           "Закрыта",
           "×4 · 5м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -365,7 +369,8 @@
           "Closed",
           "×4 · 5m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -436,7 +441,8 @@
           "Closed",
           "×4 · 5m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -514,7 +520,8 @@
           "Closed",
           "×4 · 5m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -592,7 +599,8 @@
           "Closed",
           "×4 · 5m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -647,7 +655,8 @@
           ]
         ]
       ],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -673,7 +682,8 @@
       "page": 3,
       "pages": 3,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -699,7 +709,8 @@
       "page": 2,
       "pages": 2,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -754,7 +765,8 @@
           ]
         ]
       ],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -780,7 +792,8 @@
       "page": 3,
       "pages": 3,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -806,7 +819,8 @@
       "page": 2,
       "pages": 2,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -857,7 +871,8 @@
       "next": "next",
       "page": 1,
       "pages": 2,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -919,7 +934,8 @@
       "page": 1,
       "pages": 1,
       "back": "rooms",
-      "kind": "room"
+      "kind": "room",
+      "l": true
     }
   },
   {
@@ -957,7 +973,8 @@
             "nav"
           ]
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -1013,7 +1030,8 @@
       "next": "next",
       "page": 1,
       "pages": 2,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1069,7 +1087,8 @@
       "next": "next",
       "page": 1,
       "pages": 2,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1118,7 +1137,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "rooms"
+      "back": "rooms",
+      "l": true
     }
   },
   {
@@ -1200,7 +1220,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1252,7 +1273,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1291,7 +1313,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "scenes"
+      "back": "scenes",
+      "l": true
     }
   },
   {
@@ -1330,7 +1353,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "scenes"
+      "back": "scenes",
+      "l": true
     }
   },
   {
@@ -1380,7 +1404,8 @@
             "nav"
           ]
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -1430,7 +1455,8 @@
             "nav"
           ]
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -1462,7 +1488,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "climate"
+      "back": "climate",
+      "l": true
     }
   },
   {
@@ -1494,7 +1521,8 @@
       "next": null,
       "page": 1,
       "pages": 1,
-      "back": "climate"
+      "back": "climate",
+      "l": true
     }
   },
   {
@@ -1546,7 +1574,8 @@
       "next": "admin_more",
       "page": 1,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1598,7 +1627,8 @@
       "next": "admin_more",
       "page": 1,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1650,7 +1680,8 @@
       "next": "admin_last",
       "page": 2,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1702,7 +1733,8 @@
       "next": "admin_last",
       "page": 2,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1733,7 +1765,8 @@
       "next": null,
       "page": 3,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1764,7 +1797,8 @@
       "next": null,
       "page": 3,
       "pages": 3,
-      "back": "home"
+      "back": "home",
+      "l": true
     }
   },
   {
@@ -1795,7 +1829,8 @@
       "next": null,
       "page": 2,
       "pages": 2,
-      "back": "room"
+      "back": "room",
+      "l": true
     }
   },
   {
@@ -1826,7 +1861,8 @@
       "next": null,
       "page": 2,
       "pages": 2,
-      "back": "room"
+      "back": "room",
+      "l": true
     }
   },
   {
@@ -1888,7 +1924,8 @@
       "page": 1,
       "pages": 1,
       "back": "rooms",
-      "kind": "room"
+      "kind": "room",
+      "l": true
     }
   },
   {
@@ -1911,7 +1948,8 @@
       "page": 2,
       "pages": 2,
       "kind": "device",
-      "back": "room"
+      "back": "room",
+      "l": true
     }
   },
   {
@@ -1986,7 +2024,8 @@
           ]
         ]
       ],
-      "kind": "room"
+      "kind": "room",
+      "l": true
     }
   },
   {
@@ -2051,7 +2090,8 @@
             "nav"
           ]
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -2134,7 +2174,8 @@
           "Неактивно",
           "×2 · 35м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -2220,7 +2261,8 @@
           "Закрыта",
           "×4 · 5м назад"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -2247,7 +2289,8 @@
       "page": 2,
       "pages": 2,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -2330,7 +2373,8 @@
           "Light on",
           "1m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -2416,7 +2460,8 @@
           "Closed",
           "×4 · 5m ago"
         ]
-      ]
+      ],
+      "l": true
     }
   },
   {
@@ -2443,7 +2488,8 @@
       "page": 2,
       "pages": 2,
       "b": [],
-      "back": "p0"
+      "back": "p0",
+      "l": true
     }
   },
   {
@@ -2518,7 +2564,8 @@
           ]
         ]
       ],
-      "kind": "room"
+      "kind": "room",
+      "l": true
     }
   },
   {
@@ -2600,7 +2647,8 @@
           ]
         ]
       ],
-      "kind": "room"
+      "kind": "room",
+      "l": true
     }
   },
   {
@@ -2909,6 +2957,723 @@
       "seq": 1,
       "title": "USB камера",
       "v": 1
+    }
+  },
+  {
+    "id": "list_1_1",
+    "label": "Список 21 · ru · 1.1",
+    "links": {
+      "wire_next": "list_1_2",
+      "source_next": "list_2_1"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list1",
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Длинное название комнаты 1",
+            "item1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 2",
+            "item2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 3",
+            "item3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 4",
+            "item4",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 5",
+            "item5",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": "wire_next",
+      "page": 1,
+      "pages": 2,
+      "q": [
+        "Список 1/3",
+        null,
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_1_2",
+    "label": "Список 21 · ru · 1.2",
+    "links": {
+      "wire_prev": "list_1_1",
+      "source_next": "list_2_1"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list1",
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Длинное название комнаты 6",
+            "item6",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 7",
+            "item7",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 8",
+            "item8",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 9",
+            "item9",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 10",
+            "item10",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": "wire_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "q": [
+        "Список 1/3",
+        null,
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_2_1",
+    "label": "Список 21 · ru · 2.1",
+    "links": {
+      "wire_next": "list_2_2",
+      "source_prev": "list_1_2",
+      "source_next": "list_3_1"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list2",
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Длинное название комнаты 11",
+            "item11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 12",
+            "item12",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 13",
+            "item13",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 14",
+            "item14",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 15",
+            "item15",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": "wire_next",
+      "page": 1,
+      "pages": 2,
+      "q": [
+        "Список 2/3",
+        "source_prev",
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_2_2",
+    "label": "Список 21 · ru · 2.2",
+    "links": {
+      "wire_prev": "list_2_1",
+      "source_prev": "list_1_2",
+      "source_next": "list_3_1"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list2",
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Длинное название комнаты 16",
+            "item16",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 17",
+            "item17",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 18",
+            "item18",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 19",
+            "item19",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Длинное название комнаты 20",
+            "item20",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": "wire_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "q": [
+        "Список 2/3",
+        "source_prev",
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_3_1",
+    "label": "Список 21 · ru · 3.1",
+    "links": {
+      "source_prev": "list_2_2"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list3",
+      "lang": "ru",
+      "title": "Комнаты",
+      "context": "Мой дом",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Длинное название комнаты 21",
+            "item21",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "q": [
+        "Список 3/3",
+        "source_prev",
+        null
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_1_1_en",
+    "label": "Список 21 · en · 1.1",
+    "links": {
+      "wire_next": "list_1_2_en",
+      "source_next": "list_2_1_en"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list1",
+      "lang": "en",
+      "title": "Rooms",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Long room name 1",
+            "item1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 2",
+            "item2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 3",
+            "item3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 4",
+            "item4",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 5",
+            "item5",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": "wire_next",
+      "page": 1,
+      "pages": 2,
+      "q": [
+        "List 1/3",
+        null,
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_1_2_en",
+    "label": "Список 21 · en · 1.2",
+    "links": {
+      "wire_prev": "list_1_1_en",
+      "source_next": "list_2_1_en"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list1",
+      "lang": "en",
+      "title": "Rooms",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Long room name 6",
+            "item6",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 7",
+            "item7",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 8",
+            "item8",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 9",
+            "item9",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 10",
+            "item10",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": "wire_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "q": [
+        "List 1/3",
+        null,
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_2_1_en",
+    "label": "Список 21 · en · 2.1",
+    "links": {
+      "wire_next": "list_2_2_en",
+      "source_prev": "list_1_2_en",
+      "source_next": "list_3_1_en"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list2",
+      "lang": "en",
+      "title": "Rooms",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Long room name 11",
+            "item11",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 12",
+            "item12",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 13",
+            "item13",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 14",
+            "item14",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 15",
+            "item15",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": "wire_next",
+      "page": 1,
+      "pages": 2,
+      "q": [
+        "List 2/3",
+        "source_prev",
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_2_2_en",
+    "label": "Список 21 · en · 2.2",
+    "links": {
+      "wire_prev": "list_2_1_en",
+      "source_prev": "list_1_2_en",
+      "source_next": "list_3_1_en"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list2",
+      "lang": "en",
+      "title": "Rooms",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Long room name 16",
+            "item16",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 17",
+            "item17",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 18",
+            "item18",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 19",
+            "item19",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Long room name 20",
+            "item20",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": "wire_prev",
+      "next": null,
+      "page": 2,
+      "pages": 2,
+      "q": [
+        "List 2/3",
+        "source_prev",
+        "source_next"
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "list_3_1_en",
+    "label": "Список 21 · en · 3.1",
+    "links": {
+      "source_prev": "list_2_2_en"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "list3",
+      "lang": "en",
+      "title": "Rooms",
+      "context": "My home",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "b": [
+        [
+          [
+            "Long room name 21",
+            "item21",
+            "nav"
+          ]
+        ]
+      ],
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "q": [
+        "List 3/3",
+        "source_prev",
+        null
+      ],
+      "l": true
+    }
+  },
+  {
+    "id": "bounded_names",
+    "label": "Две строки · полное имя",
+    "links": {
+      "bounded_detail": "bounded_detail"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "bounded",
+      "lang": "ru",
+      "title": "Проверка длинных имён",
+      "context": "Предпросмотр",
+      "body": "",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "read": "read",
+      "back": "home",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "l": true,
+      "b": [
+        [
+          [
+            "Гостевая спальня на втором этаже рядом с лестницей\nОткрыть сведения",
+            "bounded_detail",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Не включать\n№1 Торшер",
+            "negative",
+            "action"
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "bounded_detail",
+    "label": "Две строки · сведения",
+    "links": {
+      "bounded_names": "bounded_names"
+    },
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "s": "bounded-detail",
+      "lang": "ru",
+      "title": "Гостевая спальня на втором этаже рядом с лестницей",
+      "context": "Предпросмотр",
+      "body": "Гостевая спальня на втором этаже рядом с лестницей",
+      "notice": "",
+      "alert": "",
+      "kind": "list",
+      "read": "read",
+      "back": "bounded_names",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "l": true,
+      "b": []
     }
   }
 ]
