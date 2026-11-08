@@ -1901,6 +1901,7 @@ pub async fn render_recording_rule_wizard_start(ctx: RenderContext, room_id: i64
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: room_id }),
+        html_back: Some(Payload::Admin(AdminPayload::RecordingRules { room: room_id })),
         ..Default::default()
     })
 }
@@ -1996,6 +1997,7 @@ pub async fn render_recording_rule_wizard_source_page(
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardSourcePage { page }),
+        html_back: Some(Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: wizard.room_id })),
         ..Default::default()
     })
 }
@@ -2055,6 +2057,7 @@ pub async fn render_recording_rule_wizard_modes(
             camera: camera_id,
             device: device_id,
         }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickCamera { room: room_id, camera: camera_id })),
         ..Default::default()
     })
 }
@@ -2201,6 +2204,9 @@ pub async fn render_recording_rule_wizard_conditions(ctx: RenderContext) -> Resu
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConditions),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickEntity {
+            room: wizard.room_id, camera: camera_id, device: source_device_id,
+        })),
         ..Default::default()
     })
 }
@@ -2255,6 +2261,7 @@ pub async fn render_recording_rule_wizard_condition_entities_page(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConditionEntityPage { page }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         ..Default::default()
     })
 }
@@ -2295,6 +2302,7 @@ pub async fn render_recording_rule_wizard_condition_operators(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardPickConditionEntity { device: device_id }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardAddCondition)),
         ..Default::default()
     })
 }
@@ -2385,6 +2393,7 @@ pub async fn render_recording_rule_wizard_tail_from_state(ctx: RenderContext) ->
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardNextTail),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         ..Default::default()
     })
 }
@@ -2441,6 +2450,7 @@ pub async fn render_recording_rule_wizard_retention_from_state(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardPickWizardTail { tail }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardNextTail)),
         ..Default::default()
     })
 }
@@ -2513,6 +2523,9 @@ pub async fn render_recording_rule_wizard_retention(
             mode,
             tail,
         }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickMode {
+            room: room_id, camera: camera_id, device: device_id, mode,
+        })),
         ..Default::default()
     })
 }
@@ -2594,6 +2607,9 @@ pub async fn render_recording_rule_wizard_active_time_from_state(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardActiveTime),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickWizardTail {
+            tail: wizard.tail_seconds.unwrap_or(60),
+        })),
         ..Default::default()
     })
 }
@@ -2647,6 +2663,7 @@ pub async fn render_recording_rule_wizard_days(ctx: RenderContext) -> Result<Vie
         notifications: ctx.notifications,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardActiveDays),
+        html_back: Some(Payload::Admin(AdminPayload::WizardActiveTime)),
         ..Default::default()
     })
 }
@@ -2702,6 +2719,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
                 .to_string(),
             kb: InlineKeyboardMarkup::new(rows),
             payload: Payload::Admin(AdminPayload::WizardGroups),
+            html_back: Some(Payload::Admin(if wizard.return_to_summary {
+                AdminPayload::WizardConfirmGroups
+            } else {
+                AdminPayload::WizardActiveTime
+            })),
             ..Default::default()
         });
     }
@@ -2739,6 +2761,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
             .to_string(),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardGroups),
+        html_back: Some(Payload::Admin(if wizard.return_to_summary {
+            AdminPayload::WizardConfirmGroups
+        } else {
+            AdminPayload::WizardActiveTime
+        })),
         ..Default::default()
     })
 }
@@ -2865,6 +2892,9 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConfirmGroups),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickWizardRetention {
+            retention: wizard.retention_days.unwrap_or(30),
+        })),
         ..Default::default()
     })
 }
@@ -2930,6 +2960,7 @@ pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result
             )],
         ]),
         payload: Payload::Admin(AdminPayload::WizardAdvancedCurrentText),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConfirmGroups)),
         next_state: Some(State::AddRecordingRule {
             room_id: wizard.room_id,
         }),
@@ -3013,6 +3044,7 @@ fn wizard_repair_view(ctx: RenderContext, wizard: &RecordingRuleWizard) -> View 
         }),
     )]);
     View { header: Some(if ru { "Исправьте черновик" } else { "Check draft" }.into()),
+        html_back: Some(Payload::Admin(AdminPayload::RecordingRules { room: wizard.room_id })),
         text: if ru { "Камера, источник или событие не выбраны либо больше недоступны. Выберите их заново. Условия, группы, время активности и параметры записи сохранены." }
             else { "The camera, source or event is missing or unavailable. Select it again. Conditions, groups, active times and recording settings are preserved." }.into(),
         kb:InlineKeyboardMarkup::new(rows),notifications:ctx.notifications,payload:Payload::Admin(AdminPayload::WizardConfirmGroups),..Default::default() }
@@ -3030,6 +3062,7 @@ fn wizard_expired_view(ctx: RenderContext) -> View {
 
 fn wizard_pending_condition_missing_view(ctx: RenderContext) -> View {
     View {
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         header: Some("➕ Условие правила".to_string()),
         notifications: ctx.notifications,
         text: "Условие уже не выбрано. Вернитесь к списку условий и добавьте его заново."
@@ -3248,7 +3281,7 @@ fn render_wizard_user_input(
         vec![wizard_cancel_button()],
         vec![crate::bot::screens::common::back_button_lang(
             ctx.lang,
-            back_payload,
+            back_payload.clone(),
         )],
     ]);
 
@@ -3267,6 +3300,7 @@ fn render_wizard_user_input(
     };
     View {
         header: Some(title.to_string()),
+        html_back: Some(back_payload),
         notifications: ctx.notifications,
         text,
         kb,

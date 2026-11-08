@@ -8,6 +8,10 @@ use crate::core::action_results::{ActionResult, Outcome, TargetKind, TargetResul
 use crate::db::{self, action_groups::ActionGroupCommand, ui_confirmations as pending};
 use crate::i18n::t;
 
+#[cfg(test)]
+#[path = "navigation_flow_tests.rs"]
+mod navigation_flow_tests;
+
 #[derive(Clone, Serialize, Deserialize)]
 enum Action {
     Native {
@@ -697,6 +701,7 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
     let Some(record) = pending::get(id, ctx.user_id, &ctx.config.db).await? else {
         return Ok(View {
             compact: true,
+            html_kind: Some("menu".into()),
             text: t(ctx.lang, "confirm.expired").into(),
             payload,
             kb: InlineKeyboardMarkup::new(vec![vec![
@@ -877,16 +882,23 @@ async fn render(ctx: &RenderContext, id: i64) -> Result<View> {
             )]);
         }
     }
+    let parent = if allowed {
+        proposal.back
+    } else {
+        Payload::Home
+    };
     rows.push(vec![super::screens::common::back_button_lang(
         ctx.lang,
-        if allowed {
-            proposal.back
-        } else {
-            Payload::Home
-        },
+        parent.clone(),
     )]);
     Ok(View {
         compact: true,
+        html_kind: Some(if active { "confirmation" } else { "menu" }.into()),
+        html_back: Some(if active {
+            Payload::Control(ControlPayload::CancelAction { id })
+        } else {
+            parent
+        }),
         header: Some(t(ctx.lang, "confirm.title").into()),
         text: if active {
             format!("{}\n\n{}", proposal.description, status)

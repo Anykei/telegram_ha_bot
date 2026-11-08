@@ -2928,6 +2928,21 @@ async fn router_admin(ctx: RenderContext, payload: AdminPayload) -> anyhow::Resu
                     }
                 }
             }
+            // The pinned exit is an action too: bind it to the same owner,
+            // draft and revision as the visible keyboard before replacing the
+            // current route with its read-only resume route.
+            if let Some(Payload::Admin(action)) = &view.html_back {
+                if is_recording_wizard_payload(action)
+                    && !matches!(action, AdminPayload::WizardResume { .. }
+                        | AdminPayload::WizardNew { .. } | AdminPayload::WizardDraft { .. })
+                {
+                    view.html_back = Some(Payload::Admin(AdminPayload::WizardDraft {
+                        id,
+                        revision: wizard.revision,
+                        action: Box::new(action.clone()),
+                    }));
+                }
+            }
             if matches!(&view.payload,Payload::Admin(action) if is_recording_wizard_payload(action))
             {
                 view.payload = Payload::Admin(AdminPayload::WizardResume { id });

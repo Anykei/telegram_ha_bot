@@ -148,10 +148,12 @@ pub async fn result(ctx: &RenderContext, id: i64) -> Result<View> {
     )
     .await?;
     let mut rows = Vec::new();
+    let mut active = false;
     if let Some(pending) =
         db::pending_commands::get_pending(id, ctx.user_id, &ctx.config.db).await?
     {
         if pending.status == "pending" && pending.expires_at > chrono::Utc::now() {
+            active = true;
             rows.push(vec![
                 InlineKeyboardButton::callback(
                     crate::i18n::t(ctx.lang, "confirm.yes"),
@@ -213,6 +215,11 @@ pub async fn result(ctx: &RenderContext, id: i64) -> Result<View> {
     )]);
     Ok(View {
         compact: true,
+        html_back: Some(if active {
+            Payload::Command(CommandPayload::Cancel { id })
+        } else {
+            Payload::Home
+        }),
         text,
         payload: Payload::Command(CommandPayload::Result { id }),
         kb: InlineKeyboardMarkup::new(rows),

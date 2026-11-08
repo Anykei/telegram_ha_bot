@@ -440,6 +440,14 @@ async fn review(ctx: RenderContext, id: i64, input: bool) -> Result<View> {
     }
     Ok(View {
         text,
+        // Cancel this field without abandoning the draft or changing its revision.
+        html_back: Some(if input {
+            Payload::Schedule(SchedulePayload::Review { id })
+        } else {
+            Payload::Admin(AdminPayload::ActionSchedules {
+                target: data.target,
+            })
+        }),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Schedule(if input {
             SchedulePayload::Time { id, revision }
