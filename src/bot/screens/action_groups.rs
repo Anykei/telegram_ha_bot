@@ -457,6 +457,19 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
 
     Ok(View {
         header: Some(format!("⚡ {}", group.name)),
+        html_summary: Some(format!(
+            "{}: {}\n{} · {}: {}/{}",
+            t(ctx.lang, "action_groups.state"),
+            aggregate_label(ctx.lang, aggregate),
+            enabled_label(ctx.lang, group.is_enabled()),
+            t(ctx.lang, "action_groups.available_to_you"),
+            executable_items_count,
+            group.items_count
+        )),
+        html_details_title: Some(
+            crate::bot::personal::words(ctx.lang, "Состав и параметры", "Devices and settings")
+                .into(),
+        ),
         notifications: ctx.notifications,
         text: lines.join("\n"),
         kb: InlineKeyboardMarkup::new(rows),
@@ -594,6 +607,20 @@ pub async fn render_ha_native_detail(
             ha_icon(&target.domain),
             target.display_name()
         )),
+        html_summary: Some(format!(
+            "Home Assistant · {}\n{}\n{}: {}",
+            target.domain,
+            if target.is_archived() {
+                t(ctx.lang, "action_groups.not_found_in_ha")
+            } else {
+                enabled_label(ctx.lang, target.is_enabled())
+            },
+            t(ctx.lang, "action_groups.access"),
+            access_label(ctx.lang, &target.access_scope)
+        )),
+        html_details_title: Some(
+            crate::bot::personal::words(ctx.lang, "Параметры сценария", "Scenario details").into(),
+        ),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -605,6 +632,10 @@ pub async fn render_ha_native_detail(
         ..Default::default()
     })
 }
+
+#[cfg(test)]
+#[path = "action_group_structure_tests.rs"]
+mod structure_tests;
 
 fn group_items_key(user: u64, group: i64) -> String {
     format!("ui:group-items:{user}:{group}")
@@ -1344,6 +1375,7 @@ pub async fn render_group_devices(ctx: RenderContext, group: i64, requested: u16
         super::common::main_menu_button_lang(ctx.lang),
     ]);
     Ok(View {
+        html_context: Some(target.name.clone()),
         text: format!(
             "{}\n{}: {}",
             target.name,
