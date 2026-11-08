@@ -224,7 +224,8 @@ async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> 
                 }
             }
             // Export optional review evidence using only this isolated mock DB.
-            // Passing these parity checks does not imply that hierarchy/title UX is correct.
+            // This catalog complements the targeted navigation/action tests;
+            // generic parity alone cannot prove that an action is discoverable.
             inventory.push(json!({
                 "route": format!("{route:?}"), "lang": format!("{lang:?}"),
                 "pages": prepared.pages,
