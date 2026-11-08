@@ -23,6 +23,30 @@ pub(crate) fn parent(view: &View) -> Option<P> {
     if let Some(parent) = &view.html_back {
         return Some(parent.clone());
     }
+    // These specialised screens are explicitly frozen by the migration plan.
+    // Retain their existing footer contract instead of inferring a different
+    // parent from attachment/favorite controls appended by the router.
+    if view.html_media_controls
+        || view.html_chart.is_some()
+        || view.html_range.is_some()
+        || matches!(view.payload, P::Camera(_))
+    {
+        return view
+            .kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .rev()
+            .find_map(|button| {
+                if button.text != crate::i18n::t(view.lang, "common.back") {
+                    return None;
+                }
+                let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                    return None;
+                };
+                P::from_string(data).ok()
+            });
+    }
     let parent = match &view.payload {
         P::Home => return None,
         P::Help | P::InDev => P::Home,
