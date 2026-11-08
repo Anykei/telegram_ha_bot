@@ -2,13 +2,13 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { releaseExpression } from '../private-names.mjs';
+import { releaseExpression, mediaExpression } from '../private-names.mjs';
 
 export async function checkLive({root, command, evaluate, until, file}) {
   let release=false;
   const rawEvaluate=evaluate, rawUntil=until;
-  evaluate=source=>rawEvaluate(release?releaseExpression(source):source);
-  until=source=>rawUntil(release?releaseExpression(source):source);
+  evaluate=source=>rawEvaluate(release?releaseExpression(source):mediaExpression(source));
+  until=source=>rawUntil(release?releaseExpression(source):mediaExpression(source));
   const fixtures = JSON.parse(await readFile(file, 'utf8'));
   assert.ok(fixtures.length > 0, 'Live test exported pages');
   const assets = Object.fromEntries(await Promise.all(['release','graph'].map(async name => [name, await readFile(root+`dist/${name}.html`, 'utf8')])));

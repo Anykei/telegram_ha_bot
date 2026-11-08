@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { checkNativeLayout } from './native-layout.mjs';
+import { mediaExpression } from '../private-names.mjs';
 
 export async function checkGraph({root,command,evaluate,until,screenshot,unified=false}) {
+  const rawEvaluate=evaluate,rawUntil=until;
+  evaluate=source=>rawEvaluate(mediaExpression(source));
+  until=source=>rawUntil(mediaExpression(source));
   const fixtures=JSON.parse(await readFile(root+'preview/graph-fixtures.json','utf8'));
   const doc=`document.getElementById('release-frame').contentDocument`;
   const win=`document.getElementById('release-frame').contentWindow`;

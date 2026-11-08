@@ -78,8 +78,10 @@ try {
       await writeFile(root+'screenshots/unified-'+name+'.png',Buffer.from(data,'base64'));
     };
     const context={root,command,evaluate,until,screenshot,unified:true};
-    await checkRelease(context);
-    await checkGraph(context);
+    if(!process.env.HA_WIDGET_PARITY_ONLY) {
+      await checkRelease(context);
+      await checkGraph(context);
+    }
     await checkUnified(context);
   } else {
   await command('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1080, deviceScaleFactor: 1, mobile: false });

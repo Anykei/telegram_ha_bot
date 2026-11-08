@@ -1,10 +1,9 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { transform, build as bundle } from 'esbuild';
-import { minify } from 'terser';
+import { transform } from 'esbuild';
 import { embed } from './preview/embed.mjs';
-import { compactRelease } from './private-names.mjs';
+import { compileWidget } from './compile-widget.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const read = path => readFile(root + path, 'utf8');
@@ -15,34 +14,18 @@ await writeFile(root + 'src/tokens.css', block(':root', { ...tokens.shared, ...t
 await mkdir(root + 'dist', { recursive: true });
 async function build(screen, stylesheet, title) {
   const r1 = ['release','graph','range'].includes(screen);
-  let components = (['graph','range'].includes(screen) ? await read('src/chart-common.css') : '') + await read('src/' + stylesheet);
-  // Shared tokens are immutable; keep semantic names in source and inline their values in r1.
-  if (r1) for (const [key, value] of Object.entries(tokens.shared)) components = components.replaceAll(`var(${key})`, value);
-  const used = new Set(components.match(/--ha-[a-z0-9-]+/g));
-  const usedTokens = values => Object.fromEntries(Object.entries(values).filter(([key]) => used.has(key)));
-  const tokenCSS = `:root{${declarations(usedTokens({ ...tokens.shared, ...tokens.themes.light }))}}:root[data-theme="dark"]{${declarations(usedTokens(tokens.themes.dark))}}`;
-  let styles = tokenCSS + components;
-  if (r1) {
-    const aliases = [...used];
-    styles = styles.replace(/--ha-[a-z0-9-]+/g, key => '--' + String.fromCharCode(97 + aliases.indexOf(key)));
+  let html;
+  if(r1) ({html}=await compileWidget(screen));
+  else {
+    const components=await read('src/'+stylesheet);
+    const used=new Set(components.match(/--ha-[a-z0-9-]+/g));
+    const usedTokens=values=>Object.fromEntries(Object.entries(values).filter(([key])=>used.has(key)));
+    const tokenCSS=`:root{${declarations(usedTokens({...tokens.shared,...tokens.themes.light}))}}:root[data-theme="dark"]{${declarations(usedTokens(tokens.themes.dark))}}`;
+    const css=await transform(tokenCSS+components,{loader:'css',minify:true,charset:'utf8'});
+    const script=await transform(await read(`src/${screen}.js`),{minify:true,target:'es2020',charset:'utf8'});
+    const body=(await read(`src/${screen}.html`)).replace(/>\s+</g,'><').trim();
+    html=`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
   }
-  const css = await transform(styles, { loader: 'css', minify: true, charset: 'utf8' });
-  const script = r1
-    // Optimize for the compressed wire size, not just raw JavaScript bytes.
-    ? await minify((await bundle({entryPoints:[root+`src/${screen}.js`],bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define:{GRAPH:String(screen==='graph'),CHART:String(screen==='graph')},minifySyntax:true})).outputFiles[0].text, {ecma:2020, compress:screen==='release'?{passes:1,sequences:1}:{passes:2}, format:{ascii_only:true}})
-    : await transform(await read(`src/${screen}.js`), { minify: true, target: 'es2020', charset: 'utf8' });
-  let body = (await read(`src/${screen}.html`)).replace(/>\s+</g, '><').trim();
-  // Widget v1 has no forms or browser tab: omit redundant button types and
-  // the tab title in r1 assets. Keep preview titles and accessible labels.
-  if (r1) body = body.replaceAll(' type="button"', '');
-  // r1 is rendered inside Telegram's fixed widget viewport (and a sized preview
-  // iframe), so its document needs neither a browser viewport hint nor a title.
-  // HTML permits omitted html/head/body tags. The parser still creates all
-  // three elements; keep the doctype and UTF-8 declaration.
-  let html = r1
-    ? `<!doctype html><meta charset=utf-8><style>${css.code.trim()}</style>${body}<script>${script.code.trim()}</script>`
-    : `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css.code.trim()}</style></head><body>${body}<script>${script.code.trim()}</script></body></html>`;
-  if (screen === 'release') html = compactRelease(html);
   // Match the server's zlib framing and level using Python, as Telegram recommends.
   const size = Number(execFileSync('python3', ['-c', 'import sys,zlib; print(len(zlib.compress(sys.stdin.buffer.read(),9)))'], { input: html, encoding: 'utf8' }).trim());
   const bytes = Buffer.byteLength(html);
@@ -66,20 +49,20 @@ await writeFile(root + 'dist/panel-preview.html', panelPreview);
 await writeFile(root + 'dist/panel-manifest.json', JSON.stringify(panel.manifest, null, 2) + '\n');
 console.log('Previews: ui/widgets/dist/{preview,panel-preview}.html');
 
-const release = await build('release', 'release.css', 'Дом');
+const release = await build('release');
 await writeFile(root + 'dist/release-manifest.json', JSON.stringify(release.manifest, null, 2) + '\n');
 const releasePreview = embed(await read('preview/release.html'), {
   PAYLOAD: release.html, FIXTURES: JSON.parse(await read('preview/release-fixtures.json')), MANIFEST: release.manifest
 });
 await writeFile(root + 'dist/release-preview.html', releasePreview);
-const graph = await build('graph', 'graph.css', 'История');
+const graph = await build('graph');
 await writeFile(root + 'dist/graph-manifest.json', JSON.stringify(graph.manifest, null, 2) + '\n');
 const graphPreview = embed(await read('preview/release.html'), {
   PAYLOAD: graph.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')).filter(f=>f.page.graph), MANIFEST: graph.manifest
 });
 await writeFile(root + 'dist/graph-preview.html', graphPreview);
 
-const range = await build('range', 'range.css', 'Период графика');
+const range = await build('range');
 await writeFile(root + 'dist/range-manifest.json', JSON.stringify(range.manifest, null, 2) + '\n');
 await writeFile(root + 'dist/range-preview.html', embed(await read('preview/release.html'), {
   PAYLOAD: range.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')).filter(f=>!f.page.graph), MANIFEST: range.manifest

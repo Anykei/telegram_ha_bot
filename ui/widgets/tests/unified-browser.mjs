@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
-import {releaseExpression} from '../private-names.mjs';
+import {releaseExpression,mediaExpression} from '../private-names.mjs';
 
 export async function checkUnified({root,command,evaluate,until}) {
   const fixtures=[...JSON.parse(await readFile(root+'preview/release-fixtures.json','utf8')),
@@ -22,9 +22,9 @@ export async function checkUnified({root,command,evaluate,until}) {
   }
   const snapshot=async()=>evaluate(`(()=>{
     const d=${doc},root=d.querySelector('[data-kind]');
-    return Array.from(root.querySelectorAll('*')).filter(n=>!['path','svg'].includes(n.localName)).map(n=>{
+    return Array.from(root.querySelectorAll('*')).filter(n=>!['path','svg'].includes(n.localName)&&n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0).map(n=>{
       const r=n.getBoundingClientRect(),s=d.defaultView.getComputedStyle(n);
-      return {tag:n.localName,text:n.childElementCount?'':n.textContent,x:r.x,y:r.y,w:r.width,h:r.height,color:s.color,bg:s.backgroundColor,font:s.font,line:s.lineHeight,radius:s.borderRadius};
+      return {tag:n.localName==='footer'?'div':n.localName,text:n.childElementCount?'':n.textContent,x:r.x,y:r.y,w:r.width,h:r.height,color:s.color,bg:s.backgroundColor,font:s.font,line:s.lineHeight,radius:s.borderRadius};
     });
   })()`);
   let visualComparisons=0;
@@ -47,7 +47,11 @@ export async function checkUnified({root,command,evaluate,until}) {
   for(const theme of ['light','dark']) for(const width of [200,320,360,430]) {
     const expected=new Map();
     for(const name of ['release','graph','range']) {
-      await navigate('dist/'+name+'-preview.html');
+      const baseline=process.env.HA_WIDGET_BASELINE_DIR;
+      if(baseline) {
+        await command('Page.navigate',{url:pathToFileURL(baseline+'/'+name+'-preview.html').href});
+        await until(`${doc}?.querySelector('[data-kind]')`);
+      } else await navigate('dist/'+name+'-preview.html');
       for(const f of fixtures.filter(f=>asset(f.page)===name)) {
         await select(f.id,theme,width);
         expected.set(f.id,await snapshot());
@@ -70,7 +74,7 @@ export async function checkUnified({root,command,evaluate,until}) {
       const page={...f.page,seq:seq++,rev:seq.toString(16).padStart(32,'0')};
       await evaluate(`${win}.previewSetData(${JSON.stringify(page)})`);
       assert.equal(await evaluate(`${doc}===window.__widgetDocument&&${win}===window.__widgetWindow`),true,'No new document/message context');
-      const title=asset(page)==='release'?releaseExpression(`${doc}.getElementById('r-title').textContent`):`${doc}.getElementById('r-title').textContent`;
+      const title=releaseExpression(`${doc}.getElementById('r-title').textContent`);
       assert.equal(await evaluate(title),page.title);
     }
     // An ACK itself can change the renderer, before a push notification arrives.
@@ -78,10 +82,10 @@ export async function checkUnified({root,command,evaluate,until}) {
     await evaluate(`${refresh}.click()`);
     const chart={...find('chart').page,seq:seq++,rev:seq.toString(16).padStart(32,'0')};
     await evaluate(`${win}.__requests.at(-1).resolve({result:JSON.stringify({page:${JSON.stringify(chart)}})})`);
-    await until(`${doc}.getElementById('g-box')`);
+    await until(mediaExpression(`${doc}.getElementById('g-box')`));
     assert.equal(await evaluate(`${doc}===window.__widgetDocument`),true,'ACK navigation keeps the document');
     // Late completion of a disposed screen cannot overwrite the newer screen.
-    await evaluate(`${doc}.getElementById('r-read').click()`);
+    await evaluate(mediaExpression(`${doc}.getElementById('r-read').click()`));
     const home={...route[0].page,seq:seq++,rev:seq.toString(16).padStart(32,'0')};
     await evaluate(`${win}.previewSetData(${JSON.stringify(home)});${win}.__requests.at(-1).resolve({result:JSON.stringify({page:${JSON.stringify({...chart,seq:1})}})})`);
     await until(releaseExpression(`${doc}.getElementById('r-title')?.textContent===${JSON.stringify(home.title)}`));

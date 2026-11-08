@@ -8,6 +8,8 @@
 .g-empty { display:flex; align-items:center; justify-content:center; min-height:144px; flex:1; margin:0; color:var(--ha-muted); }
 .g-time { display:flex; justify-content:space-between; gap:8px; margin-top:6px; color:var(--ha-muted); font-size:10px; }
 /* Actions occupy whole columns; the clock never shortens just one row. */
-.r-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+[data-kind=chart] .r-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
 .r-left .r-row:last-child button:only-child { grid-column:2; }
 .r-corner #r-feedback { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }
+
+[data-kind=chart] #r-content { flex:none; }

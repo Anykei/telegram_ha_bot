@@ -1,11 +1,13 @@
-<div id="release" class="release">
-  <div class="r-top"><button id="r-back"></button><div id="r-context"></div><button id="r-read"></button></div>
+<div id="r-root" class="r-root">
+  <div id="r-top" class="r-pager"><button id="r-back"></button><div id="r-context"></div><button id="r-read"></button></div>
   <h1 id="r-title"></h1>
+  <!-- chart:start -->
   <div id="g-box" class="g-box r-hidden">
     <div id="g-stage" class="g-stage"><div class="g-axis"><span id="g-top"></span><span id="g-bottom"></span></div><svg viewBox="0 0 320 140" preserveAspectRatio="none" aria-hidden="true"><path id="g-gaps" class="g-gaps"/><path id="g-range" class="g-range"/><path id="g-line" class="g-line"/></svg></div>
     <p id="g-empty" class="g-empty"></p><div class="g-time"><span id="g-start"></span><span id="g-end"></span></div>
   </div>
+  <!-- chart:end -->
   <div id="r-content"></div>
-  <footer id="r-footer" class="r-hidden"><button id="r-local-prev">‹</button><span id="r-local-count"></span><button id="r-local-next">›</button></footer>
+  <div id="r-server" class="r-footer r-pager r-hidden"><button id="r-prev">‹</button><span id="r-count"></span><button id="r-next">›</button></div>
   <p id="r-feedback" role="status"></p>
 </div>
