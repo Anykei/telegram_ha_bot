@@ -43,6 +43,11 @@ const BACKGROUND_TASK_ABORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // CI can verify a built image without credentials, a database, or HA access.
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("telegram_ha_bot {APP_VERSION}");
+        return Ok(());
+    }
     dotenvy::dotenv().ok();
     pretty_env_logger::init();
 
