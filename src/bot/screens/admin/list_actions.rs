@@ -5161,6 +5161,24 @@ pub fn render_confirm_action(
     confirm_payload: Payload,
     cancel_payload: Payload,
 ) -> View {
+    // Reading a confirmation must render the same question, not its cancellation
+    // target and never the destructive operation itself.
+    let review = match &confirm_payload {
+        Payload::Admin(action) => Payload::Admin(match action {
+            AdminPayload::CreateBackup => AdminPayload::ConfirmBackup,
+            AdminPayload::DeleteCamera { room, camera } => AdminPayload::ConfirmDeleteCamera { room: *room, camera: *camera },
+            AdminPayload::DeleteUser { id } => AdminPayload::ConfirmDeleteUser { id: *id },
+            AdminPayload::DeleteRecordingRule { room, rule } => AdminPayload::ConfirmDeleteRecordingRule { room: *room, rule: *rule },
+            AdminPayload::DeleteRecordingRuleGroup { group } => AdminPayload::ConfirmDeleteRecordingRuleGroup { group: *group },
+            AdminPayload::DeleteRecordingRuleGroupForRoom { room, group } => AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom { room: *room, group: *group },
+            AdminPayload::DeleteActionGroup { group } => AdminPayload::ConfirmDeleteActionGroup { group: *group },
+            AdminPayload::DeleteActionSchedule { target, schedule } => AdminPayload::ConfirmDeleteActionSchedule { target: *target, schedule: *schedule },
+            _ => unreachable!("confirmation requires an explicit read-only review route"),
+        }),
+        Payload::Camera(crate::bot::router::CameraPayload::DeleteRecording { camera, session }) =>
+            Payload::Camera(crate::bot::router::CameraPayload::ConfirmDeleteRecording { camera: *camera, session: *session }),
+        _ => unreachable!("confirmation requires an explicit read-only review route"),
+    };
     let kb = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(t(ctx.lang, "common.confirm"), confirm_payload.to_string()),
         InlineKeyboardButton::callback(t(ctx.lang, "common.cancel"), cancel_payload.to_string()),
@@ -5168,10 +5186,12 @@ pub fn render_confirm_action(
 
     View {
         header: Some(format!("🛠 {}", title)),
+        html_kind: Some("confirmation".into()),
+        html_back: Some(cancel_payload),
         notifications: ctx.notifications,
         text: text.to_string(),
         kb,
-        payload: cancel_payload,
+        payload: review,
         ..Default::default()
     }
 }
