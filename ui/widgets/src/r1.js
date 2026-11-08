@@ -1,7 +1,7 @@
 import { validGraph, renderGraph } from './graph-render.js';
 // All actions are server-issued opaque keys. This file never interprets a device command.
 (() => {
-  const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('release');
+  const api = window.TelegramWidget, el = id => document.getElementById(id), card = el('r-root');
   const words = {
     ru: ['Назад', 'Далее', 'Обновить', 'Обновление…', 'Нет ответа. Обновите.', 'Доступ закрыт', '/start', GRAPH ? 'Ещё' : 'Отмена', 'Часть'],
     en: ['Back', 'Next', 'Refresh', 'Updating…', 'No response. Refresh.', 'Access denied', '/start', GRAPH ? 'More' : 'Cancel', 'Part']
@@ -78,7 +78,7 @@ import { validGraph, renderGraph } from './graph-render.js';
       if (paragraph) previous.textContent += block.textContent;
     });
   }
-  function layout() {
+  function layout(reserve) {
     const blocks = [];
     let statuses;
     const paragraphs = [[data.alert, 'r-alert'], [data.notice, 'r-notice'], [data.body, 'r-body'], [data.hint || '', 'r-hint']];
@@ -110,10 +110,11 @@ import { validGraph, renderGraph } from './graph-render.js';
       const group = node('div', 'r-row');
       row.forEach(b => group.appendChild(action(b))); blocks.push(group);
     });
-    deck = []; let part = []; pager();
+    deck = []; let part = []; pager(reserve);
     for (const block of blocks) {
       part.push(block); mount(part);
       if (card.scrollHeight > 600) {
+        if (!reserve) return layout(true);
         part.pop();
         if (part.length) deck.push(part);
         part = [block]; mount(part);
@@ -125,9 +126,9 @@ import { validGraph, renderGraph } from './graph-render.js';
     mount(deck[local]);
     pager();
   }
-  function pager() {
+  function pager(reserve) {
     const q = data.q;
-    hide('r-server', !q && deck.length === 1 && data.pages <= 1);
+    hide('r-server', !q && !reserve && deck.length <= 1 && data.pages <= 1);
     // The last-part sentinel must not widen the counter while measuring rows.
     text('r-count', (q ? q[0] + '\n' : '') + w(8) + ' ' + data.page + '.' + (local % 9999 + 1));
     ['prev','next'].forEach((key,i) => disable(el('r-'+key), blocked(false) || (i ? local === deck.length-1 : !local) && !external(i)));
@@ -162,7 +163,14 @@ import { validGraph, renderGraph } from './graph-render.js';
     mount([]);
     if (locked) return;
     ['read', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
-    if (layout()) {
+    const position = local;
+    let overflow = layout();
+    // Without a pager there is no narrow control beside the clock. Reserve its
+    // full band, then measure once more without changing the requested part.
+    if (el('r-server').classList.contains('r-hidden')) {
+      card.classList.remove('r-corner'); local = position; overflow = layout();
+    }
+    if (overflow) {
       mount([]); hide('r-server', true);
       feedback(w(6));
     }
@@ -223,7 +231,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     document.documentElement.setAttribute('data-theme', api && api.colorScheme === 'dark' ? 'dark' : 'light');
   }
   ['read', 'back'].forEach(k => el('r-' + k).addEventListener('click', () => data && data[k] && send(data[k])));
-  [el('r-prev'),el('r-next')].forEach((button,i) => button.addEventListener('click', () => {
+  ['prev','next'].forEach((key,i) => el('r-'+key).addEventListener('click', () => {
     if (blocked(false)) return;
     const next = local + (i ? 1 : -1);
     if (next >= 0 && next < deck.length) { local = next; render(); }

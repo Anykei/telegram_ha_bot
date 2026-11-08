@@ -104,7 +104,7 @@
     document.getElementById('widths').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; width = Number(button.dataset.width); document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); load(); });
     select.addEventListener('change', load); document.getElementById('scenario').addEventListener('change', load);
     addEventListener('message', event => { if (event.source === frame.contentWindow && event.data?.type === 'release-preview') document.getElementById('log').textContent = 'Симуляция запроса · ' + event.data.text; });
-    setInterval(() => { const card = frame.contentDocument?.querySelector('.release'); if (card) frame.style.height = Math.min(600, Math.ceil(card.getBoundingClientRect().height)) + 'px'; }, 150);
+    setInterval(() => { const card = frame.contentDocument?.querySelector('[data-kind]'); if (card) frame.style.height = Math.min(600, Math.ceil(card.getBoundingClientRect().height)) + 'px'; }, 150);
     load();
   </script>
 </body>

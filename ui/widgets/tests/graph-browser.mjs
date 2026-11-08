@@ -39,11 +39,13 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.ok(result.targets.every(r=>r.height>=44&&r.width>=43.9),`${label}: targets >=44px ${JSON.stringify(result.targets)}`);
     const refresh=await evaluate(`(() => {
       const b=${get('r-read')},r=b.getBoundingClientRect();
-      return {width:r.width,height:r.height,right:r.right,parentRight:b.parentElement.getBoundingClientRect().right};
+      return {width:r.width,height:r.height,top:r.top,right:r.right,parentRight:b.parentElement.getBoundingClientRect().right};
     })()`);
     assert.equal(refresh.width,44,`${label}: compact refresh width`);
     assert.equal(refresh.height,44,`${label}: compact refresh height`);
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
+    assert.equal(refresh.top,12,`${label}: refresh always 12px from the top, including the calendar`);
+    assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the right`);
     if(await evaluate(`${get('release')}.dataset.kind==='chart'`)) {
       assert.equal(await evaluate(`(() => {
         const content=${get('r-content')}.getBoundingClientRect(),column=(content.width-8)/2;

@@ -46,6 +46,8 @@ export async function checkPanel({root, command, evaluate, until, screenshot}) {
         assert.ok(await evaluate(`${doc}.documentElement.scrollWidth <= ${doc}.documentElement.clientWidth`), `${name}/${theme}/${width} overflow`);
         const targets = await evaluate(`Array.from(${doc}.querySelectorAll('button')).filter(b=>b.getBoundingClientRect().width).map(b=>b.getBoundingClientRect().height)`);
         assert.ok(targets.every(h=>h>=44), 'Touch targets >=44px');
+        const refresh=await evaluate(`(()=>{const r=${get('panel-refresh')}.getBoundingClientRect();return [r.width,r.height,r.top,${doc}.documentElement.clientWidth-r.right]})()`);
+        assert.deepEqual(refresh,[44,44,12,12],`${name}/${theme}/${width}: refresh uses the shared top-right position`);
       }
     }
   }

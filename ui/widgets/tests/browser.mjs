@@ -99,6 +99,7 @@ try {
     await until(`!${get('confirm-panel')}.classList.contains('is-hidden')`);
     assert.ok(await evaluate(`${inside}.body.scrollHeight <= 600`), `Height at ${width}px`);
     assert.ok(await evaluate(`${inside}.documentElement.scrollWidth <= ${inside}.documentElement.clientWidth`), `Overflow at ${width}px`);
+    assert.deepEqual(await evaluate(`(()=>{const r=${get('refresh')}.getBoundingClientRect();return [r.width,r.height,r.top,${inside}.documentElement.clientWidth-r.right]})()`),[44,44,12,12],`Switch refresh position at ${width}px`);
   }
   await evaluate(`document.querySelector('[data-width="200"]').click()`);
   await scenario('off');

@@ -54,11 +54,16 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(result.targets.every(r => r.height >= 44 && r.width >= 44), `${label}: touch targets >=44px`);
     const refresh = await evaluate(`(() => {
       const b=${get('r-read')},r=b.getBoundingClientRect();
-      return {width:r.width,height:r.height,right:r.right,parentRight:b.parentElement.getBoundingClientRect().right};
+      return {width:r.width,height:r.height,top:r.top,right:r.right,parentRight:b.parentElement.getBoundingClientRect().right};
     })()`);
     assert.equal(refresh.width,44,`${label}: compact refresh width with or without pagination`);
     assert.equal(refresh.height,44,`${label}: compact refresh height`);
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
+    assert.equal(refresh.top,12,`${label}: refresh always in the header`);
+    assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the card edge, including clock insets`);
+    if(await evaluate(`${get('release')}.dataset.kind==='home'`)) {
+      assert.equal(await evaluate(`(()=>{const h=${get('r-title')}.getBoundingClientRect(),r=${get('r-read')}.getBoundingClientRect();return h.top===r.top&&h.right<=r.left-8})()`),true,`${label}: Home title shares the header without overlapping refresh`);
+    }
     const overlap = await evaluate(`(() => {
       const a=${win}.TelegramWidget.contentSafeAreaInset, width=${get('release')}.clientWidth;
       if(!a) return false;
@@ -160,7 +165,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     while(true) {
       assert.ok(++steps<40,'Finite forward traversal of 21 items');
       await dimensions(`source/${lang}/${theme}/${width}/${steps}`);
-      assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer > .r-pager').length`),1);
+      assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer.r-pager').length`),1);
       const part=await evaluate(`({keys:Array.from(${doc}.querySelectorAll('[data-key]'),b=>b.dataset.key),label:${get('r-count')}.textContent})`);
       assert.ok(part.label.startsWith(lang==='ru'?'Список ':'List '),'Source position is explicit');parts.push(part);
       if(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')==='true'`)) break;
@@ -205,19 +210,20 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   for (const fixture of fixtures) for (const side of ['left','right']) {
     await reload(fixture.id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
-    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),true);
     await assertPreserved(fixture.page,`${fixture.id}/corner-${side}`);
+    const corner=await evaluate(`${get('release')}.classList.contains('r-corner')`);
+    if(corner) assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),false,'Only a visible pager can share the clock band');
     const footer = await evaluate(`${doc}.querySelector('.r-footer').getBoundingClientRect().toJSON()`);
-    assert.ok(footer.bottom<=584.1,`${fixture.id}: footer keeps bottom padding`);
-    if(await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`)) {
+    assert.ok(footer.bottom<=(corner?584.1:536.1),`${fixture.id}: footer keeps bottom padding`);
+    if(corner && await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`)) {
       assert.ok(footer.bottom>536,`${fixture.id}: footer uses the band beside the clock`);
     }
   }
   for (const width of [320,360,390,430]) {
     await reload('room_paginated',{width,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,64)`);
-    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6,'Six full-size room rows use the available height');
-    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`),true);
+    assert.ok(await evaluate(`${doc}.querySelectorAll('.r-row').length>=5`),'Room rows retain their full size with the fixed header');
+    await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,`six rows/header/${width}`);
     await dimensions(`six rows/corner/${width}`);
     if(width===390) {
       await evaluate(`{const clock=${doc}.createElement('div');clock.textContent='07:41';clock.style.cssText='position:absolute;bottom:4px;right:4px;padding:4px 8px;border-radius:14px;background:#101b22;color:white';${doc}.body.appendChild(clock);}`);
@@ -268,8 +274,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   await reload('six_rows', {width:390});
   await evaluate(`${win}.previewSetSafeArea(24)`);
-  assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5, 'Five stable 68px rows fit before continuation');
-  assert.equal((await assertPreserved(fixtures.find(f=>f.id==='six_rows').page,'six bounded rows')).parts,2);
+  assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 6, 'Six stable 68px rows fit when no footer is needed');
+  assert.equal((await assertPreserved(fixtures.find(f=>f.id==='six_rows').page,'six bounded rows')).parts,1);
+  assert.equal(await evaluate(`${get('r-server')}.getBoundingClientRect().height`),0,'Hidden pagination reserves no height');
   await dimensions('six rows');
   // Authored two-line labels make every device row predictable, even with long
   // names, duplicate aliases and custom states. Native clock space stays clear.
@@ -280,9 +287,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(await evaluate(`${get('r-count')}.textContent.endsWith('.1')`), 'No extra local part on a phone');
     const footer = await evaluate(`(() => {
       const read=${get('r-read')}.getBoundingClientRect(), pager=${get('r-server')}.getBoundingClientRect();
-      return {sameRow:Math.abs(read.top-pager.top)<1,bottom:Math.max(read.bottom,pager.bottom),label:${get('r-read')}.getAttribute('aria-label')};
+      return {readTop:read.top,bottom:pager.bottom,label:${get('r-read')}.getAttribute('aria-label')};
     })()`);
-    assert.ok(footer.sameRow, 'Paging and refresh share one row');
+    assert.equal(footer.readTop,12, 'Refresh stays in the header while paging stays below content');
     assert.ok(footer.bottom <= 576, 'Controls leave native message metadata clear');
     assert.ok(footer.bottom >= 500, 'Room controls use the available card height');
     assert.equal(footer.label, 'Обновить');
@@ -310,9 +317,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     if (width === 390) await capture('release-room-long-labels-phone');
   }
   // A longer source list must not lose its fifth row just because local paging
-  // appears. Local arrows and refresh share the footer when no server pager is needed.
+  // appears. Local arrows stay in the footer; refresh remains in the header.
   for (const width of [320, 390, 430]) for (const safe of [24, 64]) {
     await reload('room_paginated', {theme:'dark', width});
+    const page=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
+    page.b.push([['Розетка\nВЫКЛ','extra_socket','nav']]);page.seq=100;
+    await push(page);
     // Telegram's UA stylesheet applies its own body bottom padding. Our root
     // handles safe area, so body must reset it rather than reserve it twice.
     await evaluate(`{const s=${doc}.createElement('style');s.textContent=':where(body){padding-bottom:${safe}px}';${doc}.head.appendChild(s);}`);
@@ -320,12 +330,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.equal(await evaluate(`${win}.getComputedStyle(${doc}.body).paddingBottom`), '0px');
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5);
     assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), false);
-    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer > .r-pager').length`), 1, 'A single pager represents all continuation');
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer.r-pager').length`), 1, 'A single pager represents all continuation');
     const footer = await evaluate(`({local:${get('r-local')}.getBoundingClientRect().toJSON(),read:${get('r-read')}.getBoundingClientRect().toJSON()})`);
-    assert.equal(footer.local.top, footer.read.top, 'Local navigation and refresh occupy one row');
-    assert.ok(footer.local.right <= footer.read.left, 'Navigation cannot overlap refresh');
-    assert.ok(footer.read.bottom <= 600-safe, 'Footer leaves native metadata clear');
-    const content=await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'room local paging/'+width);
+    assert.equal(footer.read.top,12,'Refresh does not move when local pagination appears');
+    assert.ok(footer.local.top>=footer.read.bottom,'Navigation stays below the header');
+    assert.ok(footer.local.bottom <= 600-safe, 'Footer leaves native metadata clear');
+    const content=await assertPreserved(page,'room local paging/'+width);
     assert.equal(content.parts, 2);
     if (width === 390 && safe === 64) await capture('release-room-local-pager-phone');
   }
@@ -406,8 +416,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
           heights:rows.map(r=>r.height),parts:${get('r-count')}.textContent.endsWith('.1')};
       })()`);
       assert.equal(geometry.parts,true,`${id}/${width}/${safe}: main sections fit`);
-      assert.equal(geometry.footer.bottom,600-Math.max(16,safe),`${id}/${width}/${safe}: footer above the native clock`);
-      assert.ok(geometry.footer.top-geometry.last.bottom<=20,'No empty strip between menu and footer');
+      const edge=600-Math.max(16,safe);
+      if(geometry.footer.height) {
+        assert.equal(geometry.footer.bottom,edge,`${id}/${width}/${safe}: footer above the native clock`);
+        assert.ok(geometry.footer.top-geometry.last.bottom<=20,'No empty strip between menu and footer');
+      } else {
+        assert.ok(geometry.last.bottom<=edge+.1 && edge-geometry.last.bottom<=8.1,'Without pagination the menu fills the space above the clock band');
+      }
       assert.ok(geometry.heights.every(h=>h>=60),'Menu retains comfortable touch targets');
       await dimensions(`${id}/${width}/${safe}`);
     }

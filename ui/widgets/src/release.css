@@ -2,7 +2,7 @@
 body { margin: 0; padding:0; overflow-wrap:anywhere; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
 /* Telegram's UA layer supplies the pointer cursor. */
 button { font: inherit; }
-.release { min-height: 600px; padding: var(--ha-space-3); }
+.r-root { min-height: 600px; padding: var(--ha-space-3); }
 #r-context { flex: 1; color: var(--ha-muted); font-size: 12px; }
 h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height: 1.2; font-weight:600; }
 #r-context, h1 { white-space: nowrap; }
@@ -23,23 +23,22 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-danger { border-color: var(--ha-error); color: var(--ha-error); background: var(--ha-error-soft); }
 .r-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--ha-space-2); }
 .r-pager span { color: var(--ha-muted); font-size: 11px; text-align: center; white-space:pre-line; }
-.r-pager button, #r-read { min-width: 44px; min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
-.r-footer { display:grid; grid:auto/1fr auto; gap:var(--ha-space-2); }
-.r-footer .r-pager { grid-column:1; min-width:0; margin:0; }
-#r-read { grid-area:1/2; width:44px; height:44px; font-size:22px; line-height:1; }
+.r-pager button { min-width: 44px; min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
+#r-read { flex:none; width:44px; height:44px; font-size:22px; line-height:1; }
 #r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); }
 [aria-disabled="true"] { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
 .r-wait { position:relative; opacity:1; }
 .r-wait span { opacity:0; }
 .r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
-.release { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }
+.r-root { padding-bottom: max(var(--ha-space-4), env(safe-area-inset-bottom)); }
 
 /* Every screen keeps navigation at the bottom; only home stretches its rows. */
-.release { display:flex; flex-direction:column; }
-.release > * { flex-shrink:0; }
+.r-root { display:flex; flex-direction:column; }
+.r-root > * { flex-shrink:0; }
 #r-content { flex:1; display:flex; flex-direction:column; }
 [data-kind="home"] .r-row { flex:1; }
+[data-kind="home"] h1 { margin:-44px 56px 8px 0; line-height:44px; }
 .r-status { display:block; padding:10px; font-size:15px; }
 .r-status > * { display:block; }
 .r-status strong { font-size:18px; margin:4px 0; }
