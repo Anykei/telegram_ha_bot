@@ -5,8 +5,8 @@ import {validGraph, renderGraph} from './graph-render.js';
 (() => {
   const api=window.TelegramWidget, el=id=>document.getElementById(id), card=el('r-root');
   const words={
-    ru:['Назад',MENU?'Далее':'','Обновить',MENU?'Обновление…':'','Нет ответа. Обновите.','Доступ закрыт',MENU?'/start':'',MENU||RANGE?'Отмена':'',...(RANGE?['Пн Вт Ср Чт Пт Сб Вс','Часы','Минуты']:[])],
-    en:['Back',MENU?'Next':'','Refresh',MENU?'Updating…':'',MENU?'No response. Refresh.':'No response.','Access denied',MENU?'/start':'',MENU||RANGE?'Cancel':'',...(RANGE?['Mon Tue Wed Thu Fri Sat Sun','Hours','Minutes']:[])]
+    ru:['Назад',MENU?'Далее':'','Обновить','Нет ответа. Обновите.','Доступ закрыт','/start',MENU||RANGE?'Отмена':'',...(RANGE?['Пн Вт Ср Чт Пт Сб Вс','Часы','Минуты']:[])],
+    en:['Back',MENU?'Next':'','Refresh',MENU?'No response. Refresh.':'No response.','Access denied','/start',MENU||RANGE?'Cancel':'',...(RANGE?['Mon Tue Wed Thu Fri Sat Sun','Hours','Minutes']:[])]
   };
   const mediaKinds=['chart','range','calendar','time'];
   let data, lang=navigator.language.startsWith('ru')?'ru':'en', lastKind=MENU?'menu':CHART?'chart':'range';
@@ -16,11 +16,11 @@ import {validGraph, renderGraph} from './graph-render.js';
   const media=v=>MEDIA&&(!MENU||mediaKinds.includes(v?v.kind:lastKind));
   const chart=v=>CHART&&(!MENU&&!RANGE||(v?v.kind:lastKind)==='chart');
   const w=i=>words[lang][i], text=(id,value)=>el(id).textContent=value;
-  const hide=(id,on)=>el(id).classList.toggle('r-hidden',on);
+  const hide=(id,on)=>el(id).hidden=on;
   const node=(tag,style='',value='')=>{const n=document.createElement(tag);n.className=style;n.textContent=value;return n;};
   const string=v=>typeof v==='string', integer=Number.isSafeInteger;
   const list=(v,max,test)=>Array.isArray(v)&&v.length<=max&&v.every(test);
-  const key=v=>string(v)&&/^[A-Za-z0-9_-]{1,28}$/.test(v);
+  const key=v=>string(v)&&/^[\w-]{1,28}$/.test(v);
   const blocked=k=>denied||!data||busy||waiting||(uncertain&&k!=='read');
   const external=i=>data[i?'next':'prev']||data.q?.[i+1];
   function valid(v) {
@@ -85,8 +85,8 @@ import {validGraph, renderGraph} from './graph-render.js';
     if(MEDIA&&media(data))button.textContent=b[0];
     else {
       button.setAttribute('aria-busy',awaiting);
-      button.appendChild(node('span','',b[0]));
-      if(awaiting)button.appendChild(node('i'));
+      button.append(node('span','',b[0]));
+      if(awaiting)button.append(node('i'));
     }
     disable(button,unavailable||blocked(b[1]));
     button.onclick=()=>!unavailable&&send(b[1]);return button;
@@ -97,7 +97,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     nodes.forEach(block=>{
       const paragraph=MENU&&!media(data)&&block.tagName==='P';
       if(!paragraph||!previous||previous.className!==block.className) {
-        previous=paragraph?node('p',block.className):block;content.appendChild(previous);
+        previous=paragraph?node('p',block.className):block;content.append(previous);
       }
       if(paragraph)previous.textContent+=block.textContent;
     });
@@ -119,40 +119,40 @@ import {validGraph, renderGraph} from './graph-render.js';
     const paragraphs=[[data.alert,'r-alert'],[data.notice,media(data)?'':'r-notice'],[data.body,media(data)?'':'r-body']];
     if(MENU&&!media(data)) {
       paragraphs.push([data.hint||'','r-hint']);
-      for(const id of ['r-title','r-context'])if(el(id).scrollWidth>el(id).clientWidth)paragraphs.unshift([el(id).textContent,id+'-full']);
+      for(const id of ['r-title','r-context'])if(el(id).scrollWidth>el(id).clientWidth)paragraphs.unshift([el(id).textContent,id]);
     }
     for(const [value,style] of paragraphs)for(const part of value.match(media(data)?/.{60,99}\s|.{1,100}/gsu:/.{20,39}\s|.{1,40}/gsu)||[])blocks.push(node('p','r-text '+style,part));
     if(MENU&&!media(data)&&data.status?.length) {
       statuses=node('div','r-statuses');
       data.status.forEach(status=>{
         const tile=node('div','r-button r-status');
-        status.forEach((value,i)=>tile.appendChild(node(['span','strong','small'][i],'',value)));
-        statuses.appendChild(tile);
+        status.forEach((value,i)=>tile.append(node(['span','strong','small'][i],'',value)));
+        statuses.append(tile);
       });blocks.push(statuses);
     }
     if(RANGE&&media(data)&&data.t) {
       const fields=node('div','r-row');
       data.t.forEach((n,i)=>{
-        const b=choice(w(9+i)+' ▾','u'+i),value=node('b','t-value',String(n).padStart(2,'0'));
-        value.id='t'+i;b.appendChild(value);b.setAttribute('aria-expanded',String(picker===i));b.setAttribute('aria-controls','t-options');
+        const b=choice(w(8+i)+' ▾','u'+i),value=node('b','t-value',('0'+n).slice(-2));
+        value.id='t'+i;b.append(value);b.setAttribute('aria-expanded',picker===i);b.setAttribute('aria-controls','t-options');
         b.onclick=()=>{if(!blocked('')){picker=picker===i?-1:i;local=Math.floor(n/(card.clientWidth<320?6:12));render();}};
-        fields.appendChild(b);
+        fields.append(b);
       });blocks.push(fields);
       if(picker>=0) {
         const grid=node('div','t-grid'),size=card.clientWidth<320?6:12,max=picker?60:24;
         grid.id='t-options';count=Math.ceil(max/size);local=Math.min(local,count-1);
         for(let n=local*size;n<Math.min(max,(local+1)*size);n++) {
-          const b=choice(String(n).padStart(2,'0'),(picker?'m':'h')+n,n===data.t[picker]);
+          const b=choice(('0'+n).slice(-2),(picker?'m':'h')+n,n===data.t[picker]);
           if(n===data.t[picker])b.onclick=()=>{if(!blocked('')){picker=-1;render();}};
-          grid.appendChild(b);
+          grid.append(b);
         }blocks.push(grid);
       }
     }
     data.rows.forEach(row=>{
       if(MENU&&!media(data))row=row.filter(b=>b[1]!==data.back);
       if(!row.length)return;
-      if(MENU&&statuses&&row[0][2]==='status'){row.forEach(b=>statuses.appendChild(action(b)));return;}
-      const group=node('div','r-row');row.forEach(b=>group.appendChild(action(b)));blocks.push(group);
+      if(MENU&&statuses&&row[0][2]==='status'){row.forEach(b=>statuses.append(action(b)));return;}
+      const group=node('div','r-row');row.forEach(b=>group.append(action(b)));blocks.push(group);
     });
     if(MEDIA&&media(data))hide('r-server',true);
     if(RANGE&&media(data)&&data.t){mount(blocks);if(picker>=0)pager();return;}
@@ -161,7 +161,7 @@ import {validGraph, renderGraph} from './graph-render.js';
       count=Math.ceil((offset+days)/7);local=Math.min(local,count-1);
       const grid=node('div','g-days'),from=narrow?local*7:0,to=narrow?(local+1)*7:offset+days;
       for(let i=from;i<to;i++) {
-        const d=i-offset+1;grid.appendChild(d<1||d>days?node('span'):choice(w(8).split(' ')[i%7]+'\n'+d,'d'+d,d===selected,d<first||d>last));
+        const d=i-offset+1;grid.append(d<1||d>days?node('span'):choice(w(7).split(' ')[i%7]+'\n'+d,'d'+d,d===selected,d<first||d>last));
       }
       blocks.push(grid);mount(blocks);if(narrow)pager();return;
     }
@@ -187,20 +187,26 @@ import {validGraph, renderGraph} from './graph-render.js';
     card.style.paddingBottom=(corner?16:Math.max(16,api?.contentSafeAreaInset?.bottom||0))+'px';
   }
   function render() {
+    // Telegram flushes DOM mutations before every synchronous geometry query.
+    // Keep the last complete card visible while pagination measures partial rows.
+    // An opaque copy covers intermediate states without affecting measurements.
+    const cover=card.cloneNode(true);
+    cover.style.cssText+=';position:absolute;inset:0';
+    card.after(cover);
     card.style.height='';
     const locked=denied||!data,a=api?.contentSafeAreaInset,corners=a&&a.cornerLeft+a.cornerRight;
     if(UNIFIED)document.documentElement.dataset.mode=media(data)?'media':'menu';
     card.dataset.kind=locked?media(data)?'chart':'menu':data.kind||'menu';
     if(MENU)card.classList.toggle('r-bounded',!locked&&!media(data)&&(data.l||data.kind==='room'));
-    text('r-context',locked?'':data.context);text('r-title',locked?w(5):data.title);
-    text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(!media(data)&&(busy||waiting)?3:2));
-    text('r-back','‹ '+w((RANGE&&data?.kind==='range'||MENU&&['form','confirmation'].includes(data?.kind))?7:0));
+    text('r-context',locked?'':data.context);text('r-title',locked?w(4):data.title);
+    text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(2));
+    text('r-back','‹ '+w((RANGE&&data?.kind==='range'||MENU&&['form','confirmation'].includes(data?.kind))?6:0));
     ['read','back'].forEach(k=>{
       const id='r-'+k,button=el(id),missing=locked||!data[k];
       hide(id,missing);disable(button,missing||blocked(data[k]));
       button.onclick=()=>data&&send(data[k]);
     });
-    const feedback=locked?(media(data)?lang==='ru'?'Откройте /start.':'Open /start.':w(6)):note||(!media(data)&&data.rows.flat().some(b=>b[2]==='uncertain')?w(4):'');
+    const feedback=locked?w(5):note||(!media(data)&&data.rows.flat().some(b=>b[2]==='uncertain')?w(3):'');
     text('r-feedback',feedback);hide('r-feedback',!feedback);
     const corner=!feedback&&corners>0&&card.clientWidth-corners>=200;
     const png=CHART&&chart(data)&&!locked&&data.rows.at(-1)?.length===1&&corners>0&&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
@@ -211,14 +217,15 @@ import {validGraph, renderGraph} from './graph-render.js';
     hide('r-server',true);mount([]);
     if(!locked) {
       const position=local;let overflow=layout();
-      if(!el('r-server').classList.contains('r-hidden')&&(media(data)||corner)) {
+      if(!el('r-server').hidden&&(media(data)||corner)) {
         inset(corner);if(CHART&&media(data)&&!corner)card.classList.remove('r-left');
         local=position;overflow=layout(!media(data));
       }
-      if(MENU&&!media(data)&&overflow){mount([]);hide('r-server',true);text('r-feedback',w(6));hide('r-feedback',false);}
+      if(MENU&&!media(data)&&overflow){mount([]);hide('r-server',true);text('r-feedback',w(5));hide('r-feedback',false);}
     }
     // Keep the menu's intrinsic denied layout and media's fixed-height contract.
     if(!locked||media(data))card.style.height='600px';
+    cover.remove();
     if(RANGE&&media(data)){cancelAnimationFrame(frame);frame=0;}
     if(RANGE&&!locked&&media(data)&&data.t&&motion)animate(0);
     else if(MENU&&!media(data)&&!frame)frame=requestAnimationFrame(animate);
@@ -237,7 +244,7 @@ import {validGraph, renderGraph} from './graph-render.js';
   }
   function stop(){waiting=false;clearTimeout(timer);}
   function complete(){if(reading)uncertain=false;reading=false;stop();note='';}
-  function fail(){reading=false;if(MENU)tail=false;stop();uncertain=true;note=media(data)&&lang==='en'?'No response.':w(4);}
+  function fail(){reading=false;if(MENU)tail=false;stop();uncertain=true;note=w(3);}
   function recover(page) {
     if(UNIFIED&&!api.isForward&&page?.kind==='home'&&page.seq>closedSeq&&accept(page)) {
       denied=false;busy=false;uncertain=false;note='';render();
@@ -261,7 +268,7 @@ import {validGraph, renderGraph} from './graph-render.js';
       if(answer?.denied)close();
       else if(answer?.page) {
         if(!accept(answer.page))throw Error();
-        if(answer.page.seq>seq)complete();else{reading=false;stop();if(!media(data))note=uncertain?w(4):'';}
+        if(answer.page.seq>seq)complete();else{reading=false;stop();if(!media(data))note=uncertain?w(3):'';}
       } else if(answer?.accepted) {
         if(data&&data.seq>seq)complete();else{waiting=true;timer=setTimeout(()=>{fail();render();},12000);}
       } else throw Error();
@@ -279,7 +286,8 @@ import {validGraph, renderGraph} from './graph-render.js';
     const next=local+(i?1:-1);
     if(next>=0&&next<count){local=next;render();}else if(!media(data))send(external(i),!i);
   };});
+  theme();
   if(api&&!denied){api.onEvent('chatDataChanged',update);api.onEvent('contentSafeAreaChanged',render);api.onEvent('themeChanged',()=>{theme();render();});update();api.ready();}
-  if(typeof ResizeObserver==='function'){let width=0;new ResizeObserver(()=>{if(width!==card.clientWidth){width=card.clientWidth;render();}}).observe(card);}
-  theme();render();
+  else render();
+  if(typeof ResizeObserver==='function'){let width=card.clientWidth;new ResizeObserver(()=>{if(width!==card.clientWidth){width=card.clientWidth;render();}}).observe(card);}
 })();

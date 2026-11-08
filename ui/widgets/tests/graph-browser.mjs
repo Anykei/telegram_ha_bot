@@ -1,3 +1,4 @@
+import {watchPaint} from './paint-check.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -73,7 +74,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
         });
       })()`),true,`${label}: all graph actions align to the same two columns`);
     }
-    if(await evaluate(`${get('g-box')} && !${get('g-box')}.classList.contains('r-hidden')`)) {
+    if(await evaluate(`${get('g-box')} && !${get('g-box')}.hidden`)) {
       const paint=await evaluate(`(() => {
         const line=${get('g-line')},range=${get('g-range')},gaps=${get('g-gaps')},svg=line.closest('svg');
         const style=n=>{const s=${win}.getComputedStyle(n);return {stroke:s.stroke,fill:s.fill,width:s.strokeWidth,opacity:s.opacity};};
@@ -87,7 +88,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
       assert.equal(paint.range.opacity,'0.25',`${label}: range has its intended opacity`);
 
       const graph=await evaluate(`(() => {
-        const stage=${get('g-stage')},empty=stage.classList.contains('r-hidden'),plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
+        const stage=${get('g-stage')},empty=stage.hidden,plot=(empty?${get('g-empty')}:${doc}.querySelector('svg')).getBoundingClientRect();
         return {height:plot.height,stage:empty?plot.height:stage.getBoundingClientRect().height};
       })()`);
       const empty=await evaluate(`${get('g-line')}.getAttribute('d')===''`);
@@ -107,26 +108,50 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
   }
   async function collect(label) {
     // A narrow calendar initially opens the selected week. All other weeks remain reachable.
-    while(await evaluate(`!${get('r-footer')}.classList.contains('r-hidden') && !${get('r-local-prev')}.disabled`)) await evaluate(`${get('r-local-prev')}.click()`);
+    while(await evaluate(`!${get('r-footer')}.hidden && !${get('r-local-prev')}.disabled`)) await evaluate(`${get('r-local-prev')}.click()`);
     const keys=new Set();let text='',count=0;
     do {
       assert.ok(++count<=12,`${label}: finite pagination`);
       await dimensions(label);
       const value=await evaluate(`({text:Array.from(${doc}.querySelectorAll('.r-text')).map(n=>n.textContent).join(''),
         keys:Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key),
-        last:${get('r-footer')}.classList.contains('r-hidden') || ${get('r-local-next')}.disabled})`);
+        last:${get('r-footer')}.hidden || ${get('r-local-next')}.disabled})`);
       text+=value.text;value.keys.forEach(k=>keys.add(k));if(value.last)break;
       await evaluate(`${get('r-local-next')}.click()`);
     } while(true);
     return {keys,text,count};
   }
   await command('Emulation.setDeviceMetricsOverride',{width:1280,height:1080,deviceScaleFactor:1,mobile:false});
+  for(const id of ['numeric','range','calendar','time']) {
+    await reload(id,{theme:'dark',width:320});
+    await requests();
+    const paint=await watchPaint({evaluate,doc,win});
+    if(id==='numeric') {
+      // Prove this check catches a blank intermediate panel even if the final
+      // screenshot is unchanged (the previous renderer's measurement pattern).
+      await assert.rejects(()=>paint(()=>evaluate(`(() => {
+        const content=${get('r-content')},nodes=Array.from(content.childNodes);
+        content.replaceChildren();${get('release')}.scrollHeight;content.append(...nodes);
+      })()`),'Intentional intermediate blank'),/only complete old\/new screens/);
+    }
+    if(id==='time') {
+      await paint(()=>evaluate(`${button('u0')}.click()`),'Time: open hour choices');
+      await paint(()=>evaluate(`${button('u0')}.click()`),'Time: close hour choices');
+      continue;
+    }
+    await paint(()=>evaluate(`${get('r-read')}.click()`),`${id}: refresh started`);
+    await paint(()=>reply({accepted:true}),`${id}: refresh accepted`);
+    await paint(()=>push({seq:100,rev:'a'.repeat(32)}),`${id}: refreshed data`);
+    if(id==='range') {
+      await paint(()=>push({...fixtures.find(f=>f.id==='calendar').page,seq:101,rev:'b'.repeat(32)}),'Range → calendar');
+    }
+  }
   await reload('numeric');
   for(const theme of ['light','dark']) for(const width of [200,320,360,430]) for(const f of fixtures) {
     const label=`${f.id}/${theme}/${width}`;
     await reload(f.id,{theme,width});
     assert.equal(await evaluate(`${get('r-title')}.textContent`),f.page.title,label);
-    assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`),false);
+    assert.equal(await evaluate(`${get('r-back')}.hidden`),false);
     const all=await collect(label);
     f.page.b.flat().forEach(b=>assert.ok(all.keys.has(b[1]),`${label}: reachable ${b[0]}`));
     assert.ok(all.text.includes(f.page.body),`${label}: full description`);
@@ -144,7 +169,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
   const height=await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`);
   assert.ok(height>200, `plot expands to ${height}px`);
   assert.equal(await evaluate(`${doc}.querySelectorAll('[data-key]').length`),3);
-  assert.equal(await evaluate(`${get('r-footer')}.classList.contains('r-hidden')`),true);
+  assert.equal(await evaluate(`${get('r-footer')}.hidden`),true);
   const bottom=await evaluate(`${get('r-content')}.getBoundingClientRect().bottom`);
   await screenshot('graph-calendar-overview-dark');
   assert.ok(Math.abs(600-bottom-16)<1,`last control uses space beside clock: bottom=${bottom}, height=${height}, padding=${await evaluate(win+".getComputedStyle("+get('release')+").paddingBottom")}`);

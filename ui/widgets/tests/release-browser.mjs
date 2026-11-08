@@ -1,3 +1,4 @@
+import {watchPaint} from './paint-check.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -150,6 +151,22 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   await command('Page.navigate', {url:pathToFileURL(root+(unified?'prototype/dist/unified-preview.html':'dist/release-preview.html')).href});
   await until(`${get('r-title')} && ${get('r-title')}.textContent === 'Мой дом'`);
+  const startupProbe=await command('Page.addScriptToEvaluateOnNewDocument',{source:`
+    for(const property of ['clientWidth','scrollWidth','scrollHeight']) {
+      const descriptor=Object.getOwnPropertyDescriptor(Element.prototype,property);
+      Object.defineProperty(Element.prototype,property,{...descriptor,get(){
+        if(window.TelegramWidget&&!window.__firstWidgetTheme)
+          window.__firstWidgetTheme={actual:document.documentElement.dataset.theme,expected:window.TelegramWidget.colorScheme};
+        return descriptor.get.call(this);
+      }});
+    }
+  `});
+  for(const theme of ['dark','light']) {
+    await reload('room',{theme});
+    const first=await evaluate(`${win}.__firstWidgetTheme`);
+    assert.equal(first?.actual,theme,'Telegram theme applies before the first layout query');
+  }
+  await command('Page.removeScriptToEvaluateOnNewDocument',{identifier:startupProbe.identifier});
   let localPaginationSeen = false;
   for (const theme of ['light', 'dark']) {
     for (const width of [200, 320, 360, 430]) {
@@ -231,7 +248,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await reload('rooms_six',{width,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,64)`);
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6,'All six rooms fit on the first screen');
-    assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),true,'Six rooms need no extra part');
+    assert.equal(await evaluate(`${get('r-server')}.hidden`),true,'Six rooms need no extra part');
     await dimensions(`six rooms/${width}`);
     const lastRoom=button('room5');
     await checkNativeLayout({evaluate,doc,target:lastRoom,label:`six rooms/${width}`,bottom:await evaluate(`${lastRoom}.getBoundingClientRect().bottom`),hitTest:true});
@@ -383,7 +400,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await evaluate(`${win}.previewSetSafeArea(${safe})`);
     assert.equal(await evaluate(`${win}.getComputedStyle(${doc}.body).paddingBottom`), '0px');
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`), 5);
-    assert.equal(await evaluate(`${get('r-local')}.classList.contains('r-hidden')`), false);
+    assert.equal(await evaluate(`${get('r-local')}.hidden`), false);
     assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer.r-pager').length`), 1, 'A single pager represents all continuation');
     const footer = await evaluate(`({local:${get('r-local')}.getBoundingClientRect().toJSON(),read:${get('r-read')}.getBoundingClientRect().toJSON()})`);
     assert.equal(footer.read.top,12,'Refresh does not move when local pagination appears');
@@ -398,9 +415,9 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await evaluate(`{const page=${state};delete page.kind;delete page.status;delete page.l;delete page.q;${win}.previewSetData(page);}`);
   assert.equal(await evaluate(`${get('release')}.getAttribute('data-kind')`), 'menu');
   assert.equal(await evaluate(`${doc}.querySelector('.r-hint')`), null);
-  assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
+  assert.equal(await evaluate(`${get('r-back')}.hidden`), true);
   await push({back:null});
-  assert.equal(await evaluate(`${get('r-back')}.classList.contains('r-hidden')`), true);
+  assert.equal(await evaluate(`${get('r-back')}.hidden`), true);
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
@@ -432,7 +449,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
       assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':p0')`));
     } else {
-      assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),true,'No separate page for a short status');
+      assert.equal(await evaluate(`${get('r-server')}.hidden`),true,'No separate page for a short status');
     }
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
   }
@@ -488,10 +505,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'My settings');
   await click('ru'); await until(`${get('r-read')}.getAttribute('aria-label') === 'Обновить'`);
   await reload('room', {theme:'dark'}); await capture('release-room-dark');
+  const navigationPaint=await watchPaint({evaluate,doc,win});
   // The name/state opens a device card, while its adjacent command keeps a distinct key.
   assert.equal(await evaluate(`${button('device')}.classList.contains('r-nav')`), true);
   assert.equal(await evaluate(`${button('lamp_on')}.classList.contains('r-action')`), true);
-  await click('device'); await until(`${get('r-title')}.textContent === 'Торшер'`);
+  await navigationPaint(async()=>{
+    await click('device'); await until(`${get('r-title')}.textContent === 'Торшер'`);
+  },'Room → device');
   await capture('release-device-dark');
   assert.equal(await evaluate(`${get('r-content')}.querySelector('.r-text').textContent`), 'Состояние: Выключен.');
   await evaluate(`${get('r-back')}.click()`); await until(`${get('r-title')}.textContent === 'Гостиная'`);
@@ -503,17 +523,18 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await reload('climate', {width:430}); await capture('release-climate-wide');
   // Compact controls follow the same request/ACK path as legacy object rows.
   await reload('climate'); await controlRequests();
+  const climatePaint=await watchPaint({evaluate,doc,win});
   const geometry = () => evaluate(`Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().toJSON())`);
   const beforePress = await geometry();
-  await click('temp_up');
+  await climatePaint(()=>click('temp_up'),'Start device command');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
-  assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), 'Обновление…');
+  assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), 'Обновить');
   assert.deepEqual(await geometry(), beforePress, 'Press does not move or resize controls');
   await dimensions('climate/request');
-  await reply({accepted:true});
+  await climatePaint(()=>reply({accepted:true}),'Wait for device state');
   assert.deepEqual(await geometry(), beforePress, 'Waiting for state does not move controls');
-  await push({seq:100,rev:'a'.repeat(32)});
+  await climatePaint(()=>push({seq:100,rev:'a'.repeat(32)}),'Confirm device state');
   await until(`${disabled('temp_up')} === 'false'`);
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
   assert.deepEqual(await geometry(), beforePress, 'State update does not move controls');

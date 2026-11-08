@@ -9,7 +9,7 @@
 * { box-sizing:border-box; }
 body { margin:0; padding:0; overflow:hidden; overflow-wrap:anywhere; background:var(--ha-surface); color:var(--ha-text); font:var(--ui-font)/var(--ui-line) var(--ha-font); }
 button { font:inherit; }
-.r-root { min-height:600px; padding:12px 12px 16px; display:flex; flex-direction:column; }
+.r-root { background:var(--ha-surface); min-height:600px; padding:12px 12px 16px; display:flex; flex-direction:column; }
 .r-root>* { flex:none; }
 #r-content { flex:1; }
 .r-pager { display:flex; align-items:center; justify-content:center; gap:8px; }
