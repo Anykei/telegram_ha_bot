@@ -1,0 +1,137 @@
+name: Shared checks
+
+on:
+  workflow_call:
+    inputs:
+      rust-toolchain:
+        type: string
+        default: stable
+      build-docker:
+        description: Build and smoke-test the Linux image before a release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: ${{ inputs.rust-toolchain }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Bot Code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            clang \
+            libclang-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libavfilter-dev \
+            libavdevice-dev \
+            libpostproc-dev \
+            libswscale-dev \
+            libswresample-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup component add rustfmt --toolchain "$RUST_TOOLCHAIN"
+          rustup component add clippy --toolchain "$RUST_TOOLCHAIN"
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check project
+        run: cargo check --locked --future-incompat-report
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  widgets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/widgets/package-lock.json
+      - run: npm ci --prefix ui/widgets
+      - run: npm test --prefix ui/widgets
+      - name: Build widgets and verify checked-in assets
+        run: |
+          npm run build --prefix ui/widgets
+          git diff --exit-code -- ui/widgets/dist ui/widgets/src/tokens.css
+      - name: Check browser layouts and interactions
+        run: |
+          HA_WIDGET_CHROME="$(command -v google-chrome)"
+          export HA_WIDGET_CHROME
+          test -n "$HA_WIDGET_CHROME"
+          npm run check:browser --prefix ui/widgets
+
+  automation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Validate workflow syntax and shell commands
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+      - name: Test release planning and maintenance scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+  docker:
+    if: inputs.build-docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Linux image without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: telegram-ha-bot:check
+          platforms: linux/amd64
+          cache-from: type=gha,scope=bot-amd64
+          cache-to: type=gha,scope=bot-amd64,mode=max
+      - name: Verify image starts without configuration
+        run: |
+          EXPECTED="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          test "$(docker run --rm --network none telegram-ha-bot:check --version)" = "telegram_ha_bot $EXPECTED"

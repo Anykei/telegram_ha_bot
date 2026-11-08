@@ -1,0 +1,3 @@
+/* Shared overrides follow all feature styles. */
+.r-corner .r-footer { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }
+[hidden] { display:none; }

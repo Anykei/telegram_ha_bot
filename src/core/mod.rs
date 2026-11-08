@@ -1,12 +1,19 @@
 pub(crate) mod action_groups;
+pub(crate) mod action_results;
 pub(crate) mod action_schedules;
+pub(crate) mod camera_health;
+pub(crate) mod camera_pre_roll;
 pub(crate) mod camera_recording;
 pub(crate) mod camera_recording_matcher;
+pub(crate) mod camera_snapshots;
 pub(crate) mod cameras;
+pub(crate) mod climate_control;
 pub(crate) mod commands;
 pub mod devices;
 pub(crate) mod maintenance;
 mod notification;
+pub(crate) use notification::enqueue_current_refresh;
+pub(crate) mod notification_delivery;
 pub(crate) mod presentation;
 pub(crate) mod types;
 pub(crate) mod ui_background;
@@ -23,6 +30,10 @@ use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct HeaderItem {
+    #[serde(default)]
+    pub source: Option<crate::core::types::DisplaySource>,
+    #[serde(default)]
+    pub additional_sources: Vec<crate::core::types::DisplaySource>,
     pub icon: String,
     pub label: String,
     pub value: String,
@@ -31,7 +42,6 @@ pub struct HeaderItem {
 
 impl AppConfig {
     pub async fn get_header_data(&self, user_id: u64) -> Vec<HeaderItem> {
-        use crate::bot::utils::md;
         use crate::core::presentation::StateFormatter;
         use crate::i18n::t;
         let mut items = Vec::new();
@@ -40,6 +50,26 @@ impl AppConfig {
             .ok()
             .flatten()
             .unwrap_or(self.default_language);
+
+        if self.ha_client.is_mock() {
+            items.push(HeaderItem {
+                icon: "🧪".into(),
+                label: if lang == crate::i18n::Language::Ru {
+                    "Тестовый дом"
+                } else {
+                    "Test home"
+                }
+                .into(),
+                value: if lang == crate::i18n::Language::Ru {
+                    "Устройства виртуальные"
+                } else {
+                    "Virtual devices"
+                }
+                .into(),
+                last_update: Utc::now(),
+                ..Default::default()
+            });
+        }
 
         let window_mins = self.ttl_notifications;
 
@@ -50,9 +80,11 @@ impl AppConfig {
                 .as_deref()
                 .unwrap_or("shutdown signal");
             items.push(HeaderItem {
+                source: None,
+                additional_sources: Vec::new(),
                 icon: "🛑".into(),
                 label: t(lang, "system.shutdown.label").into(),
-                value: md::bold(&format!("{}: {}", t(lang, "system.shutdown.value"), reason)),
+                value: format!("{}: {}", t(lang, "system.shutdown.value"), reason),
                 last_update: shutdown_requested_at,
             });
         }
@@ -88,6 +120,10 @@ impl AppConfig {
                                     );
 
                                 items.push(HeaderItem {
+                                    source: Some(crate::core::types::DisplaySource::Camera {
+                                        id: camera.id,
+                                    }),
+                                    additional_sources: Vec::new(),
                                     icon: "🔴".into(),
                                     label: format!(
                                         "{} · {}",
@@ -95,13 +131,10 @@ impl AppConfig {
                                         camera.name
                                     ),
                                     value: format!(
-                                        "{} · {}",
-                                        md::bold(t(lang, "recording.active")),
-                                        md::plain(&format!(
-                                            "{} {}",
-                                            t(lang, "recording.remaining"),
-                                            remaining
-                                        ))
+                                        "{} · {} {}",
+                                        t(lang, "recording.active"),
+                                        t(lang, "recording.remaining"),
+                                        remaining
                                     ),
                                     last_update: session.last_event_at,
                                 });
@@ -124,6 +157,17 @@ impl AppConfig {
         {
             Ok(alerts) => {
                 for alert in alerts {
+                    // The rendered alert keeps the identity it disclosed. A
+                    // later ACL check must not reconstruct a different set of
+                    // currently visible devices and accept this old snapshot.
+                    let Ok(Some(device_id)) =
+                        sqlx::query_scalar::<_, i64>("SELECT id FROM devices WHERE entity_id = ?")
+                            .bind(&alert.entity_id)
+                            .fetch_optional(&self.db)
+                            .await
+                    else {
+                        continue;
+                    };
                     // А. Определяем домен и класс (для иконок)
                     let domain = alert.entity_id.split('.').next().unwrap_or("");
                     // В идеале alert должен содержать device_class из БД, если нет — используем ""
@@ -137,10 +181,13 @@ impl AppConfig {
                         .unwrap_or_else(|| alert.entity_id.clone());
 
                     // В. Получаем префикс комнаты (Breadcrumbs)
+                    let mut additional_sources = Vec::new();
                     let room_prefix = if let Ok(Some(rid)) =
                         db::devices::get_room_id_by_entity(&alert.entity_id, &self.db).await
                     {
                         if let Ok(Some(room)) = db::rooms::get_room_by_id(rid, &self.db).await {
+                            additional_sources
+                                .push(crate::core::types::DisplaySource::Room { id: room.id });
                             format!("{} • ", room.alias.as_deref().unwrap_or(&room.area))
                         } else {
                             "".to_string()
@@ -174,9 +221,14 @@ impl AppConfig {
 
                     // Собираем элемент для шапки
                     items.push(HeaderItem {
+                        source: Some(crate::core::types::DisplaySource::Device {
+                            id: device_id,
+                            entity_id: alert.entity_id.clone(),
+                        }),
+                        additional_sources,
                         icon: icon.into(),
                         label: format!("{}{}", room_prefix, name),
-                        value: format!("{}{}", md::bold(&human_state), md::plain(&count_suffix)),
+                        value: format!("{human_state}{count_suffix}"),
                         last_update: alert.last_updated,
                     });
                 }
@@ -189,6 +241,8 @@ impl AppConfig {
         // 3. Если событий не было — выводим "чистый" статус
         if items.is_empty() {
             items.push(HeaderItem {
+                source: None,
+                additional_sources: Vec::new(),
                 icon: "✅".into(), // Сменил 🏠 на ✅ для лучшего контраста при алерте
                 label: t(lang, "system.label").into(),
                 value: t(lang, "system.ok").into(),
@@ -246,6 +300,7 @@ impl AppConfig {
 // }
 // }
 
+#[cfg(test)]
 pub async fn update_user_state_with_mode(
     config: &Arc<AppConfig>,
     user_id: u64,
@@ -253,45 +308,136 @@ pub async fn update_user_state_with_mode(
     context: &str,
     ui_message_mode: crate::models::UiMessageMode,
 ) {
-    let context_owned = context.to_string();
+    let Ok(Some(generation)) = db::user::admission_generation(user_id, &config.db).await else {
+        return;
+    };
+    if !record_user_activity_for_admission(config, user_id, &generation)
+        .await
+        .unwrap_or(false)
+    {
+        return;
+    }
+    update_user_state_for_admission(
+        config,
+        user_id,
+        msg_id,
+        context,
+        ui_message_mode,
+        &generation,
+    )
+    .await;
+}
+
+/// Record an accepted Telegram update independently of UI delivery/persistence.
+pub async fn record_user_activity_for_admission(
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    generation: &str,
+) -> anyhow::Result<bool> {
+    let _lifecycle = config.admission_lifecycle.lock().await;
     let now = Utc::now();
-    let previous_context = config
+    if !db::record_user_activity(user_id, generation, now, &config.db).await? {
+        return Ok(false);
+    }
+    if let Some(mut session) = config.sessions.get_mut(&user_id) {
+        session.last_seen_at = now;
+    }
+    Ok(true)
+}
+
+pub async fn update_user_state_for_admission(
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    msg_id: i32,
+    context: &str,
+    ui_message_mode: crate::models::UiMessageMode,
+    generation: &str,
+) {
+    let _lifecycle = config.admission_lifecycle.lock().await;
+    let now = Utc::now();
+    if !db::user::admission_is_current(user_id, generation, &config.db)
+        .await
+        .unwrap_or(false)
+    {
+        return;
+    }
+    // A redraw can occur after a restart without an in-memory session. Restore
+    // the persisted user activity, rather than creating a new inactivity lease.
+    let last_seen_at = match db::user_activity_at(user_id, generation, &config.db).await {
+        Ok(Some(at)) => at,
+        Ok(None) => match config
+            .sessions
+            .get(&user_id)
+            .map(|session| session.last_seen_at)
+        {
+            Some(at) => at,
+            // A background result must not recreate a session removed by TTL
+            // cleanup. Only authentication can establish new user activity.
+            None => return,
+        },
+        Err(error) => {
+            log::warn!("Session activity lookup failed: {}", error);
+            return;
+        }
+    };
+    let previous_persisted_at = config
         .sessions
         .get(&user_id)
-        .map(|session| session.current_context.clone());
-
-    if previous_context.as_deref() == Some(context) {
-        debug!(
-            "REFRESH USER STATE: user: {}, context: {}",
-            user_id, context
-        );
-    } else {
-        info!("UPDATE USER STATE: user: {}, context: {}", user_id, context);
+        .and_then(|session| session.last_persisted_at);
+    let should_persist = config.sessions.get(&user_id).is_none_or(|session| {
+        session.last_menu_id != msg_id
+            || session.current_context != context
+            || session.ui_message_mode != ui_message_mode
+            || session
+                .last_persisted_at
+                .is_none_or(|saved| now.signed_duration_since(saved).num_seconds() >= 300)
+    });
+    if should_persist {
+        match db::save_user_session(
+            user_id,
+            msg_id,
+            context,
+            last_seen_at,
+            generation,
+            &config.db,
+        )
+        .await
+        {
+            Ok(db::user::SessionSave::Saved) => {}
+            Ok(db::user::SessionSave::Revoked) => {
+                log::info!(
+                    "operation=session_save owner={} stage=commit result=revoked",
+                    user_id
+                );
+                return;
+            }
+            Err(error) => {
+                log::warn!("Session persistence failed: {}", error);
+                return;
+            }
+        }
     }
-
+    let previous = config.sessions.remove(&user_id).map(|(_, session)| session);
     config.sessions.insert(
         user_id,
         UserSession {
             last_menu_id: msg_id,
-            current_context: context_owned.clone(),
+            current_context: context.to_owned(),
             ui_message_mode,
-            header_entities: config
-                .sessions
-                .get(&user_id)
+            header_entities: previous
+                .as_ref()
                 .map(|s| s.header_entities.clone())
                 .unwrap_or_default(),
-            recording_rule_wizard: config
-                .sessions
-                .get(&user_id)
-                .and_then(|s| s.recording_rule_wizard.clone()),
+            recording_rule_wizard: previous.and_then(|s| s.recording_rule_wizard),
             last_ui_refresh_at: Some(now),
             ui_refresh_blocked_until: None,
-            last_seen_at: now,
+            last_seen_at,
+            last_persisted_at: if should_persist {
+                Some(now)
+            } else {
+                previous_persisted_at
+            },
         },
     );
-
-    let pool = config.db.clone();
-    let ctx = context_owned;
-
-    crate::db::save_user_session(user_id, msg_id, &ctx, now, &pool).await;
 }
+pub(crate) mod readonly;

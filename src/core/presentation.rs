@@ -86,22 +86,6 @@ impl StateFormatter {
         Self::format_state_value(domain, class, &logical_state)
     }
 
-    pub fn format_device_label_with_state_alias(
-        alias: &str,
-        domain: &str,
-        class: &str,
-        state: &str,
-        inverted: bool,
-        state_alias: Option<&str>,
-    ) -> String {
-        let logical_state = Self::logical_state(state, inverted);
-        let icon = Self::get_icon(domain, class, &logical_state);
-        let value =
-            Self::format_state_value_with_alias(domain, class, state, inverted, state_alias);
-
-        format!("{} {} ({})", icon, alias, value)
-    }
-
     /// Возвращает иконку устройства на основе его домена, класса и текущего состояния.
     pub fn get_icon(domain: &str, class: &str, state: &str) -> &'static str {
         match (domain, state) {
@@ -130,11 +114,6 @@ impl StateFormatter {
 
             _ => "📦",
         }
-    }
-
-    /// Переводит техническое состояние Home Assistant на человеческий русский язык.
-    pub fn translate_state(state: &str) -> &str {
-        Self::translate_state_for("", "", state)
     }
 
     pub fn translate_state_for<'a>(domain: &str, class: &str, state: &'a str) -> &'a str {
@@ -200,10 +179,8 @@ impl StateFormatter {
 
     pub fn get_rooms_header(mode: &super::types::RoomViewMode) -> &'static str {
         match mode {
-            super::types::RoomViewMode::Control => "🎮 *Управление*\nВыберите комнату:",
-            super::types::RoomViewMode::Settings => {
-                "⚙️ *Настройки*\nВыберите комнату для настройки:"
-            }
+            super::types::RoomViewMode::Control => "🎮 Управление\nВыберите комнату:",
+            super::types::RoomViewMode::Settings => "⚙️ Настройки\nВыберите комнату для настройки:",
         }
     }
 

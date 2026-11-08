@@ -1,0 +1,19 @@
+:root[data-mode=media] {
+  --ui-font:14px; --ui-line:1.4; --ui-title:24px; --ui-title-weight:700;
+  --ui-title-margin:8px 0 12px; --ui-context:11px;
+  --ui-radius:12px; --ui-control:44px; --ui-padding:8px;
+  --ui-button-font:14px; --ui-button-display:inline-block;
+  --ui-row-margin:8px 0 0;
+}
+[data-mode=media] button { min-width:44px; }
+[data-mode=media] .r-button { min-width:0; white-space:pre-line; overflow-wrap:anywhere; }
+[data-mode=media] [aria-pressed=true],[aria-expanded=true] { border-color:var(--ha-accent); }
+[data-mode=media] [aria-pressed=true] { background:var(--ha-surface-soft); }
+[data-mode=media] #r-feedback { color:var(--ha-muted); font-size:11px; }
+
+[data-mode=media] #r-context { min-width:0; }
+[data-mode=media] .r-alert { font-weight:600; }
+
+[data-mode=media] .r-footer { margin-top:8px; color:var(--ha-muted); font-size:11px; }
+
+button:disabled { opacity:.45; }

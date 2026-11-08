@@ -26,6 +26,10 @@ pub struct HistoryResult {
 
 #[async_trait::async_trait]
 pub trait HomeAssistantClient: Send + Sync {
+    fn is_mock(&self) -> bool {
+        false
+    }
+
     async fn health_check(&self) -> Result<()>;
 
     async fn fetch_rooms(&self) -> Result<Vec<Room>>;
@@ -36,6 +40,16 @@ pub trait HomeAssistantClient: Send + Sync {
         hours: u32,
         offset: i32,
     ) -> Result<HistoryResult>;
+
+    /// Exact UTC boundaries, without converting a calendar selection to hours.
+    async fn fetch_history_range(
+        &self,
+        _entity_id: &str,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        anyhow::bail!("Exact history ranges are not supported by this client")
+    }
 
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>>;
 
@@ -131,15 +145,27 @@ impl HAClient {
         let end_time = now + Duration::hours(offset as i64);
         let start_time = end_time - Duration::hours(hours as i64);
 
+        self.fetch_history_range(entity_id, start_time, end_time)
+            .await
+    }
+
+    pub async fn fetch_history_range(
+        &self,
+        entity_id: &str,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        anyhow::ensure!(start_time < end_time, "History start must precede end");
+
         let start_iso = start_time.to_rfc3339();
         let end_iso = end_time.to_rfc3339();
 
         let url = format!(
-            "{}/api/history/period/{}?end_time={}&filter_entity_id={}&no_attributes",
+            "{}/api/history/period/{}?end_time={}&filter_entity_id={}&no_attributes&significant_changes_only=0",
             self.url,
             encode(&start_iso),
             encode(&end_iso),
-            entity_id
+            encode(entity_id)
         );
 
         let res = self
@@ -160,25 +186,11 @@ impl HAClient {
             .map(|item| (item.last_updated, item.state))
             .collect();
 
-        if points.is_empty() {
-            debug!(
-                "Gap detected for {}. Fetching last known state before {}",
-                entity_id, start_iso
-            );
-
-            let backfill_url = format!("{}/api/states/{}", self.url, entity_id);
-            if let Ok(resp) = self.client.get(&backfill_url).send().await {
-                if let Ok(val) = resp.json::<serde_json::Value>().await {
-                    if let Some(s) = val["state"].as_str() {
-                        points.push((start_time, s.to_string()));
-                    }
-                }
-            }
-        }
-
-        if let Some((_, last_state)) = points.last().cloned() {
-            points.push((end_time, last_state));
-        }
+        // The history endpoint includes a recorded state at the start boundary
+        // by default (skip_initial_state is deliberately absent). Never replace
+        // missing recorder data with the current /api/states value.
+        points.retain(|(time, _)| *time <= end_time);
+        points.sort_by_key(|(time, _)| *time);
 
         debug!(
             "Fetched {} points for {} [{} -> {}]",
@@ -209,7 +221,19 @@ impl HAClient {
                 "entity_id": {{{{ eid | to_json }}}},
                 "state": {{{{ states(eid) | to_json }}}},
                 "name": {{{{ (state_attr(eid, 'friendly_name') | default(eid, true)) | to_json }}}},
-                "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}}
+                "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}},
+                "attributes": {{%- if eid.startswith('climate.') -%}} {{
+                  "current_temperature": {{{{ state_attr(eid, 'current_temperature') | to_json }}}},
+                  "temperature": {{{{ state_attr(eid, 'temperature') | to_json }}}},
+                  "target_temp_low": {{{{ state_attr(eid, 'target_temp_low') | to_json }}}},
+                  "target_temp_high": {{{{ state_attr(eid, 'target_temp_high') | to_json }}}},
+                  "target_temp_step": {{{{ state_attr(eid, 'target_temp_step') | to_json }}}},
+                  "min_temp": {{{{ state_attr(eid, 'min_temp') | to_json }}}},
+                  "max_temp": {{{{ state_attr(eid, 'max_temp') | to_json }}}},
+                  "unit_of_measurement": {{{{ state_attr(eid, 'unit_of_measurement') | to_json }}}}
+                }} {{%- else -%}} {{
+                  "unit_of_measurement": {{{{ state_attr(eid, 'unit_of_measurement') | to_json }}}}
+                }} {{%- endif -%}}
               }} {{{{ "," if not loop.last }}}}
               {{%- endfor -%}}
             ]"#,
@@ -310,6 +334,15 @@ impl HomeAssistantClient for HAClient {
         HAClient::fetch_history(self, entity_id, hours, offset).await
     }
 
+    async fn fetch_history_range(
+        &self,
+        entity_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HistoryResult> {
+        HAClient::fetch_history_range(self, entity_id, start, end).await
+    }
+
     async fn fetch_states_by_ids(&self, entity_ids: &[String]) -> Result<Vec<Entity>> {
         HAClient::fetch_states_by_ids(self, entity_ids).await
     }
@@ -330,5 +363,72 @@ impl HomeAssistantClient for HAClient {
         data: serde_json::Value,
     ) -> Result<()> {
         HAClient::call_service_with_data(self, domain, service, entity_id, data).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn empty_history_never_reads_or_inserts_current_state() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let client = HAClient::new(
+            format!("http://{}", listener.local_addr()?),
+            "test".into(),
+            2,
+            2,
+        );
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            loop {
+                let Ok(accepted) =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                        .await
+                else {
+                    break;
+                };
+                let (mut stream, _) = accepted?;
+                let mut request = Vec::new();
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let mut chunk = [0u8; 2048];
+                    let count = stream.read(&mut chunk).await?;
+                    anyhow::ensure!(count > 0, "Incomplete request");
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let request = String::from_utf8(request)?;
+                let path = request.lines().next().unwrap().to_string();
+                let body = if path.contains("/api/states/") {
+                    r#"{"state":"99"}"#
+                } else {
+                    "[]"
+                };
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await?;
+                requests.push(path);
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+        let history = client.fetch_history("sensor.temperature", 24, -168).await?;
+        assert!(history.points.is_empty());
+        assert_eq!(history.end_time - history.start_time, Duration::hours(24));
+        let start = DateTime::parse_from_rfc3339("2026-11-06T20:31:00+03:00")?.with_timezone(&Utc);
+        let end = DateTime::parse_from_rfc3339("2026-11-07T08:07:00+03:00")?.with_timezone(&Utc);
+        let exact = client
+            .fetch_history_range("sensor.temperature", start, end)
+            .await?;
+        assert_eq!((exact.start_time, exact.end_time), (start, end));
+        assert!(client
+            .fetch_history_range("sensor.temperature", end, start)
+            .await
+            .is_err());
+        let requests = server.await??;
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/api/history/period/"));
+        assert!(requests[0].contains("significant_changes_only=0"));
+        assert!(!requests[0].contains("skip_initial_state"));
+        assert!(requests[1].contains(&*encode(&start.to_rfc3339())));
+        assert!(requests[1].contains(&format!("end_time={}", encode(&end.to_rfc3339()))));
+        Ok(())
     }
 }

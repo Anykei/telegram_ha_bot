@@ -4,7 +4,6 @@ use serde_json::{json, Value};
 use std::cmp::min;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -77,6 +76,7 @@ async fn start_event_listener(
             tokio::select! {
                 msg = read.next() => {
                     let Some(Ok(msg)) = msg else { break; }; // Если ошибка коннекта - идем на реконнект
+                    let received_at = chrono::Utc::now();
 
                     let text = msg.to_text().unwrap_or("");
 
@@ -115,6 +115,7 @@ async fn start_event_listener(
 
                             let data = &v["event"]["data"];
                             let event = super::models::NotifyEvent {
+                                received_at,
                                 entity_id: data["entity_id"]
                                     .as_str()
                                     .unwrap_or_default()
@@ -136,15 +137,8 @@ async fn start_event_listener(
                                     .map(String::from),
                             };
 
-                            match tx.try_send(event) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(event)) => {
-                                    warn!(
-                                        "HA event queue full, dropping state change {}",
-                                        event.entity_id
-                                    );
-                                }
-                                Err(TrySendError::Closed(_)) => return,
+                            if !forward_event(&tx, event, &cancel_token).await {
+                                return;
                             }
                         }
                         _ => {}
@@ -164,5 +158,92 @@ async fn start_event_listener(
             _ = tokio::time::sleep(sleep_for) => {},
             _ = cancel_token.cancelled() => return,
         }
+    }
+}
+
+pub(crate) async fn forward_event(
+    tx: &mpsc::Sender<super::models::NotifyEvent>,
+    event: super::models::NotifyEvent,
+    cancel: &CancellationToken,
+) -> bool {
+    if tx.capacity() == 0 {
+        warn!(
+            "operation=ha_event stage=enqueue result=backpressure capacity={}",
+            tx.max_capacity()
+        );
+    }
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => false,
+        result = tx.send(event) => result.is_ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn full_input_preserves_all_transitions_in_order() {
+        let (tx, mut rx) = mpsc::channel(100);
+        let cancel = CancellationToken::new();
+        let sender = tokio::spawn(async move {
+            for index in 0..1000 {
+                assert!(
+                    forward_event(
+                        &tx,
+                        super::super::models::NotifyEvent {
+                            new_state: index.to_string(),
+                            ..Default::default()
+                        },
+                        &cancel
+                    )
+                    .await
+                );
+            }
+        });
+        for index in 0..1000 {
+            assert_eq!(rx.recv().await.unwrap().new_state, index.to_string());
+        }
+        sender.await.unwrap();
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn backpressure_send_can_be_cancelled_and_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(Default::default()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let pending = forward_event(&tx, Default::default(), &cancel);
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        cancel.cancel();
+        assert!(!pending.await);
+        drop(rx);
+        assert!(!forward_event(&tx, Default::default(), &CancellationToken::new()).await);
+    }
+
+    #[tokio::test]
+    async fn backpressure_preserves_original_received_time() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(Default::default()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let received_at = chrono::Utc::now() - chrono::Duration::seconds(30);
+        let event = crate::ha::NotifyEvent {
+            entity_id: "binary_sensor.door".into(),
+            old_state: "off".into(),
+            new_state: "on".into(),
+            received_at,
+            ..Default::default()
+        };
+        let pending = forward_event(&tx, event, &cancel);
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        rx.recv().await.unwrap();
+        assert!(pending.await);
+        let forwarded = rx.recv().await.unwrap();
+        assert_eq!(forwarded.received_at, received_at);
+        assert_eq!(forwarded.entity_id, "binary_sensor.door");
+        assert_eq!(forwarded.new_state, "on");
     }
 }

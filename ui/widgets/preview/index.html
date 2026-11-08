@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-src 'self' about:; connect-src 'none'">
+  <title>Дом — HTML-пульт</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f7f8f5;color:#263b32;font:15px/1.5 system-ui,sans-serif}button{font:inherit;cursor:pointer}button:focus-visible,summary:focus-visible{outline:3px solid #327d64;outline-offset:3px}header{max-width:1180px;margin:auto;padding:28px 36px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e1e7df}.brand{display:flex;align-items:center;gap:12px;font-size:18px;font-weight:650;letter-spacing:-.5px}.mark{width:32px;height:32px;background:#286b54;border-radius:10px;display:grid;grid-template-columns:6px 6px;grid-template-rows:6px 6px;align-content:center;justify-content:center;gap:3px}.mark i{background:#dbece1;border-radius:1px}.tag{font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:#62756a}.version{padding:7px 11px;border:1px solid #d8e0d6;border-radius:20px;font-size:11px;color:#62756a}main{max-width:1180px;margin:auto;padding:54px 36px 32px;display:grid;grid-template-columns:350px 1fr;gap:74px}.eyebrow{color:#52715c;font-size:11px;font-weight:650;letter-spacing:2px;text-transform:uppercase}h1{font-size:42px;line-height:1.13;letter-spacing:-1.8px;font-weight:550;margin:18px 0}p.intro{color:#6b7b70;font-size:15px;max-width:310px;margin:20px 0 28px}.section-label{display:flex;align-items:center;justify-content:space-between;margin:26px 0 10px;font-size:12px;color:#6a7b70}.section-label span:first-child{color:#314b3c;font-weight:600}.segments{display:flex;background:#e9eee7;padding:4px;border-radius:12px;gap:3px}.segments button{border:0;background:none;flex:1;color:#68796d;padding:9px;border-radius:9px;font-size:12px}.segments button[aria-pressed="true"]{background:#fff;color:#254f3d;box-shadow:0 1px 4px #23402b14}.scenarios{display:grid;grid-template-columns:1fr 1fr;gap:8px}.scenario{border:1px solid #dce4d9;background:transparent;border-radius:12px;text-align:left;padding:11px 12px;min-height:66px;color:#324b3c;font-size:13px}.scenario small{display:block;color:#7a897d;font-size:11px;margin-top:3px}.scenario[aria-pressed="true"]{border-color:#367b5c;background:#edf4ed;box-shadow:inset 0 0 0 1px #367b5c}.more{margin-top:12px;color:#65796a;font-size:12px}.more summary{cursor:pointer;padding:6px 0}.more .scenarios{margin-top:9px}.context{margin-top:26px;border-top:1px solid #dce4d9;padding-top:16px;color:#6d7f72;font-size:12px}.context strong{display:block;color:#3c5a47;font-weight:550;margin-bottom:4px}.stage{min-width:0}.chat{background:#e9eee6;border:1px solid #dce4d8;border-radius:24px;overflow:hidden;transition:background .2s}.chat-head{padding:17px 22px;display:flex;align-items:center;gap:12px;background:#ffffffb8;border-bottom:1px solid #dce4d8}.avatar{display:flex;align-items:center;justify-content:center;width:36px;height:36px;background:#2c6d54;border-radius:50%;color:#fff;font-size:18px}.chat-head strong{display:block;font-size:13px;font-weight:600}.chat-head small{display:block;font-size:11px;color:#839084}.chat-head .dots{margin-left:auto;letter-spacing:3px;color:#7b8d7d}.conversation{padding:22px;display:flex;flex-direction:column;align-items:flex-start;min-height:615px}.day{align-self:center;color:#7d8c7e;font-size:10px;margin-bottom:18px;letter-spacing:.5px}.bubble{width:360px;max-width:100%;background:#fff;border-radius:20px;box-shadow:0 3px 10px #2b46340a;overflow:hidden}iframe{width:100%;height:475px;display:block;border:0;background:transparent}.caption{border-top:1px solid #eaf0e7;margin:0;padding:9px 17px;font-size:10px;color:#839184}.caption b{font-weight:500;color:#617962}.composer{margin-top:18px;color:#829080;font-size:11px;display:flex;gap:8px;align-items:center}.composer .dot{width:5px;height:5px;border-radius:50%;background:#8da58f}.caption span{float:right;font-size:9px}.stage-meta{display:flex;justify-content:space-between;margin:13px 4px 18px;color:#889588;font-size:10px;letter-spacing:.4px}.log{border:1px solid #dee6da;border-radius:12px;background:#fff;padding:12px 15px;font-size:11px;color:#788c79;min-height:68px}.log strong{display:block;color:#49644f;font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px}.log p{margin:0;overflow-wrap:anywhere}.chat.dark{background:#131c18;border-color:#2f4135}.dark .chat-head{background:#1c2922;border-color:#304238;color:#e3ece4}.dark .bubble{background:#192420}.dark .caption{border-color:#304238;color:#a4b7aa}.dark .caption b{color:#b0c3b5}.dark .day,.dark .composer{color:#7d9584}footer{max-width:1180px;margin:auto;padding:22px 36px 28px;border-top:1px solid #e1e7df;display:flex;justify-content:space-between;font-size:11px;color:#8b988a}footer a{color:#5a7560} @media(max-width:900px){main{grid-template-columns:290px 1fr;gap:30px;padding:32px 24px}.conversation{padding:16px}h1{font-size:36px}header{padding:22px 24px}}@media(max-width:690px){main{display:flex;flex-direction:column;padding:28px 18px;gap:28px}.intro-column{max-width:none}h1{font-size:34px}p.intro{max-width:none}.section-label{margin-top:18px}.context{display:none}.conversation{min-height:0}.chat{max-width:560px;margin:auto}.bubble{max-width:100%}.version{font-size:10px}header{padding:18px}.tag{display:none}footer{padding:20px 18px}.stage-meta{font-size:9px}.composer{margin-bottom:4px}}
+  </style>
+</head>
+<body>
+  <header><div class="brand"><span class="mark"><i></i><i></i><i></i><i></i></span>Дом <span class="tag">/ Пульт в сообщении</span></div><span class="version">Дизайн 1.0 · локальный прототип</span></header>
+  <main>
+    <section class="intro-column">
+      <div class="eyebrow">01 / Свет</div>
+      <h1>Управление,<br>которое под рукой.</h1>
+      <p class="intro">Один светильник. Одно понятное действие. Попробуйте переключатель прямо в карточке.</p>
+      <div class="section-label"><span>Оформление</span><span>Следует теме Telegram</span></div>
+      <div class="segments" id="themes" aria-label="Тема"><button data-theme="light" aria-pressed="true">Светлая</button><button data-theme="dark" aria-pressed="false">Тёмная</button></div>
+      <div class="section-label"><span>Сценарий</span><span>Демонстрационные данные</span></div>
+      <div class="scenarios" id="scenarios">
+        <button class="scenario" data-scenario="off" aria-pressed="true">Выключен<small>Можно включить</small></button>
+        <button class="scenario" data-scenario="on" aria-pressed="false">Включён<small>Можно выключить</small></button>
+        <button class="scenario" data-scenario="slow" aria-pressed="false">Задержка<small>Ответ через 2,4 секунды</small></button>
+        <button class="scenario" data-scenario="error" aria-pressed="false">Нет ответа<small>Проверка обработки ошибки</small></button>
+        <button class="scenario" data-scenario="readonly" aria-pressed="false">Только просмотр<small>Управление закрыто</small></button>
+        <button class="scenario" data-scenario="critical" aria-pressed="false">Критичное устройство<small>Нужно подтверждение</small></button>
+      </div>
+      <details class="more"><summary>Дополнительные состояния</summary><div class="scenarios">
+        <button class="scenario" data-scenario="pending" aria-pressed="false">Команда принята<small>Состояние ещё не изменилось</small></button>
+        <button class="scenario" data-scenario="offline" aria-pressed="false">Недоступен<small>Нет связи с устройством</small></button>
+        <button class="scenario" data-scenario="revoke" aria-pressed="false">Отзыв доступа<small>Во время выполнения</small></button>
+        <button class="scenario" data-scenario="forward" aria-pressed="false">Пересланная карточка<small>Данные скрыты</small></button>
+      </div></details>
+      <div class="section-label"><span>Ширина карточки</span><span id="width-label">360 px</span></div>
+      <div class="segments" id="widths" aria-label="Ширина"><button data-width="200" aria-pressed="false">200</button><button data-width="320" aria-pressed="false">320</button><button data-width="360" aria-pressed="true">360</button><button data-width="430" aria-pressed="false">430</button></div>
+      <div class="context"><strong>Работает автономно</strong>Здесь используется симулятор ответов бота. Подключений к Home Assistant и Telegram нет.</div>
+    </section>
+    <section class="stage" aria-label="Предпросмотр в чате">
+      <div class="chat" id="chat">
+        <div class="chat-head"><div class="avatar">⌂</div><div><strong>Мой дом</strong><small>бот · демонстрация</small></div><span class="dots">•••</span></div>
+        <div class="conversation"><div class="day">ПРЕДПРОСМОТР СООБЩЕНИЯ</div><div class="bubble" id="bubble"><iframe id="widget-frame" title="Карточка управления светом" sandbox="allow-scripts allow-same-origin"></iframe><p class="caption"><b>Демо</b> · реальное устройство не подключено <span>12:00</span></p></div><div class="composer"><span class="dot"></span>Все действия выполняются в симуляторе</div></div>
+      </div>
+      <div class="stage-meta"><span>HTML + CSS + JavaScript · без внешних ресурсов</span><span id="payload-size"></span></div>
+      <div class="log" aria-live="polite"><strong id="event-kind">Предпросмотр</strong><p id="event-text">Нажмите переключатель в карточке.</p></div>
+    </section>
+  </main>
+  <footer><span>Дом · система оформления v1.0</span><a href="../../../docks/html-widgets/DESIGN.md">Правила дизайна ↗</a></footer>
+  <script>
+    const payload = __PAYLOAD__;
+    const mock = __MOCK__;
+    const manifest = __MANIFEST__;
+    let theme = 'light', scenario = 'off', width = 360;
+    const frame = document.getElementById('widget-frame');
+    document.getElementById('payload-size').textContent = `${manifest.zlibBytes} / 4096 байт`;
+    function resize() {
+      if (!frame.contentDocument || !frame.contentDocument.body) return;
+      frame.style.height = Math.min(600, frame.contentDocument.body.scrollHeight) + 'px';
+    }
+    frame.addEventListener('load', () => {
+      const observer = new ResizeObserver(resize);
+      observer.observe(frame.contentDocument.body);
+      resize();
+    });
+    function render() {
+      document.getElementById('chat').classList.toggle('dark', theme === 'dark');
+      document.getElementById('bubble').style.width = width + 'px';
+      document.getElementById('width-label').textContent = width + ' px';
+      document.querySelectorAll('[data-theme]').forEach(el => el.setAttribute('aria-pressed', el.dataset.theme === theme));
+      document.querySelectorAll('[data-scenario]').forEach(el => el.setAttribute('aria-pressed', el.dataset.scenario === scenario));
+      document.querySelectorAll('[data-width]').forEach(el => el.setAttribute('aria-pressed', Number(el.dataset.width) === width));
+      const demo = mock.replace('__SCENARIO__', JSON.stringify(scenario)).replace('__THEME__', JSON.stringify(theme));
+      frame.srcdoc = payload.replace('<head>', '<head><script>' + demo + '<\/script>');
+    }
+    document.querySelectorAll('[data-theme]').forEach(el => el.onclick = () => { theme = el.dataset.theme; render(); });
+    document.querySelectorAll('[data-scenario]').forEach(el => el.onclick = () => { scenario = el.dataset.scenario; render(); });
+    document.querySelectorAll('[data-width]').forEach(el => el.onclick = () => { width = Number(el.dataset.width); render(); });
+    window.addEventListener('message', event => {
+      if (event.source !== frame.contentWindow || event.data.source !== 'ha-widget-demo') return;
+      const labels = { ready: 'Готово', request: 'Запрос боту · симуляция', state: 'Ответ бота · симуляция', error: 'Ошибка · симуляция' };
+      document.getElementById('event-kind').textContent = labels[event.data.kind] || 'Событие';
+      document.getElementById('event-text').textContent = event.data.message;
+    });
+    render();
+  </script>
+</body>
+</html>

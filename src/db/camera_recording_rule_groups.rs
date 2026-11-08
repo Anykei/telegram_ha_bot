@@ -81,7 +81,7 @@ pub async fn list_groups(pool: &SqlitePool) -> Result<Vec<RecordingRuleGroup>> {
         LEFT JOIN camera_recording_rule_group_items i ON i.group_id = g.id
         LEFT JOIN camera_recording_rules r ON r.id = i.rule_id AND r.deleted_at IS NULL
         GROUP BY g.id, g.name, g.enabled, g.access_scope, g.created_at
-        ORDER BY g.name
+        ORDER BY g.name, g.id
         "#,
     )
     .fetch_all(pool)
@@ -201,27 +201,39 @@ pub async fn delete_group(group_id: i64, pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-pub async fn toggle_group_enabled(group_id: i64, pool: &SqlitePool) -> Result<bool> {
-    sqlx::query(
+/// Authorize against the current rows at the same write boundary as the toggle.
+/// `admission_generation` is captured by the initiating request, never refreshed
+/// here: explicit re-admission must not authorize an old queued callback.
+pub async fn toggle_group_enabled(
+    group_id: i64,
+    user_id: u64,
+    root_user: u64,
+    admission_generation: &str,
+    pool: &SqlitePool,
+) -> Result<bool> {
+    let enabled: Option<i64> = sqlx::query_scalar(
         r#"
         UPDATE camera_recording_rule_groups
         SET enabled = CASE WHEN enabled = 0 THEN 1 ELSE 0 END,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
+        WHERE id = ?1
+          AND (?2 = ?3 OR access_scope = 'all_users')
+          AND EXISTS (
+              SELECT 1 FROM users
+              WHERE id = ?2 AND admission_generation = ?4
+          )
+        RETURNING enabled
         "#,
     )
     .bind(group_id)
-    .execute(pool)
+    .bind(user_id as i64)
+    .bind(root_user as i64)
+    .bind(admission_generation)
+    .fetch_optional(pool)
     .await?;
-
-    let enabled: Option<i64> =
-        sqlx::query_scalar("SELECT enabled FROM camera_recording_rule_groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_optional(pool)
-            .await?;
     enabled
         .map(|value| value != 0)
-        .ok_or_else(|| anyhow!("Recording rule group not found"))
+        .ok_or_else(|| anyhow!("Recording rule group access revoked or group not found"))
 }
 
 pub async fn cycle_group_access_scope(group_id: i64, pool: &SqlitePool) -> Result<String> {
@@ -269,7 +281,7 @@ pub async fn list_groups_visible_to_user(
         LEFT JOIN camera_recording_rules r ON r.id = i.rule_id AND r.deleted_at IS NULL
         WHERE g.access_scope = 'all_users'
         GROUP BY g.id, g.name, g.enabled, g.access_scope, g.created_at
-        ORDER BY g.name
+        ORDER BY g.name, g.id
         "#,
     )
     .fetch_all(pool)
@@ -282,6 +294,9 @@ pub async fn can_user_toggle_group(
     group_id: i64,
     pool: &SqlitePool,
 ) -> Result<bool> {
+    if !crate::db::user_exists(user_id, pool).await {
+        return Ok(false);
+    }
     if user_id == root_user {
         return Ok(get_group(group_id, pool).await?.is_some());
     }
@@ -509,10 +524,105 @@ pub async fn rule_groups_enabled(rule_id: i64, pool: &SqlitePool) -> Result<bool
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn queued_group_toggle_rechecks_admission_and_scope_at_write_boundary() -> Result<()> {
+        for change in ["delete", "readd", "scope"] {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await?;
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            crate::db::add_user(42, &pool).await?;
+            let generation = crate::db::admission_generation(42, &pool).await?.unwrap();
+            let group = create_group("Guarded recording", &pool).await?;
+            cycle_group_access_scope(group, &pool).await?;
+            assert!(can_user_toggle_group(42, 1, group, &pool).await?);
+
+            // Occupy the sole connection, then explicitly poll the toggle to
+            // its pending acquisition. Authorization changes before its UPDATE
+            // can execute; no sleeps or speculative scheduling are involved.
+            let mut connection = pool.acquire().await?;
+            let pending = toggle_group_enabled(group, 42, 1, &generation, &pool);
+            tokio::pin!(pending);
+            assert!(futures_util::poll!(pending.as_mut()).is_pending());
+            match change {
+                "delete" => {
+                    sqlx::query("DELETE FROM users WHERE id=42")
+                        .execute(&mut *connection)
+                        .await?;
+                }
+                "readd" => {
+                    sqlx::query("DELETE FROM users WHERE id=42")
+                        .execute(&mut *connection)
+                        .await?;
+                    sqlx::query("INSERT INTO users(id) VALUES(42)")
+                        .execute(&mut *connection)
+                        .await?;
+                }
+                "scope" => {
+                    sqlx::query("UPDATE camera_recording_rule_groups SET access_scope='admin_only' WHERE id=?").bind(group).execute(&mut *connection).await?;
+                }
+                _ => unreachable!(),
+            }
+            drop(connection);
+            assert!(
+                pending.await.is_err(),
+                "stale callback accepted after {change}"
+            );
+            assert!(get_group(group, &pool).await?.unwrap().is_enabled());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recording_group_toggle_preserves_root_and_all_users_policy() -> Result<()> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        crate::db::add_user(1, &pool).await?;
+        crate::db::add_user(42, &pool).await?;
+        crate::db::access::set_user_role(42, "admin", &pool).await?;
+        let root_generation = crate::db::admission_generation(1, &pool).await?.unwrap();
+        let user_generation = crate::db::admission_generation(42, &pool).await?.unwrap();
+        let group = create_group("Guarded recording", &pool).await?;
+        assert!(toggle_group_enabled(group, 42, 1, &user_generation, &pool)
+            .await
+            .is_err());
+        assert!(!toggle_group_enabled(group, 1, 1, &root_generation, &pool).await?);
+        assert!(toggle_group_enabled(group, 1, 1, &root_generation, &pool).await?);
+        cycle_group_access_scope(group, &pool).await?;
+        assert!(!toggle_group_enabled(group, 42, 1, &user_generation, &pool).await?);
+        assert!(toggle_group_enabled(group, 42, 1, &user_generation, &pool).await?);
+        let (first, second) = tokio::join!(
+            toggle_group_enabled(group, 42, 1, &user_generation, &pool),
+            toggle_group_enabled(group, 42, 1, &user_generation, &pool),
+        );
+        assert_ne!(first?, second?);
+        assert!(get_group(group, &pool).await?.unwrap().is_enabled());
+        crate::db::delete_user(42, &pool).await?;
+        assert!(!can_user_toggle_group(42, 1, group, &pool).await?);
+        sqlx::query("DELETE FROM users WHERE id=1")
+            .execute(&pool)
+            .await?;
+        assert!(toggle_group_enabled(group, 1, 1, &root_generation, &pool)
+            .await
+            .is_err());
+        assert!(!can_user_toggle_group(1, 1, group, &pool).await?);
+        Ok(())
+    }
+
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
+        sqlx::raw_sql(
+            "CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users(id) VALUES(42);",
+        )
+        .execute(&pool)
+        .await
+        .expect("admitted camera user");
         sqlx::query(
             r#"
             CREATE TABLE camera_recording_rule_groups (
@@ -593,6 +703,8 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create user room access");
+        sqlx::query("CREATE TABLE user_profiles (user_id INTEGER PRIMARY KEY, role TEXT NOT NULL DEFAULT 'user')")
+            .execute(&pool).await.expect("create user profiles");
         pool
     }
 

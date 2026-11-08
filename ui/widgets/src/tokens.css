@@ -1,0 +1,39 @@
+:root {
+  --ha-space-1: 4px;
+  --ha-space-2: 8px;
+  --ha-space-3: 12px;
+  --ha-space-4: 16px;
+  --ha-space-5: 20px;
+  --ha-space-6: 24px;
+  --ha-radius-card: 24px;
+  --ha-radius-control: 16px;
+  --ha-radius-pill: 99px;
+  --ha-font: system-ui, sans-serif;
+  --ha-text-small: 12px;
+  --ha-text-body: 15px;
+  --ha-text-title: 28px;
+  --ha-control-height: 56px;
+  --ha-motion: 160ms;
+  --ha-surface: var(--tg-theme-bg-color, #ffffff);
+  --ha-surface-soft: var(--tg-theme-secondary-bg-color, #f2f5f3);
+  --ha-text: var(--tg-theme-text-color, #20372f);
+  --ha-muted: var(--tg-theme-hint-color, #60736a);
+  --ha-accent: #216b54;
+  --ha-accent-soft: #e6f1eb;
+  --ha-on-accent: #ffffff;
+  --ha-line: #dce5df;
+  --ha-error: #a63631;
+  --ha-error-soft: #fff0ed;
+}
+:root[data-theme="dark"] {
+  --ha-surface: var(--tg-theme-bg-color, #192420);
+  --ha-surface-soft: var(--tg-theme-secondary-bg-color, #23322b);
+  --ha-text: var(--tg-theme-text-color, #edf3ef);
+  --ha-muted: var(--tg-theme-hint-color, #a0b3a7);
+  --ha-accent: #a1d6b8;
+  --ha-accent-soft: #294b3a;
+  --ha-on-accent: #163124;
+  --ha-line: #3b5144;
+  --ha-error: #ffada4;
+  --ha-error-soft: #432b27;
+}

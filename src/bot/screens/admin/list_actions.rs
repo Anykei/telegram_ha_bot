@@ -1,14 +1,12 @@
 use crate::bot::models::View;
-use crate::bot::recording_rule_wizard::{
-    self, RecordingRuleWizard, WizardPendingCondition, WizardTriggerMode,
-};
+use crate::bot::recording_rule_wizard::{self, RecordingRuleWizard, WizardTriggerMode};
 use crate::bot::router::{
     ActivityLogFilter, AdminPayload, Payload, RecordingRuleActiveTimePreset,
     RecordingRuleEditField, RecordingRuleGroupRulesFilter, RenderContext, SettingsPayload, State,
 };
 use crate::db::camera_recording_rule_groups::RecordingRuleGroup;
 use crate::db::camera_recording_rules::{ConditionLogic, ConditionOperator};
-use crate::i18n::t;
+use crate::i18n::{t, Language};
 use crate::models::{UiMessageMode, UserSession};
 
 use anyhow::Result;
@@ -40,7 +38,46 @@ fn admin_menu_text(lang: crate::i18n::Language) -> String {
 }
 
 pub async fn render_users(ctx: RenderContext) -> Result<View> {
+    render_users_page(ctx, None).await
+}
+
+fn user_text<'a>(lang: Language, ru: &'a str, en: &'a str) -> &'a str {
+    match lang {
+        Language::Ru => ru,
+        Language::En => en,
+    }
+}
+
+pub async fn render_users_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use crate::bot::screens::common;
     let users = crate::db::list_users(&ctx.config.db).await?;
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Admin(AdminPayload::ListUsers),
+        requested,
+        users.len(),
+    )
+    .await?;
+    let mut entries = Vec::new();
+    for user in users {
+        let metadata = crate::db::user_display::get(user, &ctx.config.db).await?;
+        let name = metadata.name(user, ctx.lang);
+        let label = if name.chars().count() > 32 {
+            format!("{}…", name.chars().take(32).collect::<String>())
+        } else {
+            name
+        };
+        let role = if user == ctx.config.root_user {
+            "root".into()
+        } else {
+            crate::db::access::get_user_role(user, &ctx.config.db).await?
+        };
+        entries.push((user, label, role));
+    }
+    let mut counts = HashMap::new();
+    for (_, name, _) in &entries {
+        *counts.entry(name.clone()).or_insert(0) += 1;
+    }
     let mut rows = vec![vec![
         InlineKeyboardButton::callback(
             t(ctx.lang, "admin.add"),
@@ -51,36 +88,83 @@ pub async fn render_users(ctx: RenderContext) -> Result<View> {
             Payload::Admin(AdminPayload::PromptDeleteUser).to_string(),
         ),
     ]];
-
-    for user in users {
-        if user == ctx.config.root_user {
-            rows.push(vec![InlineKeyboardButton::callback(
-                format!("👑 {} root", user),
-                Payload::Admin(AdminPayload::UserProfile { id: user }).to_string(),
-            )]);
+    for (user, name, role) in entries
+        .into_iter()
+        .skip(page * common::LIST_PAGE_SIZE)
+        .take(common::LIST_PAGE_SIZE)
+    {
+        let name = if counts.get(&name).copied().unwrap_or(0) > 1 {
+            format!("{name} · #{user}")
         } else {
-            rows.push(vec![InlineKeyboardButton::callback(
-                format!("👤 {}", user),
-                Payload::Admin(AdminPayload::UserProfile { id: user }).to_string(),
-            )]);
-        }
+            name
+        };
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!(
+                "{} {} · {}",
+                if user == ctx.config.root_user {
+                    "👑"
+                } else {
+                    "👤"
+                },
+                name,
+                role
+            ),
+            Payload::Admin(AdminPayload::UserProfile { id: user }).to_string(),
+        )]);
     }
-
-    rows.push(vec![crate::bot::screens::common::back_button_lang(
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Admin(AdminPayload::ListUsersPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
+    rows.push(vec![common::back_button_lang(
         ctx.lang,
         Payload::Admin(AdminPayload::ListActions),
     )]);
-
     Ok(View {
         notifications: ctx.notifications,
-        text: t(ctx.lang, "admin.users.title").to_string(),
+        text: t(ctx.lang, "admin.users.title").into(),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::ListUsers),
+        lang: ctx.lang,
         ..Default::default()
     })
 }
 
+pub async fn render_user_alias_input(ctx: RenderContext, user_id: u64) -> Result<View> {
+    anyhow::ensure!(ctx.user_id == ctx.config.root_user, "Access denied");
+    anyhow::ensure!(
+        user_id == ctx.config.root_user || crate::db::user_exists(user_id, &ctx.config.db).await,
+        "User not found"
+    );
+    let metadata = crate::db::user_display::get(user_id, &ctx.config.db).await?;
+    let text = format!(
+        "{} · #{}\n\n{}",
+        metadata.name(user_id, ctx.lang),
+        user_id,
+        user_text(
+            ctx.lang,
+            "Введите псевдоним, до 80 символов. Отправьте - для возврата к имени Telegram.",
+            "Enter an alias, up to 80 characters. Send - to restore the Telegram name."
+        )
+    );
+    let lang = ctx.lang;
+    let mut view = render_user_input(
+        ctx,
+        State::EditUserAlias { user_id },
+        t(lang, "admin.user.edit_alias"),
+        &text,
+        Payload::Admin(AdminPayload::EditUserAlias { id: user_id }),
+        Payload::Admin(AdminPayload::UserProfile { id: user_id }),
+    );
+    view.lang = lang;
+    Ok(view)
+}
+
 pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<View> {
+    let metadata = crate::db::user_display::get(user_id, &ctx.config.db).await?;
+    let profile_name = metadata.name(user_id, ctx.lang);
     let role = crate::db::access::get_user_role(user_id, &ctx.config.db).await?;
     let user_lang = crate::db::get_user_language(user_id, &ctx.config.db)
         .await?
@@ -94,6 +178,9 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         &ctx.config.db,
     )
     .await?;
+    let quiet_schedule =
+        crate::db::user_notification_schedule::get(user_id as i64, &ctx.config.db).await?;
+    let quiet_text = format_user_quiet_hours(quiet_schedule.as_ref());
     let summary = crate::db::access::get_access_summary(
         user_id,
         user_id == ctx.config.root_user,
@@ -112,16 +199,21 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         t(ctx.lang, "admin.user_profile.role_hint")
     };
 
-    let text = format!(
-        "{}\n\nID: {}\n{}: {}\n{}: {}\n🎙 Голос: {}\n🎙 Engine: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
+    let mut text = format!(
+        "{}\n{}\n\nID: {}\n{}: {}\n{}: {}\n🎙 {}: {}\n🎙 {}: {}\n🌙 {}: {}\n{}\n\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: ✅ {} / 👁 {} / 🚫 {}\n{}: {}{}{}",
         t(ctx.lang, "admin.user_profile.title"),
+        profile_name,
         user_id,
         t(ctx.lang, "admin.role"),
         role,
         t(ctx.lang, "admin.language"),
         user_lang.label(),
-        if voice_allowed { "ВКЛ" } else { "ВЫКЛ" },
+        user_text(ctx.lang, "Голос", "Voice"),
+        if voice_allowed { user_text(ctx.lang, "ВКЛ", "ON") } else { user_text(ctx.lang, "ВЫКЛ", "OFF") },
+        t(ctx.lang, "admin.voice_processing"),
         voice_engine.label(),
+        user_text(ctx.lang, "Тихие часы", "Quiet hours"),
+        quiet_text,
         root_note,
         t(ctx.lang, "admin.rooms.label"),
         summary.rooms_full,
@@ -137,7 +229,13 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         role_hint
     );
 
-    let mut rows = Vec::new();
+    if let Some(username) = metadata.username {
+        text.push_str(&format!("\nTelegram: @{username}"));
+    }
+    let mut rows = vec![vec![InlineKeyboardButton::callback(
+        t(ctx.lang, "admin.user.edit_alias"),
+        Payload::Admin(AdminPayload::EditUserAlias { id: user_id }).to_string(),
+    )]];
 
     if user_id != ctx.config.root_user {
         rows.push(vec![InlineKeyboardButton::callback(
@@ -150,17 +248,33 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         )]);
         rows.push(vec![InlineKeyboardButton::callback(
             if voice_allowed {
-                "🎙 Голос: ВКЛ"
+                user_text(ctx.lang, "🎙 Голос: ВКЛ", "🎙 Voice: ON")
             } else {
-                "🎙 Голос: ВЫКЛ"
+                user_text(ctx.lang, "🎙 Голос: ВЫКЛ", "🎙 Voice: OFF")
             },
             Payload::Admin(AdminPayload::ToggleUserVoice { id: user_id }).to_string(),
         )]);
     }
 
     rows.push(vec![InlineKeyboardButton::callback(
-        format!("🎙 Engine: {}", voice_engine.label()),
+        format!(
+            "🎙 {}: {}",
+            t(ctx.lang, "admin.voice_processing"),
+            voice_engine.label()
+        ),
         Payload::Admin(AdminPayload::CycleUserVoiceEngine { id: user_id }).to_string(),
+    )]);
+
+    rows.push(vec![InlineKeyboardButton::callback(
+        if quiet_schedule
+            .as_ref()
+            .is_some_and(|schedule| schedule.quiet_enabled != 0)
+        {
+            user_text(ctx.lang, "🌙 Тихие часы: ВЫКЛ", "🌙 Quiet hours: OFF")
+        } else {
+            user_text(ctx.lang, "🌙 Тихие часы: 23-07", "🌙 Quiet hours: 23-07")
+        },
+        Payload::Admin(AdminPayload::ToggleUserQuietHours { id: user_id }).to_string(),
     )]);
 
     rows.push(vec![InlineKeyboardButton::callback(
@@ -190,8 +304,37 @@ pub async fn render_user_profile(ctx: RenderContext, user_id: u64) -> Result<Vie
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::UserProfile { id: user_id }),
+        lang: ctx.lang,
         ..Default::default()
     })
+}
+
+fn format_user_quiet_hours(
+    schedule: Option<&crate::db::user_notification_schedule::UserNotificationSchedule>,
+) -> String {
+    let Some(schedule) = schedule else {
+        return "выкл".to_string();
+    };
+    if schedule.quiet_enabled == 0 {
+        return "выкл".to_string();
+    }
+
+    let from = schedule
+        .quiet_from
+        .as_deref()
+        .unwrap_or(crate::db::user_notification_schedule::DEFAULT_QUIET_FROM);
+    let to = schedule
+        .quiet_to
+        .as_deref()
+        .unwrap_or(crate::db::user_notification_schedule::DEFAULT_QUIET_TO);
+    let timezone = schedule.timezone.as_deref().unwrap_or("server");
+    let critical = if schedule.critical_only != 0 {
+        ", только critical"
+    } else {
+        ""
+    };
+
+    format!("{}-{} {}{}", from, to, timezone, critical)
 }
 
 pub async fn render_camera_rooms(ctx: RenderContext) -> Result<View> {
@@ -222,10 +365,26 @@ pub async fn render_camera_rooms(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<View> {
+    render_room_cameras_page(ctx, room_id, None).await
+}
+
+pub async fn render_room_cameras_page(
+    ctx: RenderContext,
+    room_id: i64,
+    requested: Option<u16>,
+) -> Result<View> {
+    use crate::bot::screens::common;
     let room = crate::db::rooms::get_room_by_id(room_id, &ctx.config.db)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Room not found"))?;
     let cameras = crate::db::cameras::list_room_cameras(room_id, &ctx.config.db).await?;
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Admin(AdminPayload::RoomCameras { room: room_id }),
+        requested,
+        cameras.len(),
+    )
+    .await?;
     let mut rows = vec![
         vec![InlineKeyboardButton::callback(
             "➕ Добавить камеру",
@@ -237,7 +396,11 @@ pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<Vie
         )],
     ];
 
-    for camera in &cameras {
+    for camera in cameras
+        .iter()
+        .skip(page * common::LIST_PAGE_SIZE)
+        .take(common::LIST_PAGE_SIZE)
+    {
         rows.push(vec![
             InlineKeyboardButton::callback(
                 format!(
@@ -261,6 +424,15 @@ pub async fn render_room_cameras(ctx: RenderContext, room_id: i64) -> Result<Vie
         ]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Admin(AdminPayload::RoomCamerasPage {
+            room: room_id,
+            page,
+        })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Admin(AdminPayload::CameraRooms),
@@ -306,9 +478,11 @@ pub async fn render_room_camera_detail(
         view.alert = Some("Камера не принадлежит выбранной комнате".to_string());
         return Ok(view);
     }
+    ctx.track_room(room.id);
+    ctx.track_camera(camera.id);
 
     let mut rows = vec![vec![InlineKeyboardButton::callback(
-        "📸 Снимок",
+        t(ctx.lang, "camera.snapshot"),
         Payload::Admin(AdminPayload::RoomCameraSnapshot {
             room: room_id,
             camera: camera.id,
@@ -317,7 +491,20 @@ pub async fn render_room_camera_detail(
     )]];
 
     let mut interval_row = Vec::new();
+    let mut html_button_labels = HashMap::new();
     for seconds in &ctx.config.camera_clip_intervals_s {
+        html_button_labels.insert(
+            Payload::Admin(AdminPayload::RoomCameraClip {
+                room: room_id,
+                camera: camera.id,
+                seconds: *seconds,
+            })
+            .to_string(),
+            match ctx.lang {
+                Language::Ru => format!("Видео · {seconds} с"),
+                Language::En => format!("Video · {seconds} s"),
+            },
+        );
         interval_row.push(InlineKeyboardButton::callback(
             format!("🎞 {}с", seconds),
             Payload::Admin(AdminPayload::RoomCameraClip {
@@ -328,7 +515,7 @@ pub async fn render_room_camera_detail(
             .to_string(),
         ));
 
-        if interval_row.len() == 3 {
+        if interval_row.len() == 2 {
             rows.push(std::mem::take(&mut interval_row));
         }
     }
@@ -336,8 +523,27 @@ pub async fn render_room_camera_detail(
         rows.push(interval_row);
     }
 
+    let archive_manual =
+        crate::db::cameras::archives_manual_clips(camera.id, &ctx.config.db).await?;
     rows.push(vec![InlineKeyboardButton::callback(
-        "🩺 Health",
+        format!(
+            "{} {}",
+            if archive_manual { "☑" } else { "☐" },
+            user_text(
+                ctx.lang,
+                "Сохранять ручные видео в архив",
+                "Save manual videos to archive"
+            )
+        ),
+        Payload::Admin(AdminPayload::SetCameraManualArchive {
+            room: room_id,
+            camera: camera.id,
+            enabled: !archive_manual,
+        })
+        .to_string(),
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        t(ctx.lang, "admin.camera.health"),
         Payload::Admin(AdminPayload::CameraHealth {
             room: room_id,
             camera: camera.id,
@@ -345,7 +551,10 @@ pub async fn render_room_camera_detail(
         .to_string(),
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
-        "🗑 Удалить камеру",
+        match ctx.lang {
+            Language::Ru => "🗑 Удалить камеру",
+            Language::En => "🗑 Delete camera",
+        },
         Payload::Admin(AdminPayload::ConfirmDeleteCamera {
             room: room_id,
             camera: camera.id,
@@ -357,16 +566,29 @@ pub async fn render_room_camera_detail(
         Payload::Admin(AdminPayload::RoomCameras { room: room_id }),
     )]);
 
-    let text = format!(
+    let mut text = format!(
         "Камера комнаты\n\nКомната: {}\nКамера: {}\nID: `{}`\nКлип по умолчанию: {}с.",
         room.display_name(),
         camera.name,
         camera.id,
         camera.clip_seconds
     );
+    let (image, preview_text) = crate::bot::screens::cameras::camera_snapshot_preview(
+        ctx.config.clone(),
+        &camera,
+        ctx.lang,
+    )
+    .await;
+    text.push_str(&format!("\n\n{}", preview_text));
 
     Ok(View {
         header: Some("📹 Камера".to_string()),
+        html_title: Some(camera.name.clone()),
+        html_kind: Some("camera".into()),
+        html_context: Some(room.display_name()),
+        html_summary: Some(crate::bot::screens::cameras::media_delivery_hint(ctx.lang).into()),
+        html_button_labels,
+        html_media_controls: true,
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -374,6 +596,8 @@ pub async fn render_room_camera_detail(
             room: room_id,
             camera: camera_id,
         }),
+        image,
+        lang: ctx.lang,
         ..Default::default()
     })
 }
@@ -558,6 +782,11 @@ pub async fn render_recording_rule_detail(
     } else {
         "выключен"
     };
+    let pre_roll_text = if rule.pre_roll_enabled() {
+        format!("включен ({}с)", rule.normalized_pre_roll_seconds())
+    } else {
+        "выключен".to_string()
+    };
     let groups_text = selected_group_names_text(&groups, &rule_group_ids);
     let active_time_text = format_rule_active_time(&rule);
     let short_segment_warning = if rule.max_segment_seconds < 60 {
@@ -615,18 +844,35 @@ pub async fn render_recording_rule_detail(
                 .to_string(),
             ),
         ],
-        vec![InlineKeyboardButton::callback(
-            if rule.noise_enabled() {
-                "🔇 Шумодав"
-            } else {
-                "🔈 Шумодав"
-            },
-            Payload::Admin(AdminPayload::ToggleRecordingRuleNoise {
-                room: room_id,
-                rule: rule.id,
-            })
-            .to_string(),
-        )],
+        vec![
+            InlineKeyboardButton::callback(
+                if rule.noise_enabled() {
+                    "🔇 Шумодав"
+                } else {
+                    "🔈 Шумодав"
+                },
+                Payload::Admin(AdminPayload::ToggleRecordingRuleNoise {
+                    room: room_id,
+                    rule: rule.id,
+                })
+                .to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                if rule.pre_roll_enabled() {
+                    format!(
+                        "⏪ Запись до события {}с",
+                        rule.normalized_pre_roll_seconds()
+                    )
+                } else {
+                    "⏪ Запись до события выкл".to_string()
+                },
+                Payload::Admin(AdminPayload::ToggleRecordingRulePreRoll {
+                    room: room_id,
+                    rule: rule.id,
+                })
+                .to_string(),
+            ),
+        ],
     ];
 
     rows.extend(vec![
@@ -645,13 +891,14 @@ pub async fn render_recording_rule_detail(
     ]);
 
     let text = format!(
-        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}{}\nУведомления: {}\nШумодав: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
+        "Правило записи\n\nID правила: {}\nНазвание: {}\nСтатус: {}{}\nУведомления: {}\nШумодав: {}\nЗапись до события: {}\nКомната: {}\nКамера: {} ({})\nЛогика: {}\nУсловий: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранение: {}д\nГруппы: {}\n\nИстория:\n{}\n\nУсловия:\n{}\n\nЧтобы изменить правило: нажмите ✏️ Изменить. Текстовый блок доступен в расширенном режиме.{}",
         rule.id,
         rule.name,
         status,
         pause_reason_text,
         notify_text,
         noise_text,
+        pre_roll_text,
         room.display_name(),
         camera.name,
         camera.id,
@@ -1580,7 +1827,7 @@ pub async fn render_add_recording_rule_input(ctx: RenderContext, room_id: i64) -
         .collect::<Vec<_>>()
         .join("\n");
     let text = format!(
-        "Добавление правила записи\n\nТехнический режим: отправьте raw-блок правила.\n\nКамеры:\n{}\n\nФормат:\nНазвание\nID камеры\nЛогика: any или all\nУсловие: entity_id;operator;from;to;value\nМожно несколько строк условий\nTail seconds\nMax segment seconds\nCooldown seconds\nRetention days\n\nПример:\nЗамок Дверь: открытие или закрытие\n{}\nany\nbinary_sensor.zamok_contact;changed_from_to;off;on;\nbinary_sensor.zamok_contact;changed_from_to;on;off;\n60\n300\n0\n{}",
+        "Добавление правила записи\n\nТехнический режим: отправьте текстовый блок правила.\n\nКамеры:\n{}\n\nФормат:\nНазвание\nID камеры\nЛогика: any или all\nУсловие: entity_id;operator;from;to;value\nМожно несколько строк условий\nTail seconds\nMax segment seconds\nCooldown seconds\nRetention days\n\nПример:\nЗамок Дверь: открытие или закрытие\n{}\nany\nbinary_sensor.zamok_contact;changed_from_to;off;on;\nbinary_sensor.zamok_contact;changed_from_to;on;off;\n60\n300\n0\n{}",
         if cameras_text.is_empty() {
             "нет камер".to_string()
         } else {
@@ -1611,15 +1858,27 @@ pub async fn render_recording_rule_wizard_start(ctx: RenderContext, room_id: i64
     let cameras = crate::db::cameras::list_room_cameras(room_id, &ctx.config.db).await?;
     let cameras_empty = cameras.is_empty();
 
-    let mut wizard = RecordingRuleWizard::new(room_id);
-    if cameras.len() == 1 {
-        wizard.camera_id = Some(cameras[0].id);
-        store_wizard(&ctx, wizard)?;
-        return render_recording_rule_wizard_entities(ctx, room_id, cameras[0].id).await;
-    }
-    store_wizard(&ctx, wizard)?;
-
     let mut rows = Vec::new();
+    if let Some(id) = wizard_state(&ctx).and_then(|wizard| wizard.draft_id) {
+        rows.push(vec![
+            InlineKeyboardButton::callback(
+                if ctx.lang == Language::Ru {
+                    "Продолжить черновик"
+                } else {
+                    "Continue draft"
+                },
+                Payload::Admin(AdminPayload::WizardResume { id }).to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                if ctx.lang == Language::Ru {
+                    "Создать новый"
+                } else {
+                    "Create new"
+                },
+                Payload::Admin(AdminPayload::WizardNew { room: room_id }).to_string(),
+            ),
+        ]);
+    }
     if cameras.is_empty() {
         rows.push(vec![InlineKeyboardButton::callback(
             "➕ Добавить камеру",
@@ -1662,6 +1921,9 @@ pub async fn render_recording_rule_wizard_start(ctx: RenderContext, room_id: i64
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: room_id }),
+        html_back: Some(Payload::Admin(AdminPayload::RecordingRules {
+            room: room_id,
+        })),
         ..Default::default()
     })
 }
@@ -1676,16 +1938,6 @@ pub async fn render_recording_rule_wizard_entities(
         view.alert = Some("Камера не найдена или не принадлежит комнате".to_string());
         return Ok(view);
     };
-
-    update_wizard(&ctx, |wizard| {
-        wizard.room_id = room_id;
-        wizard.camera_id = Some(camera_id);
-        wizard.source_device_id = None;
-        wizard.source_mode = None;
-        wizard.source_value = None;
-        wizard.extra_conditions.clear();
-        wizard.pending_condition = None;
-    })?;
 
     render_recording_rule_wizard_source_page(ctx, 0).await
 }
@@ -1735,11 +1987,8 @@ pub async fn render_recording_rule_wizard_source_page(
     });
 
     rows.push(vec![InlineKeyboardButton::callback(
-        "⌨️ Расширенно",
-        Payload::Admin(AdminPayload::PromptAddRecordingRule {
-            room: wizard.room_id,
-        })
-        .to_string(),
+        "⌨️ Редактировать текстом",
+        Payload::Admin(AdminPayload::WizardAdvancedCurrentText).to_string(),
     )]);
     push_wizard_cancel(&mut rows);
     rows.push(vec![crate::bot::screens::common::back_button_lang(
@@ -1770,6 +2019,9 @@ pub async fn render_recording_rule_wizard_source_page(
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardSourcePage { page }),
+        html_back: Some(Payload::Admin(AdminPayload::StartRecordingRuleWizard {
+            room: wizard.room_id,
+        })),
         ..Default::default()
     })
 }
@@ -1787,12 +2039,6 @@ pub async fn render_recording_rule_wizard_modes(
         view.alert = Some("Камера или датчик не найдены".to_string());
         return Ok(view);
     };
-
-    update_wizard(&ctx, |wizard| {
-        wizard.room_id = room_id;
-        wizard.camera_id = Some(camera_id);
-        wizard.reset_source(device_id);
-    })?;
 
     let modes = source_modes_for_candidate(&candidate);
     let mut rows = modes
@@ -1835,28 +2081,25 @@ pub async fn render_recording_rule_wizard_modes(
             camera: camera_id,
             device: device_id,
         }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickCamera { room: room_id, camera: camera_id })),
         ..Default::default()
     })
 }
 
 pub async fn render_recording_rule_wizard_tail(
     ctx: RenderContext,
-    room_id: i64,
-    camera_id: i64,
-    device_id: i64,
+    _room_id: i64,
+    _camera_id: i64,
+    _device_id: i64,
     mode: WizardTriggerMode,
 ) -> Result<View> {
-    if mode.needs_value() {
+    if mode.needs_value()
+        && wizard_state(&ctx)
+            .and_then(|wizard| wizard.source_value)
+            .is_none()
+    {
         return render_recording_rule_wizard_source_value_input(ctx, mode);
     }
-
-    update_wizard(&ctx, |wizard| {
-        wizard.room_id = room_id;
-        wizard.camera_id = Some(camera_id);
-        wizard.source_device_id = Some(device_id);
-        wizard.set_source_mode(mode, None);
-    })?;
-
     render_recording_rule_wizard_conditions(ctx).await
 }
 
@@ -1907,10 +2150,13 @@ pub async fn render_recording_rule_wizard_conditions(ctx: RenderContext) -> Resu
         view.alert = Some("Камера не выбрана".to_string());
         return Ok(view);
     };
-    let Some(source_device_id) = wizard.source_device_id else {
-        return render_recording_rule_wizard_entities(ctx, wizard.room_id, camera_id).await;
-    };
-    let Some(source_mode) = wizard.source_mode else {
+    let source_device_id = wizard.source_device_id.unwrap_or_default();
+    let Some((wizard, camera, source, source_mode, conditions)) =
+        wizard_summary_parts(&ctx).await?
+    else {
+        if wizard.source_device_id.is_none() {
+            return render_recording_rule_wizard_entities(ctx, wizard.room_id, camera_id).await;
+        }
         return render_recording_rule_wizard_modes(
             ctx,
             wizard.room_id,
@@ -1918,39 +2164,6 @@ pub async fn render_recording_rule_wizard_conditions(ctx: RenderContext) -> Resu
             source_device_id,
         )
         .await;
-    };
-    let Some(camera) = wizard_camera(&ctx, wizard.room_id, camera_id).await? else {
-        let mut view = render_recording_rules(ctx, wizard.room_id).await?;
-        view.alert = Some("Камера не найдена".to_string());
-        return Ok(view);
-    };
-    let Some(source) =
-        crate::db::devices::get_recording_wizard_candidate(source_device_id, &ctx.config.db)
-            .await?
-    else {
-        let mut view = render_recording_rules(ctx, wizard.room_id).await?;
-        view.alert = Some("Источник не найден".to_string());
-        return Ok(view);
-    };
-
-    let conditions = match recording_rule_wizard::build_final_conditions(
-        &source.entity_id,
-        source_mode,
-        wizard.source_value.as_deref(),
-        &wizard.extra_conditions,
-    ) {
-        Ok(conditions) => conditions,
-        Err(error) => {
-            let mut view = render_recording_rule_wizard_modes(
-                ctx,
-                wizard.room_id,
-                camera_id,
-                source_device_id,
-            )
-            .await?;
-            view.alert = Some(error);
-            return Ok(view);
-        }
     };
 
     let display_context = recording_condition_display_context(&ctx).await?;
@@ -1968,7 +2181,13 @@ pub async fn render_recording_rule_wizard_conditions(ctx: RenderContext) -> Resu
         logic_label.clone(),
         Payload::Admin(AdminPayload::WizardToggleLogic).to_string(),
     )]);
-    for (index, condition) in wizard.extra_conditions.iter().enumerate() {
+    for (index, condition) in wizard
+        .custom_conditions
+        .as_ref()
+        .unwrap_or(&wizard.extra_conditions)
+        .iter()
+        .enumerate()
+    {
         rows.push(vec![InlineKeyboardButton::callback(
             shorten_button_label(&format!(
                 "🗑 Условие {} · {}",
@@ -2003,12 +2222,15 @@ pub async fn render_recording_rule_wizard_conditions(ctx: RenderContext) -> Resu
             camera.name,
             source.display_name,
             source.room_name,
-            source_mode.summary_label(ctx.lang),
+            if wizard.custom_conditions.is_some() { if ctx.lang == Language::Ru { "Пользовательские условия" } else { "Custom conditions" } } else { source_mode.summary_label(ctx.lang) },
             logic_label,
             condition_text
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConditions),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickEntity {
+            room: wizard.room_id, camera: camera_id, device: source_device_id,
+        })),
         ..Default::default()
     })
 }
@@ -2063,6 +2285,7 @@ pub async fn render_recording_rule_wizard_condition_entities_page(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConditionEntityPage { page }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         ..Default::default()
     })
 }
@@ -2078,17 +2301,6 @@ pub async fn render_recording_rule_wizard_condition_operators(
         view.alert = Some("Датчик не найден".to_string());
         return Ok(view);
     };
-
-    if !update_wizard(&ctx, |wizard| {
-        wizard.pending_condition = Some(WizardPendingCondition {
-            device_id,
-            operator: None,
-        });
-    })? {
-        let mut view = render(ctx).await?;
-        view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
-        return Ok(view);
-    }
 
     let mut rows = Vec::new();
     for operator in condition_operators_for_candidate(&candidate) {
@@ -2114,6 +2326,7 @@ pub async fn render_recording_rule_wizard_condition_operators(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardPickConditionEntity { device: device_id }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardAddCondition)),
         ..Default::default()
     })
 }
@@ -2127,14 +2340,6 @@ pub fn render_recording_rule_wizard_condition_value_input(
     };
     if wizard.pending_condition.is_none() {
         return Ok(wizard_pending_condition_missing_view(ctx));
-    }
-
-    if !update_wizard(&ctx, |wizard| {
-        if let Some(pending) = wizard.pending_condition.as_mut() {
-            pending.operator = Some(operator);
-        }
-    })? {
-        return Ok(wizard_expired_view(ctx));
     }
 
     let help = match operator {
@@ -2212,6 +2417,7 @@ pub async fn render_recording_rule_wizard_tail_from_state(ctx: RenderContext) ->
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardNextTail),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         ..Default::default()
     })
 }
@@ -2220,10 +2426,6 @@ pub async fn render_recording_rule_wizard_retention_from_state(
     ctx: RenderContext,
     tail: u32,
 ) -> Result<View> {
-    update_wizard(&ctx, |wizard| {
-        wizard.tail_seconds = Some(tail);
-    })?;
-
     let Some(wizard) = wizard_state(&ctx) else {
         let mut view = render(ctx).await?;
         view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
@@ -2272,6 +2474,7 @@ pub async fn render_recording_rule_wizard_retention_from_state(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardPickWizardTail { tail }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardNextTail)),
         ..Default::default()
     })
 }
@@ -2344,20 +2547,17 @@ pub async fn render_recording_rule_wizard_retention(
             mode,
             tail,
         }),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickMode {
+            room: room_id, camera: camera_id, device: device_id, mode,
+        })),
         ..Default::default()
     })
 }
 
 pub async fn render_recording_rule_wizard_active_time_from_state(
     ctx: RenderContext,
-    retention: Option<u32>,
+    _retention: Option<u32>,
 ) -> Result<View> {
-    if let Some(retention) = retention {
-        update_wizard(&ctx, |wizard| {
-            wizard.retention_days = Some(retention);
-        })?;
-    }
-
     let Some(wizard) = wizard_state(&ctx) else {
         let mut view = render(ctx).await?;
         view.alert = Some("Сессия мастера устарела. Откройте мастер заново.".to_string());
@@ -2402,6 +2602,14 @@ pub async fn render_recording_rule_wizard_active_time_from_state(
             "Свое время",
             Payload::Admin(AdminPayload::WizardPromptActiveTimeCustom).to_string(),
         )],
+        vec![InlineKeyboardButton::callback(
+            if ctx.lang == Language::Ru {
+                "Дни недели"
+            } else {
+                "Weekdays"
+            },
+            Payload::Admin(AdminPayload::WizardActiveDays).to_string(),
+        )],
         vec![wizard_cancel_button()],
         vec![crate::bot::screens::common::back_button_lang(
             ctx.lang,
@@ -2423,6 +2631,63 @@ pub async fn render_recording_rule_wizard_active_time_from_state(
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardActiveTime),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickWizardTail {
+            tail: wizard.tail_seconds.unwrap_or(60),
+        })),
+        ..Default::default()
+    })
+}
+
+pub async fn render_recording_rule_wizard_days(ctx: RenderContext) -> Result<View> {
+    let Some(wizard) = wizard_state(&ctx) else {
+        return Ok(wizard_expired_view(ctx));
+    };
+    let names = if ctx.lang == Language::Ru {
+        ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    } else {
+        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    };
+    let mut rows = names
+        .iter()
+        .enumerate()
+        .map(|(day, name)| {
+            vec![InlineKeyboardButton::callback(
+                format!(
+                    "{} {}",
+                    if wizard.active_time.days_mask & (1_i64 << day) != 0 {
+                        "☑"
+                    } else {
+                        "☐"
+                    },
+                    name
+                ),
+                Payload::Admin(AdminPayload::WizardToggleActiveDay { day: day as u8 }).to_string(),
+            )]
+        })
+        .collect::<Vec<_>>();
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        Payload::Admin(AdminPayload::WizardActiveTime),
+    )]);
+    Ok(View {
+        header: Some(
+            if ctx.lang == Language::Ru {
+                "Дни активности"
+            } else {
+                "Active weekdays"
+            }
+            .into(),
+        ),
+        text: if ctx.lang == Language::Ru {
+            "Выберите хотя бы один день. Для ночного интервала учитывается день его начала."
+        } else {
+            "Select at least one weekday. Overnight windows use the day on which they start."
+        }
+        .into(),
+        notifications: ctx.notifications,
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::Admin(AdminPayload::WizardActiveDays),
+        html_back: Some(Payload::Admin(AdminPayload::WizardActiveTime)),
         ..Default::default()
     })
 }
@@ -2464,7 +2729,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
         rows.push(vec![wizard_cancel_button()]);
         rows.push(vec![crate::bot::screens::common::back_button_lang(
             ctx.lang,
-            Payload::Admin(AdminPayload::WizardConfirmGroups),
+            Payload::Admin(if wizard.return_to_summary {
+                AdminPayload::WizardConfirmGroups
+            } else {
+                AdminPayload::WizardActiveTime
+            }),
         )]);
 
         return Ok(View {
@@ -2474,6 +2743,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
                 .to_string(),
             kb: InlineKeyboardMarkup::new(rows),
             payload: Payload::Admin(AdminPayload::WizardGroups),
+            html_back: Some(Payload::Admin(if wizard.return_to_summary {
+                AdminPayload::WizardConfirmGroups
+            } else {
+                AdminPayload::WizardActiveTime
+            })),
             ..Default::default()
         });
     }
@@ -2497,7 +2771,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
     push_wizard_cancel(&mut rows);
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
-        Payload::Admin(AdminPayload::WizardConfirmGroups),
+        Payload::Admin(if wizard.return_to_summary {
+            AdminPayload::WizardConfirmGroups
+        } else {
+            AdminPayload::WizardActiveTime
+        }),
     )]);
 
     Ok(View {
@@ -2507,6 +2785,11 @@ pub async fn render_recording_rule_wizard_groups_from_state(ctx: RenderContext) 
             .to_string(),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardGroups),
+        html_back: Some(Payload::Admin(if wizard.return_to_summary {
+            AdminPayload::WizardConfirmGroups
+        } else {
+            AdminPayload::WizardActiveTime
+        })),
         ..Default::default()
     })
 }
@@ -2515,9 +2798,10 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
     let Some((wizard, camera, source, source_mode, conditions)) =
         wizard_summary_parts(&ctx).await?
     else {
-        let mut view = render(ctx).await?;
-        view.alert = Some("Сессия мастера неполная. Откройте мастер заново.".to_string());
-        return Ok(view);
+        if let Some(wizard) = wizard_state(&ctx) {
+            return Ok(wizard_repair_view(ctx, &wizard));
+        }
+        return Ok(wizard_expired_view(ctx));
     };
 
     let group_names = wizard_group_names(&ctx, &wizard.group_ids).await?;
@@ -2525,16 +2809,50 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
     let condition_text =
         format_wizard_conditions_summary(&conditions, &display_context, &ctx.config);
     let logic_label = condition_logic_label(wizard.condition_logic);
-    let cooldown_s = recording_rule_wizard::default_cooldown_s(source_mode);
+    let cooldown_s = wizard
+        .cooldown_s
+        .unwrap_or_else(|| recording_rule_wizard::default_cooldown_s(source_mode));
     let group_button_label = if group_names.is_empty() {
         "👥 Группы: не выбраны".to_string()
     } else {
         format!("👥 Группы: {}", group_names.len())
     };
 
+    let mut similarity_notice = None;
+    for existing in crate::db::camera_recording_rules::list_rules(&ctx.config.db).await? {
+        if existing.camera_id != camera.id || existing.logic() != wizard.condition_logic {
+            continue;
+        }
+        let existing_conditions =
+            crate::db::camera_recording_rules::list_conditions(existing.id, &ctx.config.db).await?;
+        if existing_conditions.len() == conditions.len()
+            && existing_conditions.iter().zip(&conditions).all(|(a, b)| {
+                a.entity_id == b.entity_id
+                    && a.operator() == b.operator
+                    && a.from_state == b.from_state
+                    && a.to_state == b.to_state
+                    && a.value == b.value
+            })
+        {
+            let existing_groups = crate::db::camera_recording_rule_groups::list_rule_group_ids(
+                existing.id,
+                &ctx.config.db,
+            )
+            .await?;
+            similarity_notice = Some(format!(
+                "Похожее правило: «{}» (#{}). Будет создано отдельное правило.\nСуществующее → черновик: запись {} → {}с; файл {} → {}с; пауза {} → {}с; хранение {} → {}д; активно {} → {}; группы {:?} → {:?}; запись до события {} → {}.",
+                existing.name,existing.id,existing.tail_seconds,wizard.tail_seconds.unwrap_or(60),existing.max_segment_seconds,
+                wizard.max_segment_seconds.unwrap_or(ctx.config.camera_recording_max_segment_seconds),existing.cooldown_s,cooldown_s,
+                existing.retention_days,wizard.retention_days.unwrap_or(30),format_wizard_active_time(existing.active_time()),format_wizard_active_time(wizard.active_time),
+                existing_groups,wizard.group_ids,existing.pre_roll_enabled(),wizard.pre_roll_enabled.unwrap_or(false)
+            ));
+            break;
+        }
+    }
+
     let rows = vec![
         vec![InlineKeyboardButton::callback(
-            "✅ Создать",
+            "✅ Создать правило",
             Payload::Admin(AdminPayload::WizardCreateCurrentRule).to_string(),
         )],
         vec![InlineKeyboardButton::callback(
@@ -2549,8 +2867,24 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
             Payload::Admin(AdminPayload::WizardActiveTime).to_string(),
         )],
         vec![InlineKeyboardButton::callback(
-            "✏️ Расширенно",
+            "✏️ Редактировать текстом",
             Payload::Admin(AdminPayload::WizardAdvancedCurrentText).to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            format!(
+                "{} {}",
+                if wizard.pre_roll_enabled.unwrap_or(false) {
+                    "☑"
+                } else {
+                    "☐"
+                },
+                if ctx.lang == Language::Ru {
+                    "Запись до события"
+                } else {
+                    "Pre-event recording"
+                }
+            ),
+            Payload::Admin(AdminPayload::WizardTogglePreRoll).to_string(),
         )],
         vec![wizard_cancel_button()],
         vec![crate::bot::screens::common::back_button_lang(
@@ -2564,16 +2898,17 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
     Ok(View {
         header: Some("➕ Мастер правила".to_string()),
         notifications: ctx.notifications,
+        notice: similarity_notice,
         text: format!(
             "Создать правило записи?\n\nКамера: {}\nИсточник: {} · {}\nСобытие: {}\nЛогика: {}\nАктивно: {}\nПисать после события: {}с\nДлина файла: {}с\nПауза после записи: {}с\nХранить: {}д\nГруппы: {}\n\nБудут созданы условия:\n{}",
             camera.name,
             source.display_name,
             source.room_name,
-            source_mode.summary_label(ctx.lang),
+            if wizard.custom_conditions.is_some() { if ctx.lang == Language::Ru { "Пользовательские условия" } else { "Custom conditions" } } else { source_mode.summary_label(ctx.lang) },
             logic_label,
             format_wizard_active_time(wizard.active_time),
             wizard.tail_seconds.unwrap_or(60),
-            ctx.config.camera_recording_max_segment_seconds,
+            wizard.max_segment_seconds.unwrap_or(ctx.config.camera_recording_max_segment_seconds),
             cooldown_s,
             wizard.retention_days.unwrap_or(30),
             if group_names.is_empty() { "нет".to_string() } else { group_names.join(", ") },
@@ -2581,33 +2916,56 @@ pub async fn render_recording_rule_wizard_confirm(ctx: RenderContext) -> Result<
         ),
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardConfirmGroups),
+        html_back: Some(Payload::Admin(AdminPayload::WizardPickWizardRetention {
+            retention: wizard.retention_days.unwrap_or(30),
+        })),
         ..Default::default()
     })
 }
 
 pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result<View> {
-    let Some((wizard, camera, source, source_mode, conditions)) =
-        wizard_summary_parts(&ctx).await?
-    else {
-        let mut view = render(ctx).await?;
-        view.alert = Some("Сессия мастера неполная. Откройте мастер заново.".to_string());
-        return Ok(view);
+    let Some(wizard) = wizard_state(&ctx) else {
+        return Ok(wizard_expired_view(ctx));
     };
-
-    let name = recording_rule_wizard::build_rule_name(
-        ctx.lang,
-        &source.display_name,
-        source_mode,
-        wizard.source_value.as_deref(),
-    );
+    let (name, camera_id, conditions) =
+        if let Some((_, camera, source, mode, conditions)) = wizard_summary_parts(&ctx).await? {
+            (
+                wizard.effective_name(ctx.lang, &source.display_name, mode),
+                camera.id,
+                conditions,
+            )
+        } else {
+            (
+                wizard.name.clone().unwrap_or_else(|| {
+                    if ctx.lang == Language::Ru {
+                        "Новое правило"
+                    } else {
+                        "New rule"
+                    }
+                    .into()
+                }),
+                wizard.camera_id.unwrap_or_default(),
+                wizard.custom_conditions.clone().unwrap_or_else(|| {
+                    vec![recording_rule_wizard::WizardCondition {
+                        entity_id: "binary_sensor.event".into(),
+                        operator: ConditionOperator::ChangedTo,
+                        from_state: None,
+                        to_state: Some("on".into()),
+                        value: None,
+                    }]
+                }),
+            )
+        };
     let text_block = recording_rule_wizard::build_advanced_rule_text_with_logic(
         &name,
-        camera.id,
+        camera_id,
         wizard.condition_logic,
         &conditions,
         wizard.tail_seconds.unwrap_or(60),
-        ctx.config.camera_recording_max_segment_seconds,
-        recording_rule_wizard::default_cooldown_s(source_mode),
+        wizard
+            .max_segment_seconds
+            .unwrap_or(ctx.config.camera_recording_max_segment_seconds),
+        wizard.cooldown_s.unwrap_or_default(),
         wizard.retention_days.unwrap_or(30),
     );
 
@@ -2615,8 +2973,8 @@ pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result
         header: Some("⌨️ Расширенное правило".to_string()),
         notifications: ctx.notifications,
         text: format!(
-            "Технический режим: скопируйте raw-блок ниже, измените если нужно и отправьте сообщением:\n\n{}",
-            text_block
+            "Текст правила: скопируйте блок, измените и отправьте сообщением. Вы вернётесь к проверке черновика.\n\n{}",
+            wizard.raw_text.as_deref().unwrap_or(&text_block)
         ),
         kb: InlineKeyboardMarkup::new(vec![
             vec![wizard_cancel_button()],
@@ -2626,6 +2984,7 @@ pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result
             )],
         ]),
         payload: Payload::Admin(AdminPayload::WizardAdvancedCurrentText),
+        html_back: Some(Payload::Admin(AdminPayload::WizardConfirmGroups)),
         next_state: Some(State::AddRecordingRule {
             room_id: wizard.room_id,
         }),
@@ -2633,7 +2992,7 @@ pub async fn render_recording_rule_wizard_advanced(ctx: RenderContext) -> Result
     })
 }
 
-fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> {
+pub(crate) fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> {
     if ctx.config.sessions.get(&ctx.user_id).is_none() {
         let now = Utc::now();
         let context = Payload::Admin(AdminPayload::StartRecordingRuleWizard {
@@ -2651,6 +3010,7 @@ fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> 
                 last_ui_refresh_at: None,
                 ui_refresh_blocked_until: None,
                 last_seen_at: now,
+                last_persisted_at: None,
             },
         );
     }
@@ -2662,27 +3022,56 @@ fn store_wizard(ctx: &RenderContext, wizard: RecordingRuleWizard) -> Result<()> 
     Ok(())
 }
 
-fn update_wizard<F>(ctx: &RenderContext, update: F) -> Result<bool>
-where
-    F: FnOnce(&mut RecordingRuleWizard),
-{
-    let mut wizard = wizard_state(ctx).unwrap_or_else(|| RecordingRuleWizard::new(0));
-    update(&mut wizard);
-    if wizard.room_id == 0 {
-        log::warn!(
-            "Recording rule wizard update ignored for user {}: session is missing",
-            ctx.user_id
-        );
-        return Ok(false);
-    }
-    store_wizard(ctx, wizard).map(|_| true)
-}
-
 fn wizard_state(ctx: &RenderContext) -> Option<RecordingRuleWizard> {
     ctx.config
         .sessions
         .get(&ctx.user_id)
         .and_then(|session| session.recording_rule_wizard.clone())
+}
+
+fn wizard_repair_view(ctx: RenderContext, wizard: &RecordingRuleWizard) -> View {
+    let ru = ctx.lang == Language::Ru;
+    let mut rows = vec![
+        vec![InlineKeyboardButton::callback(
+            if ru {
+                "Выбрать камеру"
+            } else {
+                "Choose camera"
+            },
+            Payload::Admin(AdminPayload::StartRecordingRuleWizard {
+                room: wizard.room_id,
+            })
+            .to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            if ru {
+                "Выбрать источник"
+            } else {
+                "Choose source"
+            },
+            Payload::Admin(AdminPayload::WizardSourcePage { page: 0 }).to_string(),
+        )],
+        vec![InlineKeyboardButton::callback(
+            if ru {
+                "Редактировать текстом"
+            } else {
+                "Edit as text"
+            },
+            Payload::Admin(AdminPayload::WizardAdvancedCurrentText).to_string(),
+        )],
+    ];
+    push_wizard_cancel(&mut rows);
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
+        Payload::Admin(AdminPayload::RecordingRules {
+            room: wizard.room_id,
+        }),
+    )]);
+    View { header: Some(if ru { "Исправьте черновик" } else { "Check draft" }.into()),
+        html_back: Some(Payload::Admin(AdminPayload::RecordingRules { room: wizard.room_id })),
+        text: if ru { "Камера, источник или событие не выбраны либо больше недоступны. Выберите их заново. Условия, группы, время активности и параметры записи сохранены." }
+            else { "The camera, source or event is missing or unavailable. Select it again. Conditions, groups, active times and recording settings are preserved." }.into(),
+        kb:InlineKeyboardMarkup::new(rows),notifications:ctx.notifications,payload:Payload::Admin(AdminPayload::WizardConfirmGroups),..Default::default() }
 }
 
 fn wizard_expired_view(ctx: RenderContext) -> View {
@@ -2697,6 +3086,7 @@ fn wizard_expired_view(ctx: RenderContext) -> View {
 
 fn wizard_pending_condition_missing_view(ctx: RenderContext) -> View {
     View {
+        html_back: Some(Payload::Admin(AdminPayload::WizardConditions)),
         header: Some("➕ Условие правила".to_string()),
         notifications: ctx.notifications,
         text: "Условие уже не выбрано. Вернитесь к списку условий и добавьте его заново."
@@ -2710,7 +3100,7 @@ fn wizard_pending_condition_missing_view(ctx: RenderContext) -> View {
     }
 }
 
-async fn wizard_summary_parts(
+pub(crate) async fn wizard_summary_parts(
     ctx: &RenderContext,
 ) -> Result<
     Option<(
@@ -2727,30 +3117,45 @@ async fn wizard_summary_parts(
     let Some(camera_id) = wizard.camera_id else {
         return Ok(None);
     };
-    let Some(source_device_id) = wizard.source_device_id else {
-        return Ok(None);
-    };
-    let Some(source_mode) = wizard.source_mode else {
-        return Ok(None);
-    };
     let Some(camera) = wizard_camera(ctx, wizard.room_id, camera_id).await? else {
         return Ok(None);
     };
-    let Some(source) =
-        crate::db::devices::get_recording_wizard_candidate(source_device_id, &ctx.config.db)
-            .await?
-    else {
+    let mut source = if let Some(id) = wizard.source_device_id {
+        crate::db::devices::get_recording_wizard_candidate(id, &ctx.config.db).await?
+    } else {
+        None
+    };
+    if source.is_none() && wizard.custom_conditions.is_some() {
+        source = Some(crate::db::devices::RecordingTriggerCandidate {
+            device_id: wizard.source_device_id.unwrap_or_default(),
+            entity_id: String::new(),
+            display_name: if ctx.lang == Language::Ru {
+                "Пользовательские условия"
+            } else {
+                "Custom conditions"
+            }
+            .into(),
+            device_domain: String::new(),
+            device_class: String::new(),
+            room_id: wizard.room_id,
+            room_name: String::new(),
+        });
+    }
+    let Some(source) = source else {
         return Ok(None);
     };
-    let conditions = recording_rule_wizard::build_final_conditions(
-        &source.entity_id,
-        source_mode,
-        wizard.source_value.as_deref(),
-        &wizard.extra_conditions,
-    )
-    .map_err(anyhow::Error::msg)?;
-
-    Ok(Some((wizard, camera, source, source_mode, conditions)))
+    let Some(mode) = wizard.source_mode.or_else(|| {
+        wizard
+            .custom_conditions
+            .as_ref()
+            .map(|_| WizardTriggerMode::AnyChange)
+    }) else {
+        return Ok(None);
+    };
+    let conditions = wizard
+        .conditions(&source.entity_id, mode)
+        .map_err(anyhow::Error::msg)?;
+    Ok(Some((wizard, camera, source, mode, conditions)))
 }
 
 async fn wizard_group_names(ctx: &RenderContext, group_ids: &[i64]) -> Result<Vec<String>> {
@@ -2900,14 +3305,28 @@ fn render_wizard_user_input(
         vec![wizard_cancel_button()],
         vec![crate::bot::screens::common::back_button_lang(
             ctx.lang,
-            back_payload,
+            back_payload.clone(),
         )],
     ]);
 
+    let text = match wizard_state(&ctx).and_then(|wizard| wizard.pending_input) {
+        Some(input) => format!(
+            "{}\n\n{}: {}",
+            text,
+            if ctx.lang == Language::Ru {
+                "Последний ввод"
+            } else {
+                "Last input"
+            },
+            input
+        ),
+        None => text.to_owned(),
+    };
     View {
         header: Some(title.to_string()),
+        html_back: Some(back_payload),
         notifications: ctx.notifications,
-        text: text.to_string(),
+        text,
         kb,
         payload: current_payload,
         next_state: Some(next_state),
@@ -4475,6 +4894,19 @@ pub async fn render_user_room_devices(
                 .to_string(),
             ),
         ]);
+        rows.push(vec![InlineKeyboardButton::callback(
+            crate::bot::personal::words(
+                ctx.lang,
+                "↩ Наследовать права комнаты/профиля",
+                "↩ Inherit room/profile access",
+            ),
+            Payload::Admin(AdminPayload::InheritUserDeviceAccess {
+                id: user_id,
+                room: room_id,
+                device: device.id,
+            })
+            .to_string(),
+        )]);
     }
 
     rows.push(vec![crate::bot::screens::common::back_button_lang(
@@ -4523,15 +4955,21 @@ fn format_camera_health_text(
 ) -> String {
     let Some(health) = health else {
         return format!(
-            "{} · Health\n\n{}",
+            "{} · {}\n\n{}",
             camera_name,
+            t(lang, "admin.camera.health"),
             t(lang, "admin.camera.health.no_checks")
         );
     };
 
     format!(
-        "{} · Health\n\nSnapshot OK: {}\nClip OK: {}\nRecording OK: {}\n{}: {}\n{}: {}\n{}: {}",
+        "{} · {}\n\nState: {} · failures {} · successes {}\nState changed: {}\nSnapshot OK: {}\nClip OK: {}\nRecording OK: {}\n{}: {}\n{}: {}\n{}: {}",
         camera_name,
+        t(lang, "admin.camera.health"),
+        health.health_state,
+        health.consecutive_failures,
+        health.consecutive_successes,
+        crate::bot::format::optional_datetime(health.last_state_changed_at),
         crate::bot::format::optional_datetime(health.last_snapshot_ok_at),
         crate::bot::format::optional_datetime(health.last_clip_ok_at),
         crate::bot::format::optional_datetime(health.last_recording_ok_at),
@@ -4599,9 +5037,29 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         runtime_status.shutdown_requested_at,
         runtime_status.shutdown_reason.as_deref(),
     );
+    let camera_jobs = crate::core::cameras::camera_job_stats();
+    let pre_roll_stats = ctx.config.camera_pre_roll_registry.stats();
+    let active_recordings =
+        crate::db::camera_recording_sessions::count_active_sessions(&ctx.config.db).await?;
+    let failed_recordings_last_hour =
+        crate::db::camera_recording_sessions::count_failed_sessions_since(
+            Utc::now() - Duration::hours(1),
+            &ctx.config.db,
+        )
+        .await?;
+    let archive_size =
+        crate::db::camera_recording_segments::sum_ready_size_bytes(&ctx.config.db).await?;
+    let pinned_size =
+        crate::db::camera_recording_segments::sum_pinned_ready_size_bytes(&ctx.config.db).await?;
+    let quota_mb = crate::db::settings::get_i64(
+        crate::db::settings::CAMERA_RECORDING_MAX_STORAGE_MB,
+        &ctx.config.db,
+    )
+    .await?
+    .unwrap_or(0);
 
-    let text = format!(
-        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}",
+    let mut text = format!(
+        "Статус системы\n\nHA: {}\nПоследний heartbeat: {}\nHA sync: {}\nShutdown: {}\nПользователей: {}\nКомнат: {}\nАктивных устройств: {}\nАрхивных устройств: {}\nПодписок: {}\nСобытий в журнале: {}\nАктивных UI-сессий: {}\nUI refresh на паузе: {}\nБлижайшая разблокировка: {}\n\nCamera jobs: live {} / local {} / timeouts {}+{}\nPre-roll: buffers {} / ready {} / packets {} / RAM {}\nRecording: active {} / failed 1h {}\nStorage: {} / quota {} / pinned {}",
         ha_status,
         last_heartbeat,
         ha_sync,
@@ -4615,7 +5073,71 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
         ctx.config.sessions.len(),
         blocked_sessions,
         nearest_unblock,
+        camera_jobs.active_live_jobs,
+        camera_jobs.active_local_media_jobs,
+        camera_jobs.timed_out_live_jobs,
+        camera_jobs.timed_out_local_media_jobs,
+        pre_roll_stats.buffers,
+        pre_roll_stats.ready_buffers,
+        pre_roll_stats.total_packets,
+        crate::bot::format::bytes(pre_roll_stats.total_bytes as u64),
+        active_recordings,
+        failed_recordings_last_hour,
+        crate::bot::format::bytes(archive_size as u64),
+        crate::bot::format::quota(quota_mb),
+        crate::bot::format::bytes(pinned_size as u64),
     );
+
+    let (pending_files, pending_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM recording_files WHERE delete_pending = 1",
+    ).fetch_one(&ctx.config.db).await?;
+    let schedule_counts: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*) FROM action_schedule_runs GROUP BY status ORDER BY status",
+    )
+    .fetch_all(&ctx.config.db)
+    .await?;
+    let (pipeline_label, pending_label, schedules_label) = match ctx.lang {
+        crate::i18n::Language::Ru => (
+            "Очереди: HA / UI / уведомления",
+            "Ожидают удаления",
+            "Запуски расписаний",
+        ),
+        crate::i18n::Language::En => (
+            "Queues: HA / UI / notifications",
+            "Pending deletion",
+            "Schedule runs",
+        ),
+    };
+    let label = |ru: &'static str, en: &'static str| crate::bot::personal::words(ctx.lang, ru, en);
+    text.push_str(&format!(
+        "\n{}: {} / 2",
+        label("Сохранение архивного pre-roll", "Archive pre-roll writes"),
+        camera_jobs.active_archive_pre_roll_jobs,
+    ));
+    text.push_str(&format!(
+        "\n{}: {} / {}; {}: {}; {}: {}\n{}: {} / {} / {}\n{}: {}; {}: {}\n{}: {}; {}: {}; {}: {}\n{}: {}\n{}: {} ({})\n{}: {}",
+        label("Захваты архива", "Archive capture"), camera_jobs.active_recording_jobs, camera_jobs.recording_job_limit,
+        label("Потоки медиа", "Native media threads"), camera_jobs.active_native_threads,
+        label("Ошибки медиа", "Media failures"), camera_jobs.failed_native_jobs,
+        pipeline_label, runtime_status.ha_events_queued, runtime_status.ui_refresh_queued, runtime_status.notifications_queued,
+        label("Обработано HA", "HA processed"), runtime_status.ha_events_processed,
+        label("Ошибки правил", "Rule failures"), runtime_status.ha_rule_failures,
+        label("Уведомления в работе", "Active notifications"), runtime_status.notifications_active,
+        label("Ошибки доставки", "Delivery failures"), runtime_status.notifications_failed,
+        label("Переполнение уведомлений", "Notification overflow"), runtime_status.notification_overflow,
+        label("Переполнение UI", "UI overflow"), runtime_status.ui_refresh_overflow,
+        pending_label, pending_files, crate::bot::format::bytes(pending_bytes as u64),
+        schedules_label, schedule_counts.iter().map(|(status,count)| format!("{status} {count}")).collect::<Vec<_>>().join(", "),
+    ));
+
+    text.push_str(&format!(
+        "\n{}: {} / {}; {}: {}",
+        label("Очередь записи", "Recording queue"),
+        ctx.config.camera_recording_tx.max_capacity() - ctx.config.camera_recording_tx.capacity(),
+        ctx.config.camera_recording_tx.max_capacity(),
+        label("Переполнение", "Overflow"),
+        crate::core::camera_recording_matcher::recording_queue_overflow(),
+    ));
 
     let kb = InlineKeyboardMarkup::new(vec![
         vec![
@@ -4635,6 +5157,7 @@ pub async fn render_status(ctx: RenderContext) -> Result<View> {
     ]);
 
     Ok(View {
+        html_title: Some(label("Статус системы", "System status").into()),
         notifications: ctx.notifications,
         text,
         kb,
@@ -4697,6 +5220,50 @@ pub fn render_confirm_action(
     confirm_payload: Payload,
     cancel_payload: Payload,
 ) -> View {
+    // Reading a confirmation must render the same question, not its cancellation
+    // target and never the destructive operation itself.
+    let review = match &confirm_payload {
+        Payload::Admin(action) => Payload::Admin(match action {
+            AdminPayload::CreateBackup => AdminPayload::ConfirmBackup,
+            AdminPayload::DeleteCamera { room, camera } => AdminPayload::ConfirmDeleteCamera {
+                room: *room,
+                camera: *camera,
+            },
+            AdminPayload::DeleteUser { id } => AdminPayload::ConfirmDeleteUser { id: *id },
+            AdminPayload::DeleteRecordingRule { room, rule } => {
+                AdminPayload::ConfirmDeleteRecordingRule {
+                    room: *room,
+                    rule: *rule,
+                }
+            }
+            AdminPayload::DeleteRecordingRuleGroup { group } => {
+                AdminPayload::ConfirmDeleteRecordingRuleGroup { group: *group }
+            }
+            AdminPayload::DeleteRecordingRuleGroupForRoom { room, group } => {
+                AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom {
+                    room: *room,
+                    group: *group,
+                }
+            }
+            AdminPayload::DeleteActionGroup { group } => {
+                AdminPayload::ConfirmDeleteActionGroup { group: *group }
+            }
+            AdminPayload::DeleteActionSchedule { target, schedule } => {
+                AdminPayload::ConfirmDeleteActionSchedule {
+                    target: *target,
+                    schedule: *schedule,
+                }
+            }
+            _ => unreachable!("confirmation requires an explicit read-only review route"),
+        }),
+        Payload::Camera(crate::bot::router::CameraPayload::DeleteRecording { camera, session }) => {
+            Payload::Camera(crate::bot::router::CameraPayload::ConfirmDeleteRecording {
+                camera: *camera,
+                session: *session,
+            })
+        }
+        _ => unreachable!("confirmation requires an explicit read-only review route"),
+    };
     let kb = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(t(ctx.lang, "common.confirm"), confirm_payload.to_string()),
         InlineKeyboardButton::callback(t(ctx.lang, "common.cancel"), cancel_payload.to_string()),
@@ -4704,10 +5271,12 @@ pub fn render_confirm_action(
 
     View {
         header: Some(format!("🛠 {}", title)),
+        html_kind: Some("confirmation".into()),
+        html_back: Some(cancel_payload),
         notifications: ctx.notifications,
         text: text.to_string(),
         kb,
-        payload: cancel_payload,
+        payload: review,
         ..Default::default()
     }
 }
@@ -4858,6 +5427,8 @@ mod tests {
             active_from_minute: None,
             active_to_minute: None,
             active_days_mask: crate::db::camera_recording_rules::ACTIVE_TIME_ALL_DAYS_MASK,
+            pre_roll_enabled: 1,
+            pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
             noise_summary_sent_at: None,
             last_completed_at: None,
             deleted_at: None,

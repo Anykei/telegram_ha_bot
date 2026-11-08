@@ -1,0 +1,13 @@
+{
+  "designVersion": "1.0.0",
+  "screen": "unified",
+  "bytes": 16623,
+  "zlibBytes": 6700,
+  "limit": 4096,
+  "protocol": "r1",
+  "transport": "TelegramWidget",
+  "liveIntegrationVerified": false,
+  "sha256": "0c65f1d58de07f662dbe3100b2c27512acfe1475269bbae445e8cacd352addaa",
+  "fitsTelegram": false,
+  "production": false
+}

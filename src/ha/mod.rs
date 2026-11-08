@@ -2,6 +2,8 @@ pub(crate) mod assist_pipeline;
 pub(crate) mod client;
 pub(crate) mod conversation;
 mod event_listener;
+pub(crate) mod intent_recognition;
+pub(crate) mod mock;
 pub(crate) mod models;
 mod templates;
 

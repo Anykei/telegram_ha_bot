@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ha::HomeAssistantClient;
@@ -18,12 +18,14 @@ pub struct UserSession {
     pub last_ui_refresh_at: Option<DateTime<Utc>>,
     pub ui_refresh_blocked_until: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
+    pub last_persisted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiMessageMode {
     Photo,
     Text,
+    Html,
 }
 
 impl UserSession {
@@ -35,6 +37,7 @@ impl UserSession {
 }
 
 pub struct AppConfig {
+    pub html_ui: crate::bot::html_ui::HtmlUi,
     pub ha_client: Arc<dyn HomeAssistantClient>,
     pub ha_url: String,
     pub ha_token: String,
@@ -43,6 +46,7 @@ pub struct AppConfig {
 
     // pub delete_chart_timeout_s: u64,
     // pub delete_help_messages_timeout_s: u64,
+    /// Zero keeps notifications in the chat until the user deletes them.
     pub delete_notification_messages_timeout_s: u64,
     // pub delete_error_messages_timeout_s: u64,
     pub ttl_notifications: u64,
@@ -72,16 +76,63 @@ pub struct AppConfig {
     pub voice_response_format: VoiceResponseFormat,
 
     pub sessions: DashMap<u64, UserSession>,
+    pub admission_lifecycle: Mutex<()>,
+    pub dialogue_generations: DashMap<u64, String>,
+    pub active_dialogues: DashMap<u64, crate::bot::handlers::MyDialogue>,
     pub ui_locks: DashMap<u64, Arc<Mutex<()>>>,
+    pub view_updates: DashMap<u64, Arc<tokio_util::sync::CancellationToken>>,
+    pub climate_controls: crate::core::climate_control::ClimateControls,
     pub recording_sends_in_progress: DashMap<(u64, i64), DateTime<Utc>>,
 
     pub name_aliases: DashMap<String, String>,
     pub state_aliases: DashMap<String, std::collections::HashMap<String, String>>,
     pub ui_background_cache: Mutex<Option<UiBackgroundCache>>,
+    pub camera_snapshot_cache: Mutex<HashMap<i64, CameraSnapshotCache>>,
+    pub camera_pre_roll_registry: Arc<crate::core::camera_pre_roll::CameraPreRollRegistry>,
     pub runtime_status: RwLock<RuntimeStatus>,
+    pub notification_delivery: crate::core::notification_delivery::NotificationDelivery,
 }
 
 impl AppConfig {
+    /// Background refreshes must not supersede accepted navigation or each other.
+    pub fn try_begin_view_update(
+        &self,
+        user_id: u64,
+    ) -> Option<Arc<tokio_util::sync::CancellationToken>> {
+        use dashmap::mapref::entry::Entry;
+        match self.view_updates.entry(user_id) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(entry) => {
+                let token = Arc::new(tokio_util::sync::CancellationToken::new());
+                entry.insert(token.clone());
+                Some(token)
+            }
+        }
+    }
+
+    pub fn begin_view_update(&self, user_id: u64) -> Arc<tokio_util::sync::CancellationToken> {
+        let token = Arc::new(tokio_util::sync::CancellationToken::new());
+        if let Some(previous) = self.view_updates.insert(user_id, token.clone()) {
+            previous.cancel();
+        }
+        token
+    }
+
+    pub fn cancel_view_update(&self, user_id: u64) {
+        if let Some((_, token)) = self.view_updates.remove(&user_id) {
+            token.cancel();
+        }
+    }
+
+    pub fn finish_view_update(
+        &self,
+        user_id: u64,
+        token: &Arc<tokio_util::sync::CancellationToken>,
+    ) {
+        self.view_updates
+            .remove_if(&user_id, |_, current| Arc::ptr_eq(current, token));
+    }
+
     pub fn ui_lock_for(&self, user_id: u64) -> Arc<Mutex<()>> {
         self.ui_locks
             .entry(user_id)
@@ -149,6 +200,15 @@ impl AppConfig {
 pub struct NotificationData {
     pub human_state: String,
     pub recipients: Vec<i64>,
+    #[serde(default)]
+    pub critical: bool,
+    pub scope: NotificationScope,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub enum NotificationScope {
+    Device(String),
+    Camera(i64),
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +216,17 @@ pub struct UiBackgroundCache {
     pub camera_id: i64,
     pub captured_at: Option<DateTime<Utc>>,
     pub failed_at: Option<DateTime<Utc>>,
+    pub last_warned_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+    pub refreshing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraSnapshotCache {
+    pub captured_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
+    pub last_warned_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub bytes: Option<Vec<u8>>,
     pub refreshing: bool,
@@ -163,6 +234,15 @@ pub struct UiBackgroundCache {
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
+    pub ha_events_processed: u64,
+    pub ha_rule_failures: u64,
+    pub ha_events_queued: usize,
+    pub notification_overflow: u64,
+    pub notifications_queued: usize,
+    pub notifications_active: usize,
+    pub notifications_failed: u64,
+    pub ui_refresh_queued: usize,
+    pub ui_refresh_overflow: u64,
     pub last_maintenance_tick_at: Option<DateTime<Utc>>,
     pub last_ha_sync_at: Option<DateTime<Utc>>,
     pub last_ha_sync_error: Option<String>,

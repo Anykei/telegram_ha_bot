@@ -1,4 +1,6 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.87-slim-bookworm AS chef
+# Pin the validated release toolchain; CI also follows the latest stable Rust.
+RUN rustup toolchain install 1.99.1 --profile minimal && rustup default 1.99.1
 WORKDIR /app
 
 FROM chef AS planner
@@ -8,6 +10,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # --- ЭТАП 2: Builder (Сборка) ---
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor vendor
 
 # Устанавливаем зависимости для компиляции (включая шрифты и ssl)
 RUN apt-get update && apt-get install -y \
@@ -29,11 +32,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Сборка кэша зависимостей
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --locked --release --recipe-path recipe.json
 
 # Сборка самого бота
 COPY . .
-RUN cargo build --release --bin telegram_ha_bot
+RUN cargo build --locked --release --bin telegram_ha_bot
 
 # --- ЭТАП 3: Runtime (Финальный образ) ---
 FROM debian:bookworm-slim AS runtime
@@ -78,6 +81,7 @@ ENV MIGRATIONS_PATH="/app/migrations"
 
 ENV OPTIONS_PATH="/data/options.json"
 ENV DATABASE_PATH="/data/bot_data.db"
+ENV CAMERA_RECORDING_STORAGE_ROOT="/data/recordings"
 
 # HA_TOKEN генерирует HA при запуске контейнера
 # ENV HA_TOKEN=""

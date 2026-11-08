@@ -1,0 +1,15 @@
+.g-box { flex:1; margin-bottom:12px; display:flex; flex-direction:column; }
+.g-stage { display:flex; gap:8px; flex:1; }
+.g-stage svg { display:block; width:100%; min-width:0; height:auto; min-height:144px; }
+.g-axis { display:flex; flex-shrink:0; flex-direction:column; justify-content:space-between; max-width:28%; color:var(--ha-muted); font-size:10px; overflow-wrap:anywhere; }
+.g-gaps { fill:var(--ha-surface-soft); }
+.g-range { fill:none; stroke:var(--ha-accent); stroke-width:5; opacity:.25; }
+.g-line { fill:none; stroke:var(--ha-accent); stroke-width:2; }
+.g-empty { display:flex; align-items:center; justify-content:center; min-height:144px; flex:1; margin:0; color:var(--ha-muted); }
+.g-time { display:flex; justify-content:space-between; gap:8px; margin-top:6px; color:var(--ha-muted); font-size:10px; }
+/* Actions occupy whole columns; the clock never shortens just one row. */
+[data-kind=chart] .r-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+.r-left .r-row:last-child button:only-child { grid-column:2; }
+.r-corner #r-feedback { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }
+
+[data-kind=chart] #r-content { flex:none; }

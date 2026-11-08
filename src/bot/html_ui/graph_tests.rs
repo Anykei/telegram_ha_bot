@@ -1,0 +1,630 @@
+use super::*;
+use crate::bot::router::ChartRangeEdit as Edit;
+use chrono::{DateTime, Utc};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+struct ChartHa {
+    inner: Arc<crate::ha::mock::MockHa>,
+    reads: AtomicUsize,
+    fail: AtomicBool,
+    ranges: std::sync::Mutex<Vec<[i64; 2]>>,
+}
+#[async_trait::async_trait]
+impl HomeAssistantClient for ChartHa {
+    fn is_mock(&self) -> bool {
+        true
+    }
+    async fn health_check(&self) -> Result<()> {
+        self.inner.health_check().await
+    }
+    async fn fetch_rooms(&self) -> Result<Vec<crate::ha::Room>> {
+        self.inner.fetch_rooms().await
+    }
+    async fn fetch_action_entities(&self) -> Result<Vec<crate::ha::models::Entity>> {
+        self.inner.fetch_action_entities().await
+    }
+    async fn fetch_states_by_ids(&self, ids: &[String]) -> Result<Vec<crate::ha::models::Entity>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.fetch_states_by_ids(ids).await
+    }
+    async fn fetch_history(
+        &self,
+        id: &str,
+        h: u32,
+        o: i32,
+    ) -> Result<crate::ha::client::HistoryResult> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.fetch_history(id, h, o).await
+    }
+    async fn fetch_history_range(
+        &self,
+        id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<crate::ha::client::HistoryResult> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.ranges
+            .lock()
+            .unwrap()
+            .push([start.timestamp(), end.timestamp()]);
+        anyhow::ensure!(
+            !self.fail.load(Ordering::SeqCst),
+            "test history unavailable"
+        );
+        self.inner.fetch_history_range(id, start, end).await
+    }
+    async fn call_service(&self, _: &str, _: &str, _: &str) -> Result<()> {
+        panic!("calendar must never actuate devices")
+    }
+    async fn call_service_with_data(&self, _: &str, _: &str, _: &str, _: Value) -> Result<()> {
+        panic!("calendar must never actuate devices")
+    }
+}
+fn action(room: i64, device: i64, cmd: DeviceCmd) -> Payload {
+    Payload::Control(ControlPayload::QuickAction { room, device, cmd })
+}
+fn edit_query(config: &AppConfig, edit: Edit) -> CallbackQuery {
+    let s = current(config);
+    let (key,_)=s.actions.iter().find(|(_,p)|matches!(p,Payload::Control(ControlPayload::QuickAction{cmd:DeviceCmd::EditChartRange{edit:e,..},..}) if *e==edit)).expect("issued editor action");
+    query(&s, key)
+}
+#[tokio::test]
+async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboard() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    for lang in [crate::i18n::Language::Ru, crate::i18n::Language::En] {
+        db::user::set_user_language(1, lang, &config.db).await?;
+        for entity in ["sensor.bedroom_humidity", "binary_sensor.kitchen_window"] {
+            let (room, device) = device(&config, entity).await?;
+            let view = router(
+                Payload::Control(ControlPayload::DeviceControl { room, device }),
+                1,
+                config.clone(),
+            )
+            .await?;
+            assert!(view.image.is_some());
+            let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+            assert_eq!(prepared.pages.len(), 1);
+            let page = &prepared.pages[0];
+            assert_eq!(page.kind, "chart");
+            assert_eq!(page.graph.as_ref().unwrap().plot.len(), 96);
+            assert!(page.body.contains(view.html_summary.as_deref().unwrap()));
+            assert!(page.body.contains("UTC"));
+            assert!(page.json()?.len() <= 1000);
+            assert_eq!(prepared.actions.len(), 4);
+            assert!(prepared
+                .actions
+                .values()
+                .any(|p| *p == action(room, device, DeviceCmd::ExportChart)));
+            assert!(prepared
+                .actions
+                .values()
+                .any(|p| *p == action(room, device, DeviceCmd::OpenChartRange)));
+            assert!(prepared
+                .actions
+                .values()
+                .any(|p| *p == Payload::DeviceDetails { room, device }));
+            for hours in [12, 24, 72, 168] {
+                let classic =
+                    action(room, device, DeviceCmd::ShowChart { h: hours, o: 0 }).to_string();
+                assert!(view.kb.inline_keyboard.iter().flatten().any(|b|matches!(&b.kind,teloxide::types::InlineKeyboardButtonKind::CallbackData(s) if *s==classic)));
+            }
+        }
+    }
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    sqlx::query("DELETE FROM ha_mock_history WHERE entity_id='sensor.bedroom_humidity'")
+        .execute(&config.db)
+        .await?;
+    let view = router(
+        Payload::Control(ControlPayload::DeviceControl { room, device }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(view.image.is_none());
+    let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
+    assert!(!prepared
+        .actions
+        .values()
+        .any(|p| *p == action(room, device, DeviceCmd::ExportChart)));
+    assert_eq!(
+        prepared.pages[0].graph.as_ref().unwrap().plot,
+        ".".repeat(96)
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn calendar_draft_keeps_one_editor_message_and_exact_bounds_across_graph_transitions(
+) -> Result<()> {
+    let (mut config, mock) = mock_config().await?;
+    let ha = Arc::new(ChartHa {
+        inner: mock,
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        ranges: Default::default(),
+    });
+    Arc::get_mut(&mut config).unwrap().ha_client = ha.clone();
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    let open = Payload::Control(ControlPayload::DeviceControl { room, device });
+    let previous = publish(
+        &fake,
+        &config,
+        Payload::Control(ControlPayload::RoomDetail { room }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    let original = current(&config);
+    assert_ne!(previous.message, original.message);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .rev()
+            .find(|(m, _)| m == "sendWidget")
+            .unwrap()
+            .1["html"],
+        GRAPH_HTML
+    );
+    let before = ha.reads.load(Ordering::SeqCst);
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &action(room, device, DeviceCmd::OpenChartRange)),
+    )
+    .await?;
+    let stale = current(&config);
+    assert_ne!(stale.message, original.message);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .rev()
+            .find(|(m, _)| m == "sendWidget")
+            .unwrap()
+            .1["html"],
+        RANGE_HTML
+    );
+    for edit in [
+        Edit::Date(false),
+        Edit::Overview,
+        Edit::Time(false),
+        Edit::Hour(8),
+        Edit::Minute(5),
+        Edit::Minute(6),
+        Edit::Minute(7),
+        Edit::Overview,
+    ] {
+        press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
+        assert_eq!(current(&config).message, stale.message);
+    }
+    let editor = current(&config);
+    press(&fake, &config, &dialogue, query(&editor, "read")).await?;
+    assert_eq!(
+        ha.reads.load(Ordering::SeqCst),
+        before,
+        "draft and read do not fetch HA"
+    );
+    press(&fake, &config, &dialogue, edit_query(&config, Edit::Cancel)).await?;
+    assert_eq!(current(&config).view.html_range, original.view.html_range);
+    assert_eq!(
+        current(&config).view.kb,
+        original.view.kb,
+        "cancel does not duplicate favorites"
+    );
+    assert_eq!(ha.reads.load(Ordering::SeqCst), before);
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &action(room, device, DeviceCmd::OpenChartRange)),
+    )
+    .await?;
+    // A callback from the old draft cannot change the replacement.
+    let replacement = current(&config);
+    assert!(resolve(
+        &fake.bot,
+        &query(&stale, stale.pages[0].back.as_deref().unwrap()),
+        &config
+    )
+    .await?
+    .is_none());
+    assert_eq!(
+        current(&config).view.html_range,
+        replacement.view.html_range
+    );
+    for edit in [
+        Edit::Time(false),
+        Edit::Hour(8),
+        Edit::Minute(5),
+        Edit::Minute(6),
+        Edit::Minute(7),
+        Edit::Overview,
+    ] {
+        press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
+    }
+    let selected = current(&config).view.html_range.unwrap();
+    if (selected[1] - selected[0]) % 3600 == 0 {
+        for edit in [
+            Edit::Time(false),
+            Edit::Hour(8),
+            Edit::Minute(8),
+            Edit::Overview,
+        ] {
+            press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
+        }
+    }
+    let bounds = current(&config).view.html_range.unwrap();
+    assert_eq!(bounds[0] % 60, 0);
+    assert_ne!(
+        (bounds[1] - bounds[0]) % 3600,
+        0,
+        "minute precision is not rounded to hours"
+    );
+    ha.fail.store(true, Ordering::SeqCst);
+    press(&fake, &config, &dialogue, edit_query(&config, Edit::Apply)).await?;
+    assert_eq!(current(&config).view.html_kind.as_deref(), Some("range"));
+    assert_eq!(current(&config).view.html_range, Some(bounds));
+    assert!(current(&config).view.alert.is_some());
+    assert_eq!(current(&config).message, replacement.message);
+    let reads = ha.reads.load(Ordering::SeqCst);
+    let failed = current(&config);
+    press(&fake, &config, &dialogue, query(&failed, "read")).await?;
+    assert_eq!(
+        ha.reads.load(Ordering::SeqCst),
+        reads,
+        "read recovers draft without retrying history"
+    );
+    ha.fail.store(false, Ordering::SeqCst);
+    press(&fake, &config, &dialogue, edit_query(&config, Edit::Apply)).await?;
+    let applied = current(&config);
+    assert_eq!(applied.view.html_range, Some(bounds));
+    assert_eq!(
+        applied.view.payload,
+        action(
+            room,
+            device,
+            DeviceCmd::ShowChartRange {
+                start: bounds[0],
+                end: bounds[1]
+            }
+        )
+    );
+    assert_ne!(applied.message, replacement.message);
+    press(&fake, &config, &dialogue, query(&applied, "read")).await?;
+    assert_eq!(current(&config).view.html_range, Some(bounds));
+    assert!(ha.ranges.lock().unwrap().iter().all(|r| *r == bounds));
+    assert_eq!(ha.ranges.lock().unwrap().len(), 3);
+    // Supplementary controls remain on the device details page.
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &Payload::DeviceDetails { room, device }),
+    )
+    .await?;
+    assert_ne!(current(&config).message, original.message);
+    let details = current(&config);
+    assert!(details
+        .actions
+        .values()
+        .any(|p| matches!(p, Payload::Personal(_))));
+    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    assert_eq!(
+        current(&config).view.html_range,
+        Some(bounds),
+        "return restores absolute range"
+    );
+    let graph = current(&config);
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        query(&graph, graph.pages[0].back.as_deref().unwrap()),
+    )
+    .await?;
+    assert_eq!(
+        current(&config).view.payload,
+        Payload::Control(ControlPayload::RoomDetail { room })
+    );
+    assert!(!fake
+        .calls()
+        .iter()
+        .any(|(m, _)| m.eq_ignore_ascii_case("sendPhoto")));
+    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &action(room, device, DeviceCmd::OpenChartRange)),
+    )
+    .await?;
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        edit_query(&config, Edit::Time(false)),
+    )
+    .await?;
+    fake.clear();
+    handlers::handle_command(
+        fake.bot.clone(),
+        input_message("/classic")?,
+        handlers::Command::Classic,
+        config.clone(),
+        dialogue,
+    )
+    .await?;
+    assert!(fake
+        .calls()
+        .iter()
+        .any(|(m, _)| m.eq_ignore_ascii_case("sendPhoto")));
+    assert_eq!(ha.ranges.lock().unwrap().last(), Some(&bounds));
+    assert!(!config.html_ui.ranges.contains_key(&1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn calendar_invalid_range_never_reads_history_and_regrant_invalidates_draft() -> Result<()> {
+    use chrono::{Datelike, Local, Timelike};
+    let (mut config, mock) = mock_config().await?;
+    let ha = Arc::new(ChartHa {
+        inner: mock,
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        ranges: Default::default(),
+    });
+    Arc::get_mut(&mut config).unwrap().ha_client = ha.clone();
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    publish(
+        &fake,
+        &config,
+        Payload::Control(ControlPayload::DeviceControl { room, device }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &action(room, device, DeviceCmd::OpenChartRange)),
+    )
+    .await?;
+    let reads = ha.reads.load(Ordering::SeqCst);
+    let [start, end] = current(&config).view.html_range.unwrap().map(|s| {
+        DateTime::from_timestamp(s, 0)
+            .unwrap()
+            .with_timezone(&Local)
+    });
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        edit_query(&config, Edit::Date(false)),
+    )
+    .await?;
+    if start.month() != end.month() {
+        press(
+            &fake,
+            &config,
+            &dialogue,
+            edit_query(&config, Edit::Month(1)),
+        )
+        .await?;
+    }
+    for edit in [
+        Edit::Day(end.day() as u8),
+        Edit::Time(false),
+        Edit::Hour(end.hour() as u8),
+        Edit::Minute((end.minute() / 5 * 5) as u8),
+    ] {
+        press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
+    }
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        edit_query(&config, Edit::Minute(end.minute() as u8)),
+    )
+    .await?;
+    for edit in [Edit::Overview, Edit::Apply] {
+        press(&fake, &config, &dialogue, edit_query(&config, edit)).await?;
+    }
+    let editor = current(&config);
+    assert_eq!(
+        editor.view.html_range,
+        Some([end.timestamp(), end.timestamp()])
+    );
+    assert!(editor.view.alert.is_some());
+    assert!(editor.pages[0].json()?.len() <= 1000);
+    assert_eq!(ha.reads.load(Ordering::SeqCst), reads);
+    let q = edit_query(&config, Edit::Apply);
+    db::delete_user(1, &config.db).await?;
+    db::add_user(1, &config.db).await?;
+    assert!(resolve(&fake.bot, &q, &config).await?.is_none());
+    assert_eq!(ha.reads.load(Ordering::SeqCst), reads);
+    Ok(())
+}
+
+fn png_uploads(fake: &FakeTelegram) -> Vec<Vec<u8>> {
+    fake.uploads
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, _)| method.eq_ignore_ascii_case("sendDocument"))
+        .map(|(_, bytes)| bytes.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn png_export_preserves_exact_displayed_image_range_and_card_without_ha_reads() -> Result<()>
+{
+    let (mut config, mock) = mock_config().await?;
+    let ha = Arc::new(ChartHa {
+        inner: mock,
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        ranges: Default::default(),
+    });
+    Arc::get_mut(&mut config).unwrap().ha_client = ha.clone();
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    for (entity, exact, height) in [
+        ("sensor.bedroom_humidity", false, 600),
+        ("sensor.bedroom_humidity", true, 600),
+        ("binary_sensor.kitchen_window", true, 400),
+    ] {
+        let (room, device) = device(&config, entity).await?;
+        let end = Utc::now().timestamp() - 67;
+        let payload = action(
+            room,
+            device,
+            if exact {
+                DeviceCmd::ShowChartRange {
+                    start: end - 86_461,
+                    end,
+                }
+            } else {
+                DeviceCmd::ShowChart { h: 24, o: 0 }
+            },
+        );
+        let original = publish(&fake, &config, payload.clone()).await?;
+        let bytes = original.view.image.as_ref().unwrap();
+        let image = image::load_from_memory(bytes)?;
+        assert_eq!((image.width(), image.height()), (1000, height));
+        let [start, end] = original.view.html_range.unwrap();
+        let callback = action_query(&config, &action(room, device, DeviceCmd::ExportChart));
+        let before = ha.reads.load(Ordering::SeqCst);
+        fake.clear();
+        // The callback is issued once; concurrent delivery must not duplicate a file.
+        let (first, duplicate) = tokio::join!(
+            press(&fake, &config, &dialogue, callback.clone()),
+            press(&fake, &config, &dialogue, callback.clone())
+        );
+        first?;
+        duplicate?;
+        let uploads = png_uploads(&fake);
+        assert_eq!(uploads.len(), 1);
+        assert!(uploads[0].windows(bytes.len()).any(|part| part == bytes));
+        let multipart = String::from_utf8_lossy(&uploads[0]);
+        assert!(multipart.contains(&format!("graph_{start}_{end}.png")));
+        assert!(multipart.contains(original.view.html_title.as_deref().unwrap()));
+        assert!(multipart.contains("Тестовые данные"));
+        for date in [start, end] {
+            assert!(multipart.contains(
+                &DateTime::from_timestamp(date, 0)
+                    .unwrap()
+                    .with_timezone(&chrono::Local)
+                    .format("%d.%m.%Y %H:%M:%S UTC%:z")
+                    .to_string()
+            ));
+        }
+        assert!(
+            !multipart.contains("reply_markup"),
+            "forwarded file has no private controls"
+        );
+        let sent = current(&config);
+        assert_eq!(sent.message, original.message);
+        assert_eq!(sent.view.payload, original.view.payload);
+        assert_eq!(sent.view.html_range, original.view.html_range);
+        assert_eq!(sent.view.image, original.view.image);
+        assert_eq!(
+            serde_json::to_value(&sent.view.html_chart)?,
+            serde_json::to_value(&original.view.html_chart)?
+        );
+        assert_eq!(sent.view.notice.as_deref(), Some("PNG отправлен."));
+        assert!(!sent.claimed);
+        assert!(sent.pages[0].json()?.len() <= 1000);
+        assert_eq!(ha.reads.load(Ordering::SeqCst), before);
+        press(&fake, &config, &dialogue, callback).await?;
+        assert_eq!(png_uploads(&fake).len(), 1, "old revision cannot resend");
+        press(&fake, &config, &dialogue, query(&sent, "read")).await?;
+        assert_eq!(
+            png_uploads(&fake).len(),
+            1,
+            "Read refreshes the graph without exporting"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn png_export_failure_is_visible_and_only_a_fresh_explicit_tap_retries() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    let original = publish(
+        &fake,
+        &config,
+        action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let export = action(room, device, DeviceCmd::ExportChart);
+    let callback = action_query(&config, &export);
+    fake.clear();
+    *fake.fail.lock().unwrap() = Some("sendDocument".into());
+    press(&fake, &config, &dialogue, callback.clone()).await?;
+    let failed = current(&config);
+    assert!(failed
+        .view
+        .alert
+        .as_deref()
+        .unwrap()
+        .contains("Проверьте чат"));
+    assert_eq!(failed.message, original.message);
+    assert_eq!(failed.view.image, original.view.image);
+    assert_eq!(png_uploads(&fake).len(), 1);
+    press(&fake, &config, &dialogue, callback).await?;
+    press(&fake, &config, &dialogue, query(&failed, "read")).await?;
+    assert_eq!(png_uploads(&fake).len(), 1);
+    press(&fake, &config, &dialogue, action_query(&config, &export)).await?;
+    assert_eq!(png_uploads(&fake).len(), 2);
+    assert_eq!(
+        current(&config).view.notice.as_deref(),
+        Some("PNG отправлен.")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn png_export_rejects_native_callbacks_and_changed_admission() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let fake = FakeTelegram::new().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    publish(
+        &fake,
+        &config,
+        action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 }),
+    )
+    .await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let export = action(room, device, DeviceCmd::ExportChart);
+    let callback = action_query(&config, &export);
+    let mut native = callback.clone();
+    native.chat_instance = "native".into();
+    native.data = Some(export.to_string());
+    fake.clear();
+    press(&fake, &config, &dialogue, native).await?;
+    assert!(png_uploads(&fake).is_empty());
+    db::delete_user(1, &config.db).await?;
+    db::add_user(1, &config.db).await?;
+    press(&fake, &config, &dialogue, callback).await?;
+    assert!(png_uploads(&fake).is_empty());
+    Ok(())
+}

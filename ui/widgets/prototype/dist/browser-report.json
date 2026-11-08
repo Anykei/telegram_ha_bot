@@ -1,0 +1,17 @@
+{
+  "sha256": "0c65f1d58de07f662dbe3100b2c27512acfe1475269bbae445e8cacd352addaa",
+  "visualComparisons": 888,
+  "fixtures": 111,
+  "themes": 2,
+  "widths": [
+    200,
+    320,
+    360,
+    430
+  ],
+  "sameDocumentTransitions": true,
+  "buttonNavigationTransitions": 12,
+  "ackTransitions": true,
+  "staleAckIsolation": true,
+  "revocationAndRecovery": true
+}

@@ -4,6 +4,8 @@
 .continue
 
 target
+ui/widgets/node_modules
+ui/widgets/screenshots
 data
 sqlite:
 .sqlx

@@ -2,169 +2,177 @@ name: Release and Update Store
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# One release transaction across all entry points. Never cancel a publishing job.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-production
   cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io
-  STORE_REPO: "Anykei/ha_addons"
-  CONFIG_PATH: "telegram_bot_addon/config.yaml"
-  RUST_TOOLCHAIN: 1.87.0
+  STORE_REPO: Anykei/ha_addons
+  CONFIG_PATH: telegram_bot_addon/config.yaml
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Bot Code
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            clang \
-            libclang-dev \
-            libssl-dev \
-            libsqlite3-dev \
-            libfreetype6-dev \
-            libfontconfig1-dev \
-            libavformat-dev \
-            libavcodec-dev \
-            libavutil-dev \
-            libavfilter-dev \
-            libavdevice-dev \
-            libpostproc-dev \
-            libswscale-dev \
-            libswresample-dev
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup component add rustfmt --toolchain "$RUST_TOOLCHAIN"
-          rustup component add clippy --toolchain "$RUST_TOOLCHAIN"
-          rustup default "$RUST_TOOLCHAIN"
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Check project
-        run: cargo check --locked
-
-      - name: Run tests
-        run: cargo test --locked
-
-      - name: Run clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/checks.yml
+    with:
+      rust-toolchain: '1.99.1'
+      build-docker: true
 
   release:
+    if: github.ref == 'refs/heads/main'
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     permissions:
       contents: write
       packages: write
-
     steps:
-      - name: Checkout Bot Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Lowercase repo owner
+      - name: Reject superseded runs and refresh tags
         run: |
-          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+          git fetch origin main --tags
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA" || {
+            echo 'main has moved; run the release from its latest commit.' >&2
+            exit 1
+          }
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
-      # 1. Генерируем новую версию БЕЗ префикса "v"
-      - name: Bump version (Dry Run)
-        id: tag_version
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          dry_run: true
-          tag_prefix: "" # Убираем букву "v" из тега
+      - name: Plan version (read-only, retry-safe)
+        id: version
+        run: python3 scripts/release.py plan --github-output
 
-      - name: Ensure release version exists
-        run: |
-          test -n "${{ steps.tag_version.outputs.new_tag }}"
-          test "${{ steps.tag_version.outputs.new_tag }}" != "undefined"
-
-      # 2. Настройка Docker
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # 3. Сборка и Пуш образа (тег будет чистым числом, например 0.0.6)
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/telegram_ha_bot:${{ steps.tag_version.outputs.new_tag }}
-            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/telegram_ha_bot:latest
-          provenance: false
-
+      # Fail early if the store credential/config is unavailable, before publishing.
       - name: Checkout Addons Store
         uses: actions/checkout@v4
         with:
           repository: ${{ env.STORE_REPO }}
+          ref: main
           token: ${{ secrets.PAT_TOKEN }}
           path: store_repo
 
-      # 4. Обновление версии в репозитории Магазина
-      - name: Update Version in Addons Store
+      - name: Validate store version and image
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect existing version (never overwrite a different release)
+        id: existing
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          cd store_repo
-
-          NEW_VER="${{ steps.tag_version.outputs.new_tag }}"
-
-          # Обновляем версию в config.yaml
-          sed -i "s/^version: .*/version: \"$NEW_VER\"/" ${{ env.CONFIG_PATH }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.CONFIG_PATH }}
-
-          if git diff --cached --quiet; then
-            echo "Addon store already points to $NEW_VER"
-            exit 0
+          if docker buildx imagetools inspect "$IMAGE:$RELEASE_VERSION" --raw > "$RUNNER_TEMP/image.json" 2> "$RUNNER_TEMP/image-error.txt"; then
+            python3 scripts/release.py verify-image --path "$RUNNER_TEMP/image.json" --version "$RELEASE_VERSION" --sha "$GITHUB_SHA"
+            echo 'found=true' >> "$GITHUB_OUTPUT"
+          elif grep -Eiq 'manifest unknown|not found' "$RUNNER_TEMP/image-error.txt"; then
+            echo 'found=false' >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/image-error.txt" >&2
+            exit 1
           fi
 
-          git commit -m "Update Telegram Bot to $NEW_VER"
+      - name: Stamp binary version in the release checkout
+        if: steps.existing.outputs.found != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/release.py stamp --version "$RELEASE_VERSION"
 
-          # Пушим обратно в main
-          git push origin main
-
-      # 5. Финальный шаг: фиксируем тег в репозитории БОТА
-      - name: Push Git Tag to Bot Repo
-        if: success()
-        uses: mathieudutour/github-tag-action@v6.2
+      - name: Build and push immutable version
+        if: steps.existing.outputs.found != 'true'
+        uses: docker/build-push-action@v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          custom_tag: ${{ steps.tag_version.outputs.new_version }}
-          tag_prefix: ""
+          context: .
+          push: true
+          outputs: type=registry,oci-mediatypes=true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          annotations: |
+            index:org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=bot-release
+            type=gha,scope=bot-amd64
+          cache-to: type=gha,scope=bot-release,mode=max
+          provenance: false
+
+      - name: Verify image before promoting the release
+        id: image
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE:$RELEASE_VERSION" --raw > "$RUNNER_TEMP/image.json"
+          python3 scripts/release.py verify-image --path "$RUNNER_TEMP/image.json" --version "$RELEASE_VERSION" --sha "$GITHUB_SHA"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_VERSION" --format '{{.Manifest.Digest}}')"
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Verify both runtime binaries without HA or Telegram
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            test "$(docker run --rm --network none --platform "$platform" "$IMAGE:$RELEASE_VERSION" --version)" = "telegram_ha_bot $RELEASE_VERSION"
+          done
+
+      # Save the version before the cross-repo update. A failed store push can
+      # then be retried on this same SHA without another bump or image overwrite.
+      - name: Record source tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          else
+            git tag "$RELEASE_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Update Addons Store without downgrading
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git -C store_repo config user.name 'github-actions[bot]'
+          git -C store_repo config user.email 'github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            # This is an ephemeral checkout owned by this job; retry concurrent
+            # store updates from the fresh branch, without force-pushing.
+            git -C store_repo fetch origin main
+            git -C store_repo reset --hard origin/main
+            python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE"
+            git -C store_repo add "$CONFIG_PATH"
+            if git -C store_repo diff --cached --quiet; then
+              exit 0
+            fi
+            git -C store_repo commit -m "Update Telegram Bot to $RELEASE_VERSION"
+            if git -C store_repo push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Store push attempt $attempt failed; refreshing its branch." >&2
+          done
+          exit 1
+
+      - name: Promote latest after the store update
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$IMAGE_DIGEST"

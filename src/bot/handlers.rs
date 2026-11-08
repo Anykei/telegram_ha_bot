@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Utc};
 use teloxide::dispatching::dialogue::InMemStorage;
@@ -13,6 +14,9 @@ use teloxide::types::{
 };
 use teloxide::{Bot, RequestError};
 
+use super::html_ui::media_pending::{
+    Outcome as VideoOutcome, Target as VideoTarget, UploadUncertain,
+};
 use super::models::View;
 use crate::bot::router::{
     router, AdminPayload, CameraPayload, CommandPayload, Payload, RecordingRuleEditField,
@@ -27,15 +31,14 @@ pub type MyDialogue = Dialogue<State, InMemStorage<State>>;
 
 const TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES: u64 = 50_000_000;
 const TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES: u64 = 500_000;
-const RECORDING_VIDEO_MESSAGE_TTL_SECONDS: u64 = 60;
 const TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS: usize = 1024;
-const TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditViewResult {
     Updated(UiMessageMode),
     NotModified,
     MessageMissing,
+    ModeChanged,
 }
 
 #[derive(BotCommands, Clone, Debug)]
@@ -43,6 +46,16 @@ enum EditViewResult {
 pub enum Command {
     #[command(description = "Показать главное меню")]
     Start,
+    #[command(description = "Помощь / Help")]
+    Help,
+    #[command(description = "Отменить ввод / Cancel input")]
+    Cancel,
+    #[command(description = "Выбрать вид интерфейса / Interface")]
+    Ui,
+    #[command(description = "Кнопки Telegram / Classic interface")]
+    Classic,
+    #[command(description = "HTML-интерфейс / HTML interface")]
+    Html,
 }
 
 /// Точка входа для команд. Соответствует Google Standard по очистке ресурсов.
@@ -55,11 +68,95 @@ pub async fn handle_command(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().context("User missing")?.id.0;
     let chat_id = msg.chat.id;
+    config.cancel_view_update(user_id);
 
     log::info!("Processing command {:?} for user {}", cmd, user_id);
 
     match cmd {
+        Command::Ui | Command::Classic | Command::Html => {
+            let mut payload = Payload::Personal(super::personal::PersonalPayload::Interface);
+            let unavailable = matches!(cmd, Command::Html) && !config.html_ui.enabled;
+            if !matches!(cmd, Command::Ui) && !unavailable {
+                let mode = if matches!(cmd, Command::Html) {
+                    db::interface::InterfaceMode::Html
+                } else {
+                    db::interface::InterfaceMode::Classic
+                };
+                db::interface::set(user_id, mode, &config.db).await?;
+                payload = config
+                    .sessions
+                    .get(&user_id)
+                    .and_then(|s| Payload::from_string(&s.current_context).ok())
+                    .unwrap_or(Payload::Home)
+                    .for_refresh();
+                // Calendar drafts belong to the HTML message. A mode change
+                // returns to the last applied graph rather than applying a draft.
+                if let Payload::Control(crate::bot::router::ControlPayload::QuickAction {
+                    room,
+                    device,
+                    cmd: crate::bot::router::DeviceCmd::EditChartRange { .. },
+                }) = payload
+                {
+                    payload = Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                        room,
+                        device,
+                    });
+                }
+            } else {
+                dialogue.exit().await?;
+            }
+            let mut view = router(payload, user_id, config.clone()).await?;
+            if unavailable {
+                view.alert = Some(
+                    super::personal::words(
+                        view.lang,
+                        "HTML-интерфейс ещё не включён владельцем бота.",
+                        "HTML interface has not been enabled by the bot owner.",
+                    )
+                    .into(),
+                );
+            }
+            let message = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message) = message {
+                update_view(&bot, chat_id, message, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
+        Command::Help => {
+            let view = router(Payload::Help, user_id, config.clone()).await?;
+            let message_id = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message_id) = message_id {
+                update_view(&bot, chat_id, message_id, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
+        Command::Cancel => {
+            let state = dialogue.get().await?.unwrap_or_default();
+            let payload = cancel_input_payload(&state, user_id, &config).await?;
+            db::command_choices::cancel_all(user_id, &config.db).await?;
+            dialogue.exit().await?;
+            let mut view = router(payload, user_id, config.clone()).await?;
+            view.next_state = None;
+            let message_id = config
+                .sessions
+                .get(&user_id)
+                .map(|s| MessageId(s.last_menu_id));
+            if let Some(message_id) = message_id {
+                update_view(&bot, chat_id, message_id, user_id, view, config.clone()).await?;
+            } else {
+                send_new_view(&bot, chat_id, user_id, view, config.clone()).await?;
+            }
+        }
         Command::Start => {
+            db::command_choices::cancel_all(user_id, &config.db).await?;
             // Сбрасываем диалог и удаляем старое меню
             dialogue.exit().await?;
             if let Some(session) = config.sessions.get(&user_id) {
@@ -78,54 +175,7 @@ pub async fn handle_command(
 }
 
 pub async fn handle_idle_text(bot: Bot, msg: Message, config: Arc<AppConfig>) -> Result<()> {
-    let Some(user) = msg.from.as_ref() else {
-        return Ok(());
-    };
-    let user_id = user.id.0;
-    let chat_id = msg.chat.id;
-    let text = msg.text().unwrap_or("").trim();
-
-    if text.is_empty() {
-        let _ = bot.delete_message(chat_id, msg.id).await;
-        return Ok(());
-    }
-
-    match handle_text_command(&bot, chat_id, user_id, text, config.clone()).await {
-        Ok(true) => {
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-        Ok(false) => {
-            log::info!(
-                "Ignored junk message from user {}: {:?}",
-                msg.chat.id,
-                msg.text()
-            );
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-        Err(error) => {
-            let error = error.to_string();
-            let _ = db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "text_command",
-                    entity_type: "command",
-                    entity_id: None,
-                    action: "parse",
-                    status: "error",
-                    message: Some(&error),
-                },
-                &config.db,
-            )
-            .await;
-            let sent = bot
-                .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
-    }
-
-    Ok(())
+    handle_text_command_message(bot, msg, config).await
 }
 
 pub async fn handle_text_command_message(
@@ -136,52 +186,72 @@ pub async fn handle_text_command_message(
     let Some(user) = msg.from.as_ref() else {
         return Ok(());
     };
-    let user_id = user.id.0;
-    let chat_id = msg.chat.id;
     let text = msg.text().unwrap_or("").trim();
-
     if text.is_empty() {
-        let _ = bot.delete_message(chat_id, msg.id).await;
         return Ok(());
     }
-
-    match handle_text_command(&bot, chat_id, user_id, text, config.clone()).await {
+    config.cancel_view_update(user.id.0);
+    match handle_text_command(&bot, msg.chat.id, user.id.0, text, config.clone()).await {
         Ok(true) => {
-            let _ = bot.delete_message(chat_id, msg.id).await;
+            let _ = bot.delete_message(msg.chat.id, msg.id).await;
         }
-        Ok(false) => {
-            let sent = bot
-                .send_message(
-                    chat_id,
-                    "Команда не распознана. Примеры: свет коридор вкл, включи свет в коридоре, снимок вход.",
-                )
-                .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
-            let _ = bot.delete_message(chat_id, msg.id).await;
-        }
+        Ok(false) => send_command_help(&bot, msg.chat.id, user.id.0, &config, None).await?,
         Err(error) => {
-            let error = error.to_string();
-            let _ = db::activity_log::log(
-                db::activity_log::NewActivity {
-                    user_id: Some(user_id),
-                    kind: "text_command",
-                    entity_type: "command",
-                    entity_id: None,
-                    action: "parse",
-                    status: "error",
-                    message: Some(&error),
-                },
-                &config.db,
-            )
-            .await;
-            let sent = bot
-                .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                .await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
-            let _ = bot.delete_message(chat_id, msg.id).await;
+            // User input and transport details can contain credentials; do not persist them.
+            let message = if error.to_string().contains("not found")
+                || error.to_string().contains("не найден")
+            {
+                Some("Target not found. Choose a device / Цель не найдена. Выберите устройство.")
+            } else {
+                Some("Command could not be completed. Check states / Не удалось выполнить команду. Проверьте состояния.")
+            };
+            send_command_help(&bot, msg.chat.id, user.id.0, &config, message).await?;
         }
     }
+    Ok(())
+}
 
+async fn send_command_help(
+    bot: &Bot,
+    chat: ChatId,
+    user: u64,
+    config: &Arc<AppConfig>,
+    notice: Option<&str>,
+) -> Result<()> {
+    let lang = db::get_user_language(user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let en = lang == crate::i18n::Language::En;
+    let text = notice.unwrap_or(if en {
+        "I did not understand the command. For example: turn on kitchen light or snapshot entrance."
+    } else {
+        "Не понял команду. Например: включи свет в кухне или снимок вход"
+    });
+    let text = text
+        .split_once(" / ")
+        .map(|(english, russian)| if en { english } else { russian })
+        .unwrap_or(text);
+    let kb = InlineKeyboardMarkup::new(vec![
+        vec![InlineKeyboardButton::callback(
+            if en {
+                "Choose a device"
+            } else {
+                "Выбрать устройство"
+            },
+            Payload::Control(crate::bot::router::ControlPayload::ListRooms).to_string(),
+        )],
+        vec![
+            InlineKeyboardButton::callback(
+                if en { "Help" } else { "Помощь" },
+                Payload::Help.to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                if en { "Main menu" } else { "В меню" },
+                Payload::Home.to_string(),
+            ),
+        ],
+    ]);
+    bot.send_message(chat, text).reply_markup(kb).await?;
     Ok(())
 }
 
@@ -190,6 +260,9 @@ pub(crate) fn looks_like_text_command(text: &str) -> bool {
     normalized.starts_with("снимок ")
         || normalized.starts_with("видео ")
         || normalized.starts_with("архив ")
+        || normalized.starts_with("snapshot ")
+        || normalized.starts_with("video ")
+        || normalized.starts_with("archive ")
         || crate::bot::text_commands::parse_device_text_command(&normalized).is_some()
 }
 
@@ -212,11 +285,16 @@ fn spawn_voice_command(
     chat_id: ChatId,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
-        let result = handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone()).await;
+    let token = config.begin_view_update(user_id);
+    crate::db::user::spawn_with_admission(async move {
+        let result =
+            handle_voice_message_inner(&bot, &msg, user_id, chat_id, config.clone(), &token).await;
         if let Err(error) = result {
-            handle_voice_command_error(&bot, chat_id, user_id, error, &config).await;
+            if !token.is_cancelled() {
+                handle_voice_command_error(&bot, chat_id, user_id, error, &config).await;
+            }
         }
+        config.finish_view_update(user_id, &token);
     });
 }
 
@@ -227,7 +305,8 @@ async fn handle_voice_command_error(
     error: anyhow::Error,
     config: &Arc<AppConfig>,
 ) {
-    let error = error.to_string();
+    let _ = error;
+    let error = "Voice command failed / Не удалось обработать голосовую команду".to_string();
     let _ = db::activity_log::log(
         db::activity_log::NewActivity {
             user_id: Some(user_id),
@@ -241,15 +320,21 @@ async fn handle_voice_command_error(
         &config.db,
     )
     .await;
-    let sent = bot
+    let lang = db::get_user_language(user_id, &config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(config.default_language);
+    let _ = bot
         .send_message(
             chat_id,
-            format!("Не удалось выполнить голосовую команду: {}", error),
+            if lang == crate::i18n::Language::En {
+                "Could not process the voice command. Please try again."
+            } else {
+                "Не удалось обработать голосовую команду. Повторите ввод."
+            },
         )
         .await;
-    if let Ok(sent) = sent {
-        crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
-    }
 }
 
 async fn handle_voice_message_inner(
@@ -258,6 +343,7 @@ async fn handle_voice_message_inner(
     user_id: u64,
     chat_id: ChatId,
     config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     if !config.voice_enabled {
         anyhow::bail!("голосовые команды выключены");
@@ -296,20 +382,28 @@ async fn handle_voice_message_inner(
         );
     }
 
-    let path = temp_voice_path(user_id);
-    let mut dst = tokio::fs::File::create(&path)
-        .await
-        .context("Не удалось создать временный voice-файл")?;
+    let (voice_file, mut dst) = crate::core::voice::TemporaryVoice::create(user_id).await?;
     bot.download_file(&file.path, &mut dst).await?;
+    tokio::io::AsyncWriteExt::flush(&mut dst).await?;
     drop(dst);
 
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
     let progress = bot
         .send_message(
             chat_id,
-            format!(
-                "⏳ Распознаю голосовую команду... таймаут {}с",
-                config.voice_stt_timeout_s
-            ),
+            if lang == crate::i18n::Language::En {
+                format!(
+                    "⏳ Recognizing voice command… timeout {}s",
+                    config.voice_stt_timeout_s
+                )
+            } else {
+                format!(
+                    "⏳ Распознаю голосовую команду… таймаут {}с",
+                    config.voice_stt_timeout_s
+                )
+            },
         )
         .await?;
     crate::bot::utils::spawn_delayed_delete(
@@ -320,7 +414,7 @@ async fn handle_voice_message_inner(
     );
 
     let result = async {
-        let metadata = tokio::fs::metadata(&path)
+        let metadata = tokio::fs::metadata(voice_file.path())
             .await
             .context("Не удалось проверить скачанный voice-файл")?;
         if metadata.len() > max_bytes {
@@ -331,7 +425,7 @@ async fn handle_voice_message_inner(
         }
 
         let pcm = crate::core::voice::decode_audio_file_to_pcm_mono(
-            path.clone(),
+            voice_file.clone(),
             config.voice_stt_sample_rate,
         )
         .await?;
@@ -354,6 +448,23 @@ async fn handle_voice_message_inner(
         )
         .await?;
 
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        let lang = db::get_user_language(user_id, &config.db)
+            .await?
+            .unwrap_or(config.default_language);
+        let _ = bot
+            .edit_message_text(
+                chat_id,
+                progress.id,
+                if lang == crate::i18n::Language::En {
+                    "Processing…"
+                } else {
+                    "Обрабатываю…"
+                },
+            )
+            .await;
         if matches!(
             response_format,
             crate::options::VoiceResponseFormat::Voice | crate::options::VoiceResponseFormat::Both
@@ -363,7 +474,18 @@ async fn handle_voice_message_inner(
 
         if config.voice_show_recognized_text {
             let sent = bot
-                .send_message(chat_id, format!("Распознано: {}", recognized))
+                .send_message(
+                    chat_id,
+                    format!(
+                        "{}: {}",
+                        if lang == crate::i18n::Language::En {
+                            "Recognized"
+                        } else {
+                            "Распознано"
+                        },
+                        recognized
+                    ),
+                )
                 .await?;
             crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 12);
         }
@@ -377,24 +499,50 @@ async fn handle_voice_message_inner(
         .await?;
 
         if matches!(execution, CommandExecution::NotACommand) {
-            anyhow::bail!("команда не распознана: {}", recognized);
+            send_command_help(bot, chat_id, user_id, &config, None).await?;
+            return Ok(());
         }
 
-        apply_command_execution(bot, chat_id, user_id, execution, config.clone()).await?;
+        if !token.is_cancelled() {
+            finish_voice_execution(
+                bot,
+                chat_id,
+                user_id,
+                progress.id,
+                execution,
+                config.clone(),
+                token,
+            )
+            .await?;
+        }
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
-    let _ = tokio::fs::remove_file(&path).await;
+    let _ = bot.delete_message(chat_id, progress.id).await;
     result
 }
 
-fn temp_voice_path(user_id: u64) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "telegram_ha_bot_voice_{}_{}.oga",
-        user_id,
-        Utc::now().timestamp_millis()
-    ))
+async fn finish_voice_execution(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    progress_id: MessageId,
+    execution: CommandExecution,
+    config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let _ = bot.delete_message(chat_id, progress_id).await;
+    let allowed = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Ok(()),
+        result = db::access::can_use_voice(user_id, user_id == config.root_user, &config.db) => result?,
+    };
+    if allowed {
+        apply_command_execution_cancellable(bot, chat_id, user_id, execution, config, Some(token))
+            .await?;
+    }
+    Ok(())
 }
 
 async fn handle_text_command(
@@ -428,26 +576,46 @@ async fn apply_command_execution(
     execution: CommandExecution,
     config: Arc<AppConfig>,
 ) -> Result<()> {
+    apply_command_execution_cancellable(bot, chat_id, user_id, execution, config, None).await
+}
+
+/// The action has already completed. Cancellation here only suppresses its
+/// obsolete presentation; never cancel or replay the accepted HA operation.
+async fn apply_command_execution_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    execution: CommandExecution,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        return Ok(());
+    }
     match execution {
-        CommandExecution::Done { message } => {
-            let sent = bot.send_message(chat_id, message).await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 8);
-        }
-        CommandExecution::NeedsConfirmation {
-            pending_id,
+        CommandExecution::Done {
             message,
+            displayed_resources,
+            admission_generation,
         } => {
-            let kb = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback(
-                    "✅ Подтвердить",
-                    Payload::Command(CommandPayload::Confirm { id: pending_id }).to_string(),
-                ),
-                InlineKeyboardButton::callback(
-                    "✖️ Отмена",
-                    Payload::Command(CommandPayload::Cancel { id: pending_id }).to_string(),
-                ),
-            ]]);
-            bot.send_message(chat_id, message).reply_markup(kb).await?;
+            if chat_id.0 == user_id as i64
+                && super::view_access::sources_allowed(&displayed_resources, user_id, &config)
+                    .await?
+                && db::user::admission_is_current(user_id, &admission_generation, &config.db)
+                    .await?
+                && !cancellation.is_some_and(|token| token.is_cancelled())
+            {
+                bot.send_message(chat_id, message).await?;
+            }
+        }
+        CommandExecution::NeedsConfirmation { pending_id, .. } => {
+            let view = router(
+                Payload::Command(CommandPayload::Result { id: pending_id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
         }
         CommandExecution::OpenCameraArchive { camera_id } => {
             let view = router(
@@ -461,16 +629,64 @@ async fn apply_command_execution(
                 .get(&user_id)
                 .map(|session| MessageId(session.last_menu_id));
             if let Some(message_id) = message_id {
-                update_view(bot, chat_id, message_id, user_id, view, config.clone()).await?;
+                update_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    cancellation,
+                )
+                .await?;
             } else {
-                send_new_view(bot, chat_id, user_id, view, config.clone()).await?;
+                send_new_view_cancellable(
+                    bot,
+                    chat_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    cancellation,
+                )
+                .await?;
             }
         }
         CommandExecution::SendCameraSnapshot { camera_id } => {
             spawn_camera_snapshot(bot.clone(), chat_id, user_id, camera_id, config);
         }
         CommandExecution::SendCameraClip { camera_id, seconds } => {
-            spawn_camera_clip(bot.clone(), chat_id, user_id, camera_id, seconds, config);
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::Clip {
+                    camera: camera_id,
+                    seconds,
+                },
+                config,
+            )
+            .await?;
+        }
+        CommandExecution::NeedsChoice { choice_id } => {
+            let view = router(
+                Payload::Command(CommandPayload::Choice {
+                    id: choice_id,
+                    page: 0,
+                }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
+        }
+        CommandExecution::SavedResult { pending_id } => {
+            let view = router(
+                Payload::Command(CommandPayload::Result { id: pending_id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            send_new_view_cancellable(bot, chat_id, user_id, view, config, cancellation).await?;
         }
         CommandExecution::NotACommand => {}
     }
@@ -481,49 +697,309 @@ async fn apply_command_execution(
 /// Основной диспетчер нажатий на кнопки.
 pub async fn handle_callback(
     bot: Bot,
-    q: CallbackQuery,
+    mut q: CallbackQuery,
     config: Arc<AppConfig>,
     dialogue: MyDialogue,
 ) -> Result<()> {
-    // 1. Мгновенно гасим spinner в Telegram (UX Standard)
-    let _ = bot.answer_callback_query(q.id).await;
-
+    if super::html_ui::is_widget(&q) {
+        let Some(data) = super::html_ui::resolve(&bot, &q, &config).await? else {
+            return Ok(());
+        };
+        q.data = Some(data);
+    }
     let data = q.data.as_ref().context("No callback data")?;
     let user_id = q.from.id.0;
     let msg = q.message.as_ref().context("Message missing")?;
 
     // 2. Декодирование (Infallible logic)
-    let payload = Payload::from_string(data).context("Critical: Binary payload decoding failed")?;
+    let payload = match Payload::from_string(data) {
+        Ok(payload) => payload,
+        Err(_) => {
+            if !super::html_ui::is_widget(&q) {
+                let _ = super::html_ui::answer(
+                    &bot,
+                    &q,
+                    "Кнопка устарела. Откройте меню командой /start.",
+                )
+                .await;
+            }
+            return Ok(());
+        }
+    };
+    if matches!(
+        &payload,
+        Payload::Control(crate::bot::router::ControlPayload::QuickAction {
+            cmd: crate::bot::router::DeviceCmd::ExportChart,
+            ..
+        })
+    ) {
+        return super::html_ui::chart_export::send(&bot, &q, &config, &payload).await;
+    }
+    let is_chart = payload.is_chart_navigation();
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let temperature = payload.temperature_command();
+    // Critical targets go through the router's persisted confirmation screen.
+    // Fail closed on a DB error; the router will render a recoverable error.
+    let temperature = if let Some((_, device, _)) = temperature {
+        if super::confirmations::is_critical_device(device, &config)
+            .await
+            .unwrap_or(true)
+        {
+            None
+        } else {
+            temperature
+        }
+    } else {
+        None
+    };
+    let temperature_request = if let Some((room, device, command)) = temperature {
+        match config
+            .climate_controls
+            .enqueue(config.clone(), user_id, device, command)
+            .await
+        {
+            Ok(reply) => Some((room, device, reply)),
+            Err(_) => {
+                if !super::html_ui::is_widget(&q) {
+                    let _ = super::html_ui::answer(&bot, &q, crate::i18n::t(lang, "climate.busy"))
+                        .await;
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    config.cancel_view_update(user_id);
+    let is_background_view = is_chart
+        || payload.is_device_view()
+        || payload.is_navigation_view()
+        || temperature_request.is_some();
+    let answer_text = if temperature_request.is_some() {
+        crate::i18n::t(lang, "climate.queued")
+    } else if is_chart {
+        crate::i18n::t(lang, "sensor.loading")
+    } else if is_background_view {
+        crate::i18n::t(lang, "control.loading")
+    } else if matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd))
+    {
+        crate::i18n::t(lang, "control.accepted")
+    } else {
+        ""
+    };
+    if !super::html_ui::is_widget(&q) {
+        let _ = super::html_ui::answer(&bot, &q, answer_text).await;
+    }
 
-    if let Payload::Command(command_payload) = payload {
-        handle_command_callback(
-            &bot,
-            msg.chat().id,
-            msg.id(),
-            user_id,
-            command_payload,
-            config,
-        )
-        .await?;
+    if is_background_view {
+        dialogue.exit().await?;
+        let token = config.begin_view_update(user_id);
+        let chat_id = msg.chat().id;
+        let message_id = msg.id();
+        crate::db::user::spawn_with_admission(async move {
+            let result = async {
+                // Accepted temperature commands execute once in device order.
+                // Cancellation only prevents their old screen from replacing
+                // newer navigation; it never interrupts an in-flight HA call.
+                let (payload, temperature_result) =
+                    if let Some((room, device, reply)) = temperature_request {
+                        let outcome = reply.await.context("Climate command worker stopped")?;
+                        (
+                            Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                                room,
+                                device,
+                            }),
+                            Some(outcome),
+                        )
+                    } else {
+                        (payload, None)
+                    };
+                if let Some(Err(error)) = &temperature_result {
+                    log::warn!("Temperature command failed for user {}: {}", user_id, error);
+                }
+                let mut view = tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    result = router(payload, user_id, config.clone()) => result?,
+                };
+                if let Some(outcome) = temperature_result {
+                    match outcome {
+                        Ok(result) => {
+                            view.notice =
+                                Some(crate::bot::screens::control::temperature_command_notice(
+                                    lang, &result,
+                                ))
+                        }
+                        Err(_) => {
+                            view.alert = Some(crate::i18n::t(lang, "control.action_failed").into());
+                        }
+                    }
+                }
+                update_view_cancellable(
+                    &bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config.clone(),
+                    Some(&token),
+                )
+                .await
+            }
+            .await;
+            config.finish_view_update(user_id, &token);
+            if let Err(error) = result {
+                log::warn!("Device view update failed for user {}: {}", user_id, error);
+                if !token.is_cancelled() {
+                    let _ = bot
+                        .send_message(
+                            chat_id,
+                            crate::i18n::t(
+                                lang,
+                                if is_chart {
+                                    "sensor.load_failed"
+                                } else {
+                                    "control.load_failed"
+                                },
+                            ),
+                        )
+                        .await;
+                }
+            }
+        });
         return Ok(());
     }
 
-    let payload = handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config)?;
+    if let Payload::Command(command_payload) = payload {
+        let token = config.begin_view_update(user_id);
+        let chat_id = msg.chat().id;
+        let message_id = msg.id();
+        crate::db::user::spawn_with_admission(async move {
+            let result = handle_command_callback(
+                &bot,
+                chat_id,
+                message_id,
+                user_id,
+                command_payload,
+                config.clone(),
+                &token,
+            )
+            .await;
+            if result.is_err() && !token.is_cancelled() {
+                let _ = send_command_help(&bot, chat_id, user_id, &config, Some("Command unavailable. Check states / Команда недоступна. Проверьте состояния.")).await;
+            }
+            config.finish_view_update(user_id, &token);
+        });
+        return Ok(());
+    }
 
-    // 3. Роутинг
-    let view = router(payload, user_id, config.clone()).await?;
-
-    // 4. Оркестрация UI и State
-    apply_view(
-        &bot,
-        &config,
-        &dialogue,
-        msg.chat().id,
-        msg.id(),
-        user_id,
-        view,
-    )
-    .await
+    // Once accepted, a write finishes independently of navigation. Only its
+    // obsolete screen is cancelled; cancelling the HA future could lose a receipt.
+    let accepted_write = matches!(
+        &payload,
+        Payload::Control(
+            crate::bot::router::ControlPayload::ConfirmAction { .. }
+                | crate::bot::router::ControlPayload::ExecuteActionGroup { .. }
+                | crate::bot::router::ControlPayload::ExecuteHaNativeAction { .. }
+        ) | Payload::Admin(
+            AdminPayload::ExecuteActionGroup { .. } | AdminPayload::ExecuteHaNativeAction { .. }
+        )
+    ) || matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd));
+    if accepted_write {
+        let write_origin = super::html_ui::device_write_origin(&config, user_id, &payload);
+        dialogue.exit().await?;
+        let token = config.begin_view_update(user_id);
+        let chat = msg.chat().id;
+        let message = msg.id();
+        crate::db::user::spawn_with_admission(async move {
+            let result = async {
+                let payload = super::confirmations::prepare_legacy_callback(
+                    payload,
+                    user_id,
+                    chat.0,
+                    message.0,
+                    config.clone(),
+                )
+                .await?;
+                let mut view = router(payload, user_id, config.clone()).await?;
+                if let Some(
+                    origin @ Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                        room,
+                        ..
+                    }),
+                ) = write_origin
+                {
+                    if view.payload
+                        == Payload::Control(crate::bot::router::ControlPayload::RoomDetail { room })
+                    {
+                        let mut restored = router(origin, user_id, config.clone()).await?;
+                        restored.notice = view.notice.take().or(restored.notice);
+                        restored.alert = view.alert.take().or(restored.alert);
+                        view = restored;
+                    }
+                }
+                Ok::<_, anyhow::Error>(view)
+            }
+            .await;
+            match result {
+                Ok(view) => {
+                    if let Err(error) = update_view_cancellable(
+                        &bot,
+                        chat,
+                        message,
+                        user_id,
+                        view,
+                        config.clone(),
+                        Some(&token),
+                    )
+                    .await
+                    {
+                        log::warn!("Accepted action result delivery failed for {user_id}: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Accepted action failed for {user_id}: {error}");
+                    if !token.is_cancelled() {
+                        let _ = bot
+                            .send_message(chat, crate::i18n::t(lang, "control.load_failed"))
+                            .await;
+                    }
+                }
+            }
+            config.finish_view_update(user_id, &token);
+        });
+        return Ok(());
+    }
+    let payload =
+        handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config).await?;
+    let token = config.begin_view_update(user_id);
+    let chat_id = msg.chat().id;
+    let message_id = msg.id();
+    crate::db::user::spawn_with_admission(async move {
+        let result = async {
+            let view = router(payload, user_id, config.clone()).await?;
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            apply_view(
+                &bot, &config, &dialogue, chat_id, message_id, user_id, view, &token,
+            )
+            .await
+        }
+        .await;
+        config.finish_view_update(user_id, &token);
+        if let Err(error) = result {
+            log::warn!("UI callback failed for {user_id}: {error}");
+            if !token.is_cancelled() {
+                let _ = bot
+                    .send_message(chat_id, crate::i18n::t(lang, "control.load_failed"))
+                    .await;
+            }
+        }
+    });
+    Ok(())
 }
 
 async fn handle_command_callback(
@@ -533,43 +1009,98 @@ async fn handle_command_callback(
     user_id: u64,
     payload: CommandPayload,
     config: Arc<AppConfig>,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     match payload {
         CommandPayload::Confirm { id } => {
             let execution = crate::core::commands::confirm_pending(
                 user_id,
-                config.root_user == user_id,
+                user_id == config.root_user,
                 id,
                 &config,
             )
-            .await;
-
-            let _ = bot.delete_message(chat_id, message_id).await;
-
-            match execution {
-                Ok(execution) => {
-                    apply_command_execution(bot, chat_id, user_id, execution, config).await?;
+            .await?;
+            {
+                // Keep a delayed DELETE from removing a newer screen edited
+                // into the same anchor while this result was being delivered.
+                let ui_lock = config.ui_lock_for(user_id);
+                let _guard = tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    guard = ui_lock.lock() => guard,
+                };
+                if token.is_cancelled() {
+                    return Ok(());
                 }
-                Err(error) => {
-                    let sent = bot
-                        .send_message(chat_id, format!("Не удалось выполнить команду: {}", error))
-                        .await?;
-                    crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 10);
-                }
+                let _ = bot.delete_message(chat_id, message_id).await;
             }
+            apply_command_execution_cancellable(
+                bot,
+                chat_id,
+                user_id,
+                execution,
+                config,
+                Some(token),
+            )
+            .await?;
         }
         CommandPayload::Cancel { id } => {
-            let _ = crate::core::commands::cancel_pending(user_id, id, &config).await;
-            let _ = bot.delete_message(chat_id, message_id).await;
-            let sent = bot.send_message(chat_id, "Команда отменена").await?;
-            crate::bot::utils::spawn_delayed_delete(bot.clone(), chat_id, sent.id, 5);
+            crate::core::commands::cancel_pending(user_id, id, &config).await?;
+            let view = router(
+                Payload::Command(CommandPayload::Result { id }),
+                user_id,
+                config.clone(),
+            )
+            .await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
+        }
+        CommandPayload::Choose { id, target } => {
+            match crate::core::commands::choose_target(user_id, id, target, &config).await {
+                Ok(execution) => {
+                    if !token.is_cancelled() {
+                        apply_command_execution_cancellable(
+                            bot,
+                            chat_id,
+                            user_id,
+                            execution,
+                            config,
+                            Some(token),
+                        )
+                        .await?;
+                    }
+                }
+                Err(_) if !token.is_cancelled() => {
+                    send_command_help(bot, chat_id, user_id, &config, Some("Choice unavailable or expired. Repeat the command / Выбор недоступен или истёк. Повторите команду.")).await?;
+                }
+                Err(_) => {}
+            }
+        }
+        CommandPayload::CancelChoice { id } => {
+            let back = db::command_choices::get(id, user_id, &config.db)
+                .await?
+                .and_then(|r| {
+                    serde_json::from_str::<crate::core::commands::ChoiceContext>(&r.context_json)
+                        .ok()
+                })
+                .map(|c| c.back)
+                .unwrap_or(Payload::Home);
+            db::command_choices::cancel(id, user_id, &config.db).await?;
+            let view = router(back.for_refresh(), user_id, config.clone()).await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
+        }
+        read @ (CommandPayload::Choice { .. } | CommandPayload::Result { .. }) => {
+            let view = router(Payload::Command(read), user_id, config.clone()).await?;
+            update_view_cancellable(bot, chat_id, message_id, user_id, view, config, Some(token))
+                .await?;
         }
     }
 
     Ok(())
 }
 
-fn handle_camera_media_action(
+async fn handle_camera_media_action(
     bot: &Bot,
     chat_id: ChatId,
     user_id: u64,
@@ -582,7 +1113,17 @@ fn handle_camera_media_action(
             Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
         }
         Payload::Camera(CameraPayload::Clip { id, seconds }) => {
-            spawn_camera_clip(bot.clone(), chat_id, user_id, id, seconds, config.clone());
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::Clip {
+                    camera: id,
+                    seconds,
+                },
+                config.clone(),
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
         }
         Payload::Camera(CameraPayload::SendRecordingSegment {
@@ -590,31 +1131,32 @@ fn handle_camera_media_action(
             session,
             segment,
         }) => {
-            spawn_recording_segment(
+            spawn_video_delivery(
                 bot.clone(),
                 chat_id,
                 user_id,
-                camera,
-                session,
-                segment,
+                VideoTarget::Segment {
+                    camera,
+                    session,
+                    segment,
+                },
                 config.clone(),
-            );
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::RecordingSession {
                 camera,
                 session,
             }))
         }
         Payload::Camera(CameraPayload::SendRecordingAll { camera, session }) => {
-            if config.start_recording_send(user_id, session) {
-                spawn_recording_all(
-                    bot.clone(),
-                    chat_id,
-                    user_id,
-                    camera,
-                    session,
-                    config.clone(),
-                );
-            }
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::All { camera, session },
+                config.clone(),
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::RecordingSession {
                 camera,
                 session,
@@ -635,14 +1177,14 @@ fn handle_camera_media_action(
             seconds,
         }) => {
             if user_id == config.root_user {
-                spawn_camera_clip(
+                spawn_video_delivery(
                     bot.clone(),
                     chat_id,
                     user_id,
-                    camera,
-                    seconds,
+                    VideoTarget::Clip { camera, seconds },
                     config.clone(),
-                );
+                )
+                .await?;
             }
             Ok(Payload::Admin(AdminPayload::RoomCameraDetail {
                 room,
@@ -660,7 +1202,7 @@ fn spawn_camera_snapshot(
     camera_id: i64,
     config: Arc<AppConfig>,
 ) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         if let Err(error) = send_camera_snapshot(&bot, chat_id, user_id, camera_id, &config).await {
             log::warn!(
                 "Failed to send camera snapshot for user {} camera {}: {}",
@@ -672,30 +1214,50 @@ fn spawn_camera_snapshot(
     });
 }
 
-fn spawn_camera_clip(
+async fn spawn_video_delivery(
     bot: Bot,
     chat_id: ChatId,
     user_id: u64,
-    camera_id: i64,
-    seconds: u32,
+    target: VideoTarget,
     config: Arc<AppConfig>,
-) {
-    tokio::spawn(async move {
-        if let Err(error) =
-            send_camera_clip(&bot, chat_id, user_id, camera_id, seconds, &config).await
-        {
-            log::warn!(
-                "Failed to send camera clip for user {} camera {}: {}",
-                user_id,
-                camera_id,
-                error
-            );
-        }
+) -> Result<()> {
+    // Acquire admission and the overlap guard before the callback renders its receipt.
+    let access = CameraDeliveryAccess::new(chat_id, user_id, target.camera(), &config).await?;
+    let Some(operation) =
+        config
+            .html_ui
+            .media
+            .begin(&config, user_id, &access.generation, target.clone())
+    else {
+        return Ok(());
+    };
+    crate::db::user::spawn_with_admission(async move {
+        let result = match target {
+            VideoTarget::Clip { camera, seconds } => {
+                send_camera_clip(&bot, chat_id, user_id, camera, seconds, &config, &access).await
+            }
+            VideoTarget::Segment {
+                session, segment, ..
+            } => send_recording_segment(&bot, chat_id, session, segment, &access).await,
+            VideoTarget::All { camera, session } => {
+                send_recording_all(&bot, chat_id, user_id, camera, session, &config, &access).await
+            }
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // Do not print a transport error: it may contain the bot token.
+                log::warn!("operation=video_delivery user={} result=failed", user_id);
+                VideoOutcome::from_error(&error)
+            }
+        };
+        operation.complete(outcome).await;
     });
+    Ok(())
 }
 
 pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppConfig>) {
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let Some(camera) = (match db::cameras::get_camera(camera_id, &config.db).await {
             Ok(camera) => camera,
             Err(error) => {
@@ -728,8 +1290,11 @@ pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppCo
                 .await;
             }
             Err(error) => {
+                let busy = crate::core::cameras::is_capacity_error(&error);
                 let error = error.to_string();
-                let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+                if !busy {
+                    let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+                }
                 let camera_id = camera.id.to_string();
                 let _ = log_activity(
                     &config,
@@ -747,90 +1312,53 @@ pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppCo
     });
 }
 
-fn spawn_recording_segment(
-    bot: Bot,
-    chat_id: ChatId,
+struct CameraDeliveryAccess {
     user_id: u64,
     camera_id: i64,
-    session_id: i64,
-    segment_id: i64,
+    generation: String,
     config: Arc<AppConfig>,
-) {
-    tokio::spawn(async move {
-        if let Err(error) = send_recording_segment(
-            &bot, chat_id, user_id, camera_id, session_id, segment_id, &config,
-        )
-        .await
-        {
-            log::warn!(
-                "Failed to send recording segment {} for user {}: {}",
-                segment_id,
-                user_id,
-                error
-            );
-        }
-    });
 }
 
-fn spawn_recording_all(
-    bot: Bot,
-    chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
-    session_id: i64,
-    config: Arc<AppConfig>,
-) {
-    tokio::spawn(async move {
-        let result =
-            send_recording_all(&bot, chat_id, user_id, camera_id, session_id, &config).await;
-        config.finish_recording_send(user_id, session_id);
-
-        if let Err(error) = result {
-            log::warn!(
-                "Failed to send recording session {} for user {}: {}",
-                session_id,
-                user_id,
-                error
-            );
-        }
-
-        refresh_recording_session_view(&bot, chat_id, user_id, camera_id, session_id, &config)
-            .await;
-    });
-}
-
-async fn refresh_recording_session_view(
-    bot: &Bot,
-    chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
-    session_id: i64,
-    config: &Arc<AppConfig>,
-) {
-    let context = Payload::Camera(CameraPayload::RecordingSession {
-        camera: camera_id,
-        session: session_id,
-    })
-    .to_string();
-    let message_id = config
-        .sessions
-        .get(&user_id)
-        .filter(|session| session.current_context == context)
-        .map(|session| MessageId(session.last_menu_id));
-
-    let Some(message_id) = message_id else {
-        return;
-    };
-
-    if let Err(error) =
-        refresh_current_view(bot, config, user_id, chat_id, message_id, &context).await
-    {
-        log::warn!(
-            "Failed to refresh recording session {} after send for user {}: {}",
-            session_id,
-            user_id,
-            error
+impl CameraDeliveryAccess {
+    async fn new(
+        chat_id: ChatId,
+        user_id: u64,
+        camera_id: i64,
+        config: &Arc<AppConfig>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            chat_id.0 == user_id as i64,
+            "Camera delivery requires a private chat"
         );
+        let generation = db::admission_generation(user_id, &config.db)
+            .await?
+            .context("User admission revoked")?;
+        let access = Self {
+            user_id,
+            camera_id,
+            generation,
+            config: config.clone(),
+        };
+        access.check().await?;
+        Ok(access)
+    }
+
+    async fn check(&self) -> Result<()> {
+        let allowed = db::cameras::get_accessible_camera(
+            self.user_id,
+            self.user_id == self.config.root_user,
+            self.camera_id,
+            &self.config.db,
+        )
+        .await?
+        .is_some();
+        anyhow::ensure!(
+            allowed
+                && db::admission_is_current(self.user_id, &self.generation, &self.config.db)
+                    .await?,
+            "Camera delivery access revoked"
+        );
+        Ok(())
     }
 }
 
@@ -841,6 +1369,7 @@ async fn send_camera_snapshot(
     camera_id: i64,
     config: &Arc<AppConfig>,
 ) -> Result<()> {
+    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
     let Some(camera) = db::cameras::get_accessible_camera(
         user_id,
         config.root_user == user_id,
@@ -854,6 +1383,7 @@ async fn send_camera_snapshot(
         return Ok(());
     };
 
+    access.check().await?;
     let bytes = match crate::core::cameras::capture_snapshot(&camera).await {
         Ok(bytes) => {
             let _ = db::camera_health::mark_snapshot_ok(camera.id, bytes.len() as i64, &config.db)
@@ -873,8 +1403,17 @@ async fn send_camera_snapshot(
             bytes
         }
         Err(error) => {
+            let busy = crate::core::cameras::is_capacity_error(&error);
             let error = error.to_string();
-            let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+            if !busy {
+                let _ = db::camera_health::mark_error_kind(
+                    camera.id,
+                    db::camera_health::CameraHealthOperation::Snapshot,
+                    &error,
+                    &config.db,
+                )
+                .await;
+            }
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -887,12 +1426,14 @@ async fn send_camera_snapshot(
                 Some(&error),
             )
             .await;
+            access.check().await?;
             bot.send_message(chat_id, format!("Не удалось получить снимок: {}", error))
                 .await?;
             return Ok(());
         }
     };
 
+    access.check().await?;
     match bot
         .send_photo(chat_id, InputFile::memory(bytes))
         .caption(format!("📸 {}", camera.name))
@@ -940,7 +1481,9 @@ async fn send_camera_clip(
     camera_id: i64,
     seconds: u32,
     config: &Arc<AppConfig>,
-) -> Result<()> {
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    access.check().await?;
     let Some(camera) = db::cameras::get_accessible_camera(
         user_id,
         config.root_user == user_id,
@@ -951,7 +1494,7 @@ async fn send_camera_clip(
     else {
         bot.send_message(chat_id, "Недостаточно прав для просмотра камеры.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     let seconds = seconds.clamp(1, 120);
@@ -962,7 +1505,23 @@ async fn send_camera_clip(
         )
         .await?;
 
-    let bytes = match crate::core::cameras::capture_clip(&camera, seconds).await {
+    access.check().await?;
+    let capture_result = match capture_clip_from_pre_roll(config, camera.id, seconds).await {
+        Some(Ok(bytes)) => Ok(bytes),
+        Some(Err(error)) => {
+            log::debug!(
+                "Pre-roll clip fast path failed, falling back to live capture: camera={}, seconds={}, error={:#}",
+                camera.id,
+                seconds,
+                error
+            );
+            access.check().await?;
+            crate::core::cameras::capture_clip(&camera, seconds).await
+        }
+        None => crate::core::cameras::capture_clip(&camera, seconds).await,
+    };
+
+    let bytes = match capture_result {
         Ok(bytes) => {
             let _ =
                 db::camera_health::mark_clip_ok(camera.id, bytes.len() as i64, &config.db).await;
@@ -982,8 +1541,17 @@ async fn send_camera_clip(
             bytes
         }
         Err(error) => {
+            let busy = crate::core::cameras::is_capacity_error(&error);
             let error = error.to_string();
-            let _ = db::camera_health::mark_error(camera.id, &error, &config.db).await;
+            if !busy {
+                let _ = db::camera_health::mark_error_kind(
+                    camera.id,
+                    db::camera_health::CameraHealthOperation::Clip,
+                    &error,
+                    &config.db,
+                )
+                .await;
+            }
             let camera_id = camera.id.to_string();
             let _ = log_activity(
                 config,
@@ -996,24 +1564,31 @@ async fn send_camera_clip(
                 Some(&error),
             )
             .await;
+            access.check().await?;
             bot.edit_message_text(
                 chat_id,
                 status.id,
                 format!("Не удалось записать видео: {}", error),
             )
             .await?;
-            return Ok(());
+            return Ok(VideoOutcome::failed());
         }
     };
 
-    let send_result = bot
-        .send_video(chat_id, InputFile::memory(bytes))
-        .caption(format!("🎞 {} · {}с", camera.name, seconds))
-        .await;
+    access.check().await?;
+    let send_result = send_manual_camera_video(
+        bot,
+        chat_id,
+        bytes,
+        &format!("🎞 {} · {}с", camera.name, seconds),
+        seconds,
+        access,
+    )
+    .await;
     let _ = bot.delete_message(chat_id, status.id).await;
 
-    match send_result {
-        Ok(_) => {
+    let outcome = match send_result {
+        Ok(true) => {
             let camera_id = camera.id.to_string();
             let message = format!("{}с · {}", seconds, camera.name);
             let _ = log_activity(
@@ -1027,6 +1602,22 @@ async fn send_camera_clip(
                 Some(&message),
             )
             .await;
+            VideoOutcome::sent()
+        }
+        Ok(false) => {
+            let camera_id = camera.id.to_string();
+            let _ = log_activity(
+                config,
+                Some(user_id),
+                "camera",
+                "camera",
+                Some(&camera_id),
+                "clip_send",
+                "error",
+                Some("Video could not fit the Telegram upload limit"),
+            )
+            .await;
+            VideoOutcome::failed()
         }
         Err(error) => {
             let camera_id = camera.id.to_string();
@@ -1042,11 +1633,120 @@ async fn send_camera_clip(
                 Some(&error_text),
             )
             .await;
-            return Err(error.into());
+            return Err(error);
         }
+    };
+
+    Ok(outcome)
+}
+
+async fn send_manual_camera_video(
+    bot: &Bot,
+    chat_id: ChatId,
+    bytes: Vec<u8>,
+    caption: &str,
+    seconds: u32,
+    access: &CameraDeliveryAccess,
+) -> Result<bool> {
+    access.check().await?;
+    let owner = crate::core::cameras::TemporaryMedia::new()?;
+    // Cancellation of the awaiting handler must not remove a directory while
+    // the blocking writer is still creating or writing its input file.
+    let writer_owner = owner.clone();
+    tokio::task::spawn_blocking(move || std::fs::write(writer_owner.path(), bytes)).await??;
+    access.check().await?;
+    let archived = crate::core::camera_recording::archive_manual_clip(
+        access.config.clone(),
+        access.camera_id,
+        access.user_id,
+        seconds,
+        owner.clone(),
+    )
+    .await;
+    let lang = db::get_user_language(access.user_id, &access.config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(access.config.default_language);
+    let caption = match archived {
+        Ok(Some(_)) => format!(
+            "{caption}\n📁 {}",
+            if lang == crate::i18n::Language::En {
+                "Saved to archive"
+            } else {
+                "Сохранено в архив"
+            }
+        ),
+        Ok(None) => caption.to_owned(),
+        Err(error) => {
+            log::warn!(
+                "Manual video archive failed: camera={}, error={:#}",
+                access.camera_id,
+                error
+            );
+            format!(
+                "{caption}\n⚠️ {}",
+                if lang == crate::i18n::Language::En {
+                    "Could not save to archive. Check storage."
+                } else {
+                    "Не удалось сохранить в архив. Проверьте хранилище."
+                }
+            )
+        }
+    };
+    send_camera_video_file(
+        bot,
+        chat_id,
+        &owner.path(),
+        &caption,
+        None,
+        access,
+        Some(owner.clone()),
+    )
+    .await
+}
+
+async fn capture_clip_from_pre_roll(
+    config: &Arc<AppConfig>,
+    camera_id: i64,
+    seconds: u32,
+) -> Option<Result<Vec<u8>>> {
+    let window_seconds = config
+        .camera_pre_roll_registry
+        .ready_window_seconds(camera_id)?;
+    if seconds == 0 || seconds > window_seconds {
+        return None;
     }
 
-    Ok(())
+    tokio::time::sleep(StdDuration::from_secs(u64::from(seconds))).await;
+    let end_at = Utc::now();
+    let owner = match crate::core::cameras::TemporaryMedia::new() {
+        Ok(owner) => owner,
+        Err(error) => return Some(Err(error)),
+    };
+    let tmp_path = owner.path();
+    let result = async {
+        config
+            .camera_pre_roll_registry
+            .write_to_file(
+                camera_id,
+                seconds,
+                end_at,
+                end_at,
+                tmp_path.clone(),
+                Some(owner.clone()),
+            )
+            .await?;
+        let bytes = tokio::fs::read(&tmp_path)
+            .await
+            .with_context(|| format!("failed to read pre-roll clip {}", tmp_path.display()))?;
+        anyhow::ensure!(!bytes.is_empty(), "pre-roll clip is empty");
+        Ok(bytes)
+    }
+    .await;
+    drop(owner);
+
+    Some(result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1079,18 +1779,20 @@ async fn log_activity(
 async fn send_recording_segment(
     bot: &Bot,
     chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
     session_id: i64,
     segment_id: i64,
-    config: &Arc<AppConfig>,
-) -> Result<()> {
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    let user_id = access.user_id;
+    let camera_id = access.camera_id;
+    let config = &access.config;
+    access.check().await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(segment) = db::camera_recording_segments::get_segment(segment_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Файл записи не найден.").await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     if segment.session_id != session_id
@@ -1099,13 +1801,13 @@ async fn send_recording_segment(
     {
         bot.send_message(chat_id, "Эта часть записи еще не готова.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let Some(path) = segment.file_path else {
         bot.send_message(chat_id, "Файл записи отсутствует.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     let (full_path, _) = match crate::core::camera_recording::recording_file_info(config, &path)
@@ -1127,18 +1829,26 @@ async fn send_recording_segment(
                 "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
             )
             .await?;
-            return Ok(());
+            return Ok(VideoOutcome::failed());
         }
     };
-    send_recording_video_file(
+    let thumbnail = recording_video_thumbnail(config, &path).await;
+    let sent = send_camera_video_file(
         bot,
         chat_id,
         &full_path,
         &format!("🎞 Часть {}", segment.segment_index),
+        thumbnail,
+        access,
+        None,
     )
     .await?;
 
-    Ok(())
+    Ok(if sent {
+        VideoOutcome::sent()
+    } else {
+        VideoOutcome::failed()
+    })
 }
 
 async fn send_recording_all(
@@ -1148,18 +1858,20 @@ async fn send_recording_all(
     camera_id: i64,
     session_id: i64,
     config: &Arc<AppConfig>,
-) -> Result<()> {
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    access.check().await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(session) = db::camera_recording_sessions::get_session(session_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Запись не найдена.").await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
     if session.camera_id != camera_id {
         bot.send_message(chat_id, "Недостаточно прав для просмотра записи.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let segments =
@@ -1167,7 +1879,7 @@ async fn send_recording_all(
     if segments.is_empty() {
         bot.send_message(chat_id, "Готовых частей записи нет.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let mut files = Vec::new();
@@ -1175,7 +1887,7 @@ async fn send_recording_all(
     for segment in segments {
         if let Some(path) = segment.file_path {
             match crate::core::camera_recording::recording_file_info(config, &path).await {
-                Ok((full_path, _)) => files.push((segment.segment_index, full_path)),
+                Ok((full_path, _)) => files.push((segment.segment_index, full_path, path)),
                 Err(error) => {
                     missing_files += 1;
                     log::warn!(
@@ -1189,6 +1901,8 @@ async fn send_recording_all(
                     );
                 }
             }
+        } else {
+            missing_files += 1;
         }
     }
 
@@ -1198,7 +1912,7 @@ async fn send_recording_all(
             "Файлы записи недоступны на диске. Проверьте папку хранения записей и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     if missing_files > 0 {
@@ -1212,25 +1926,51 @@ async fn send_recording_all(
         .await?;
     }
 
-    for (segment_index, full_path) in files {
-        send_recording_video_file(
+    let mut outcome = VideoOutcome {
+        failed: missing_files,
+        ..Default::default()
+    };
+    let file_count = files.len();
+    for (index, (segment_index, full_path, relative_path)) in files.into_iter().enumerate() {
+        if access.check().await.is_err() {
+            outcome.failed += file_count - index;
+            return Ok(outcome);
+        }
+        let thumbnail = recording_video_thumbnail(config, &relative_path).await;
+        let result = send_camera_video_file(
             bot,
             chat_id,
             &full_path,
             &format!("🎞 Часть {}", segment_index),
+            thumbnail,
+            access,
+            None,
         )
-        .await?;
+        .await;
+        match result {
+            Ok(true) => outcome.sent += 1,
+            Ok(false) => outcome.failed += 1,
+            Err(error) => {
+                outcome.failed += file_count - index;
+                outcome.uncertain = error.is::<UploadUncertain>();
+                return Ok(outcome);
+            }
+        }
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
-async fn send_recording_video_file(
+async fn send_camera_video_file(
     bot: &Bot,
     chat_id: ChatId,
     path: &Path,
     caption: &str,
-) -> Result<()> {
+    thumbnail: Option<Vec<u8>>,
+    access: &CameraDeliveryAccess,
+    input_owner: Option<crate::core::cameras::TemporaryMedia>,
+) -> Result<bool> {
+    access.check().await?;
     let metadata = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -1244,7 +1984,7 @@ async fn send_recording_video_file(
                 "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         }
     };
     if !metadata.is_file() {
@@ -1254,7 +1994,7 @@ async fn send_recording_video_file(
             "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
 
     let size = metadata.len();
@@ -1265,12 +2005,13 @@ async fn send_recording_video_file(
             "Файл записи пустой. Проверьте поток камеры и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
-    let (send_path, send_size, compressed) = if size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
-        match prepare_telegram_compressed_video(path).await {
-            Ok(Some((path, size))) => (path, size, true),
+    let (send_path, send_size, media_owner) = if size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
+        match prepare_telegram_compressed_video(path, input_owner.clone()).await {
+            Ok(Some((owner, size))) => (owner.path(), size, Some(owner)),
             Ok(None) => {
+                access.check().await?;
                 bot.send_message(
                     chat_id,
                     format!(
@@ -1281,9 +2022,10 @@ async fn send_recording_video_file(
                     ),
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
             Err(error) => {
+                access.check().await?;
                 bot.send_message(
                     chat_id,
                     format!(
@@ -1294,14 +2036,15 @@ async fn send_recording_video_file(
                     ),
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
         }
     } else {
-        (path.to_path_buf(), size, false)
+        (path.to_path_buf(), size, None)
     };
 
     if send_size > TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES {
+        access.check().await?;
         bot.send_message(
             chat_id,
             format!(
@@ -1312,10 +2055,10 @@ async fn send_recording_video_file(
             ),
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
 
-    let caption = if compressed {
+    let caption = if media_owner.is_some() {
         format!(
             "{} · сжато до {}",
             caption,
@@ -1324,49 +2067,76 @@ async fn send_recording_video_file(
     } else {
         caption.to_string()
     };
-    let sent_path = send_path.clone();
-    let sent = bot
+    let request = bot
         .send_video(chat_id, InputFile::file(send_path))
         .caption(caption)
-        .await?;
-    if compressed {
-        let _ = tokio::fs::remove_file(sent_path).await;
-    }
-    crate::bot::utils::spawn_delayed_delete(
+        .supports_streaming(true);
+    let request = if let Some(thumbnail) = thumbnail {
+        request.thumbnail(InputFile::memory(thumbnail))
+    } else {
+        request
+    };
+    access.check().await?;
+    let sent = request.await.map_err(|error| match error {
+        RequestError::Network(_) | RequestError::InvalidJson { .. } | RequestError::Io(_) => {
+            anyhow::Error::new(UploadUncertain)
+        }
+        other => anyhow::Error::new(other),
+    })?;
+    super::utils::spawn_delayed_delete(
         bot.clone(),
         chat_id,
         sent.id,
-        RECORDING_VIDEO_MESSAGE_TTL_SECONDS,
+        access.config.delete_notification_messages_timeout_s,
     );
+    drop(media_owner);
 
-    Ok(())
+    Ok(true)
+}
+
+async fn recording_video_thumbnail(config: &Arc<AppConfig>, file_path: &str) -> Option<Vec<u8>> {
+    match crate::core::camera_recording::recording_thumbnail(config, file_path).await {
+        Ok(bytes) if crate::core::camera_recording::is_usable_telegram_thumbnail(&bytes) => {
+            Some(bytes)
+        }
+        Ok(bytes) => {
+            log::debug!(
+                "Recording thumbnail skipped: path={}, size={} bytes",
+                file_path,
+                bytes.len()
+            );
+            None
+        }
+        Err(error) => {
+            log::debug!(
+                "Recording thumbnail unavailable: path={}, error={:#}",
+                file_path,
+                error
+            );
+            None
+        }
+    }
 }
 
 async fn prepare_telegram_compressed_video(
     path: &Path,
-) -> Result<Option<(std::path::PathBuf, u64)>> {
-    let compressed_path = telegram_compressed_path(path);
-    if let Ok(metadata) = tokio::fs::metadata(&compressed_path).await {
-        if is_usable_telegram_compressed_video(metadata.len()) {
-            return Ok(Some((compressed_path, metadata.len())));
-        }
-        let _ = tokio::fs::remove_file(&compressed_path).await;
-    }
-
+    input_owner: Option<crate::core::cameras::TemporaryMedia>,
+) -> Result<Option<(crate::core::cameras::TemporaryMedia, u64)>> {
+    let owner = crate::core::cameras::TemporaryMedia::new()?;
     crate::core::cameras::compress_clip_for_telegram(
         path.to_path_buf(),
-        compressed_path.clone(),
+        input_owner,
+        owner.clone(),
         TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES,
     )
     .await?;
-    let metadata = tokio::fs::metadata(&compressed_path).await?;
-    if is_usable_telegram_compressed_video(metadata.len()) {
-        Ok(Some((compressed_path, metadata.len())))
-    } else if metadata.len() < TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES {
-        let _ = tokio::fs::remove_file(&compressed_path).await;
+    let size = tokio::fs::metadata(owner.path()).await?.len();
+    if is_usable_telegram_compressed_video(size) {
+        Ok(Some((owner, size)))
+    } else if size < TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES {
         anyhow::bail!(
-            "сжатая копия получилась подозрительно маленькой: {}. Попробуйте отправить еще раз после обновления профиля сжатия.",
-            crate::bot::format::decimal_mb(metadata.len())
+            "Сжатая копия получилась слишком маленькой: {}",
+            crate::bot::format::decimal_mb(size)
         );
     } else {
         Ok(None)
@@ -1375,14 +2145,6 @@ async fn prepare_telegram_compressed_video(
 
 fn is_usable_telegram_compressed_video(bytes: u64) -> bool {
     (TELEGRAM_MIN_COMPRESSED_VIDEO_BYTES..=TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES).contains(&bytes)
-}
-
-fn telegram_compressed_path(path: &Path) -> std::path::PathBuf {
-    let stem = path
-        .file_stem()
-        .map(|value| value.to_string_lossy())
-        .unwrap_or_default();
-    path.with_file_name(format!("{}.telegram.v4.mp4", stem))
 }
 
 async fn ensure_recording_access(
@@ -1409,7 +2171,8 @@ async fn ensure_recording_access(
     Ok(())
 }
 
-/// Live-обновление интерфейса без изменения состояния диалога.
+/// Перерисовка после завершения ввода; защита открытой формы относится
+/// к фоновому refresh_current_view, а не к переходу после dialog.exit().
 pub async fn render_current_view(
     bot: &Bot,
     config: &Arc<AppConfig>,
@@ -1418,10 +2181,36 @@ pub async fn render_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
-    let payload = Payload::from_string(context).context("Context decoding failed")?;
-    let view = router(payload, user_id, config.clone()).await?;
-
-    update_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+    let decoded = Payload::from_string(context).context("Context decoding failed")?;
+    if matches!(
+        decoded,
+        Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
+            | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
+    ) {
+        return Ok(());
+    }
+    let payload = decoded.for_refresh();
+    let token = config.begin_view_update(user_id);
+    let result = async {
+        let view = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Ok(()),
+            result = router(payload, user_id, config.clone()) => result?,
+        };
+        update_view_cancellable(
+            bot,
+            chat_id,
+            message_id,
+            user_id,
+            view,
+            config.clone(),
+            Some(&token),
+        )
+        .await
+    }
+    .await;
+    config.finish_view_update(user_id, &token);
+    result
 }
 
 /// Фоновое live-обновление: только редактирует существующее сообщение.
@@ -1434,6 +2223,28 @@ pub async fn refresh_current_view(
     message_id: MessageId,
     context: &str,
 ) -> Result<()> {
+    let Some(token) = config.try_begin_view_update(user_id) else {
+        return Ok(());
+    };
+    let result =
+        refresh_current_view_inner(bot, config, user_id, chat_id, message_id, context, &token)
+            .await;
+    config.finish_view_update(user_id, &token);
+    result
+}
+
+async fn refresh_current_view_inner(
+    bot: &Bot,
+    config: &Arc<AppConfig>,
+    user_id: u64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    context: &str,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if config.html_ui.input_is_open(user_id, message_id.0) {
+        return Ok(());
+    }
     if !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before render for user {} context {}",
@@ -1443,14 +2254,33 @@ pub async fn refresh_current_view(
         return Ok(());
     }
 
-    let payload = Payload::from_string(context).context("Context decoding failed")?;
-    let view = router(payload, user_id, config.clone()).await?;
+    let decoded = Payload::from_string(context).context("Context decoding failed")?;
+    if matches!(
+        decoded,
+        Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
+            | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
+    ) {
+        return Ok(());
+    }
+    let payload = decoded.for_refresh();
+    // Graphs are refreshed by their controls. Re-uploading them on every heartbeat
+    // competes with navigation for Telegram's edit quota.
+    if payload.is_chart_navigation() || matches!(payload, Payload::TextPage { .. }) {
+        return Ok(());
+    }
+    let view = tokio::select! {
+        biased;
+        _ = token.cancelled() => return Ok(()),
+        result = router(payload, user_id, config.clone()) => result?,
+    };
+    let Some(generation) = view_admission(&view, config, user_id, chat_id).await? else {
+        return Ok(());
+    };
     let payload_str = view.payload.to_string();
-    let text = view.get_text();
     let ui_lock = config.ui_lock_for(user_id);
     let _guard = ui_lock.lock().await;
 
-    if !is_current_session(config, user_id, message_id, context) {
+    if token.is_cancelled() || !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before edit for user {} context {}",
             user_id,
@@ -1459,19 +2289,51 @@ pub async fn refresh_current_view(
         return Ok(());
     }
 
-    match edit_existing_view(bot, config, user_id, chat_id, message_id, &view, &text).await {
+    let result = edit_existing_view(
+        bot,
+        config,
+        user_id,
+        chat_id,
+        message_id,
+        &view,
+        Some(token),
+    )
+    .await;
+    if token.is_cancelled() {
+        // Telegram may already have applied the edit; the UI lock keeps a newer
+        // screen from being sent until this response is resolved. Never commit
+        // the old context or recreate a missing message after cancellation.
+        if let Err(RequestError::RetryAfter(retry_after)) = &result {
+            block_user_ui_refresh(config, user_id, retry_after.chrono_duration());
+        }
+        return Ok(());
+    }
+    match result {
         Ok(EditViewResult::Updated(mode)) => {
-            crate::core::update_user_state_with_mode(
+            crate::core::update_user_state_for_admission(
                 config,
                 user_id,
                 message_id.0,
                 &payload_str,
                 mode,
+                &generation,
             )
             .await;
             Ok(())
         }
         Ok(EditViewResult::NotModified) => Ok(()),
+        Ok(EditViewResult::ModeChanged) => {
+            reanchor_view_cancellable(
+                bot,
+                chat_id,
+                message_id,
+                user_id,
+                view,
+                config.clone(),
+                Some(token),
+            )
+            .await
+        }
         Ok(EditViewResult::MessageMissing) => {
             log::warn!(
                 "Live refresh target message is missing for user {}. Clearing session.",
@@ -1493,12 +2355,22 @@ pub async fn refresh_current_view(
         }
         Err(e) => {
             log_telegram_refresh_error("Live refresh", user_id, &e);
-            reanchor_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+            reanchor_view_cancellable(
+                bot,
+                chat_id,
+                message_id,
+                user_id,
+                view,
+                config.clone(),
+                Some(token),
+            )
+            .await
         }
     }
 }
 
 /// Атомарно применяет изменения стейта и обновляет сообщение.
+#[allow(clippy::too_many_arguments)]
 async fn apply_view(
     bot: &Bot,
     config: &Arc<AppConfig>,
@@ -1507,14 +2379,34 @@ async fn apply_view(
     message_id: MessageId,
     user_id: u64,
     view: View,
+    token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
-    if let Some(new_state) = view.next_state.clone() {
-        dialogue.update(new_state).await?;
-    } else {
-        dialogue.exit().await?;
+    {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        if token.is_cancelled()
+            || view_admission(&view, config, user_id, chat_id)
+                .await?
+                .is_none()
+        {
+            return Ok(());
+        }
+        if let Some(new_state) = view.next_state.clone() {
+            dialogue.update(new_state).await?;
+        } else {
+            dialogue.exit().await?;
+        }
     }
 
-    update_view(bot, chat_id, message_id, user_id, view, config.clone()).await
+    update_view_cancellable(
+        bot,
+        chat_id,
+        message_id,
+        user_id,
+        view,
+        config.clone(),
+        Some(token),
+    )
+    .await
 }
 
 pub async fn update_view(
@@ -1525,38 +2417,184 @@ pub async fn update_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> anyhow::Result<()> {
-    let ui_lock = config.ui_lock_for(user_id);
-    let _guard = ui_lock.lock().await;
-    let text = view.get_text();
-    let payload_str = view.payload.to_string();
+    let token = config.begin_view_update(user_id);
+    let result = update_view_cancellable(
+        bot,
+        chat_id,
+        message_id,
+        user_id,
+        view,
+        config.clone(),
+        Some(&token),
+    )
+    .await;
+    config.finish_view_update(user_id, &token);
+    result
+}
 
-    match edit_existing_view(bot, &config, user_id, chat_id, message_id, &view, &text).await {
-        Ok(EditViewResult::Updated(mode)) => {
-            crate::core::update_user_state_with_mode(
-                &config,
-                user_id,
-                message_id.0,
-                &payload_str,
-                mode,
-            )
-            .await;
-            Ok(())
+pub(crate) async fn update_view_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> anyhow::Result<()> {
+    let Some(generation) = view_admission(&view, &config, user_id, chat_id).await? else {
+        return Ok(());
+    };
+    let mut view = view;
+    view.admission_generation = Some(generation.clone());
+    super::text_pages::prepare(&mut view, user_id, &config).await?;
+    let ui_lock = config.ui_lock_for(user_id);
+    let payload_str = view.payload.to_string();
+    let mut retries = 0;
+
+    loop {
+        let guard = ui_lock.lock().await;
+        if cancellation.is_some_and(|token| token.is_cancelled())
+            || !db::user::admission_is_current(user_id, &generation, &config.db).await?
+        {
+            return Ok(());
         }
-        Ok(EditViewResult::NotModified) => Ok(()),
-        Ok(EditViewResult::MessageMissing) => {
-            log::warn!(
-                "Detected ghost message for user {}. Re-anchoring UI.",
-                user_id
-            );
-            reanchor_view(bot, chat_id, message_id, user_id, view, config).await
+        let delay = config.sessions.get(&user_id).and_then(|session| {
+            session.ui_refresh_blocked_until.and_then(|until| {
+                (until - Utc::now())
+                    .to_std()
+                    .ok()
+                    .filter(|delay| !delay.is_zero())
+            })
+        });
+        if let Some(delay) = delay {
+            drop(guard);
+            if let Some(token) = cancellation {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            } else {
+                tokio::time::sleep(delay).await;
+            }
+            continue;
         }
-        Err(e @ RequestError::RetryAfter(_)) => {
-            log_telegram_refresh_error("UI update", user_id, &e);
-            Err(e.into())
+        let message_id = config
+            .sessions
+            .get(&user_id)
+            .map(|session| MessageId(session.last_menu_id))
+            .unwrap_or(message_id);
+        let result = edit_existing_view(
+            bot,
+            &config,
+            user_id,
+            chat_id,
+            message_id,
+            &view,
+            cancellation,
+        )
+        .await;
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            if let Err(RequestError::RetryAfter(retry_after)) = &result {
+                block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+            }
+            return Ok(());
         }
-        Err(e) => {
-            log::info!("UI Mode transition for user {}: {}", user_id, e);
-            reanchor_view(bot, chat_id, message_id, user_id, view, config).await
+        match result {
+            Ok(EditViewResult::Updated(mode)) => {
+                crate::core::update_user_state_for_admission(
+                    &config,
+                    user_id,
+                    message_id.0,
+                    &payload_str,
+                    mode,
+                    &generation,
+                )
+                .await;
+                return Ok(());
+            }
+            Ok(EditViewResult::NotModified) => return Ok(()),
+            Ok(EditViewResult::MessageMissing | EditViewResult::ModeChanged) => {
+                match reanchor_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view.clone(),
+                    config.clone(),
+                    cancellation,
+                )
+                .await
+                {
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<RequestError>(),
+                            Some(RequestError::RetryAfter(_))
+                        ) =>
+                    {
+                        let RequestError::RetryAfter(retry_after) =
+                            error.downcast_ref::<RequestError>().unwrap()
+                        else {
+                            unreachable!()
+                        };
+                        let until =
+                            block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+                        log_telegram_retry_after(
+                            "UI mode change",
+                            user_id,
+                            retry_after.seconds(),
+                            until,
+                        );
+                        if retries >= 2 {
+                            return Err(error);
+                        }
+                        retries += 1;
+                        // The next iteration waits without holding the UI lock.
+                        // Retry only the new message; the action has already completed.
+                    }
+                    outcome => return outcome,
+                }
+            }
+            Err(RequestError::RetryAfter(retry_after)) => {
+                let blocked_until =
+                    block_user_ui_refresh(&config, user_id, retry_after.chrono_duration());
+                log_telegram_retry_after(
+                    "UI update",
+                    user_id,
+                    retry_after.seconds(),
+                    blocked_until,
+                );
+                if retries >= 2 {
+                    return Err(RequestError::RetryAfter(retry_after).into());
+                }
+                retries += 1;
+                // Release the UI lock while waiting so a newer graph request or Back
+                // can supersede this update. Only message edits are retried.
+                drop(guard);
+                let delay = (blocked_until - Utc::now()).to_std().unwrap_or_default();
+                if let Some(token) = cancellation {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => return Ok(()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                } else {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            Err(e) => {
+                log::info!("UI Mode transition for user {}: {}", user_id, e);
+                return reanchor_view_cancellable(
+                    bot,
+                    chat_id,
+                    message_id,
+                    user_id,
+                    view,
+                    config,
+                    cancellation,
+                )
+                .await;
+            }
         }
     }
 }
@@ -1579,10 +2617,55 @@ async fn edit_existing_view(
     chat_id: ChatId,
     message_id: MessageId,
     view: &View,
-    text: &str,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> std::result::Result<EditViewResult, RequestError> {
+    if view_admission(view, config, user_id, chat_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(EditViewResult::NotModified);
+    }
+    let text = view.get_text();
     let kb = view.kb.clone();
-    let edit_mode = edit_view_mode(config, user_id, text);
+    let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
+    if super::html_ui::preferred(config, user_id).await && super::html_ui::eligible(view) {
+        if current_mode != Some(UiMessageMode::Html)
+            || !super::html_ui::renderer_matches(config, user_id, view)
+        {
+            return Ok(EditViewResult::ModeChanged);
+        }
+        return match super::html_ui::deliver(
+            bot,
+            config,
+            user_id,
+            chat_id,
+            Some(message_id),
+            view,
+            cancellation,
+        )
+        .await
+        {
+            Ok(Some(_)) => Ok(EditViewResult::Updated(UiMessageMode::Html)),
+            Ok(None) => Ok(EditViewResult::NotModified),
+            Err(error) => Err(error
+                .downcast_ref::<RequestError>()
+                .cloned()
+                .unwrap_or_else(|| {
+                    RequestError::Api(teloxide::ApiError::Unknown(error.to_string()))
+                })),
+        };
+    }
+    let edit_mode = if view.text_page.is_some() && view.image.is_none() {
+        UiMessageMode::Text
+    } else {
+        view_mode(&view.get_plain_text())
+    };
+    if current_mode.is_some_and(|mode| mode != edit_mode) {
+        return Ok(EditViewResult::ModeChanged);
+    }
     if edit_mode == UiMessageMode::Text {
         log::debug!(
             "UI view for user {} payload {} uses text mode: {} chars, caption limit {}, current message mode {:?}",
@@ -1592,7 +2675,7 @@ async fn edit_existing_view(
             TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS,
             config.sessions.get(&user_id).map(|session| session.ui_message_mode)
         );
-        let text = telegram_text_message(&view.get_plain_text());
+        let text = view.get_plain_text();
         let res = bot
             .edit_message_text(chat_id, message_id, text)
             .reply_markup(kb)
@@ -1608,7 +2691,18 @@ async fn edit_existing_view(
         };
     }
 
-    let input_file = InputFile::memory(resolve_view_image(view, user_id, config).await);
+    let mut delivery_view = view.clone();
+    let input_file =
+        InputFile::memory(resolve_view_image(&mut delivery_view, user_id, config).await);
+    if view_admission(&delivery_view, config, user_id, chat_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(EditViewResult::NotModified);
+    }
 
     let media = InputMedia::Photo(
         InputMediaPhoto::new(input_file)
@@ -1631,27 +2725,119 @@ async fn edit_existing_view(
     }
 }
 
-async fn reanchor_view(
+async fn reanchor_view_cancellable(
     bot: &Bot,
     chat_id: ChatId,
     old_message_id: MessageId,
     user_id: u64,
     view: View,
     config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<()> {
-    send_new_view(bot, chat_id, user_id, view, config).await?;
+    if !send_new_view_inner(bot, chat_id, user_id, view, config, cancellation).await? {
+        return Ok(());
+    }
 
     let b = bot.clone();
-    tokio::spawn(async move {
+    crate::db::user::spawn_with_admission(async move {
         let _ = b.delete_message(chat_id, old_message_id).await;
     });
 
     Ok(())
 }
 
+pub(super) async fn view_admission(
+    view: &View,
+    config: &AppConfig,
+    user_id: u64,
+    chat_id: ChatId,
+) -> Result<Option<String>> {
+    if chat_id.0 != user_id as i64 {
+        return Ok(None);
+    }
+    let current = db::user::admission_generation(user_id, &config.db).await?;
+    if view
+        .admission_generation
+        .as_ref()
+        .is_some_and(|expected| current.as_ref() != Some(expected))
+    {
+        return Ok(None);
+    }
+    let Some(generation) = current else {
+        return Ok(None);
+    };
+    // Validate identities captured when values/names were read, not targets
+    // inferred from today's room membership or from action-only callbacks.
+    let sources: Vec<_> = view
+        .displayed_resources
+        .iter()
+        .chain(
+            view.notifications
+                .iter()
+                .flat_map(|item| item.source.iter().chain(item.additional_sources.iter())),
+        )
+        .cloned()
+        .collect();
+    if !super::view_access::sources_allowed(&sources, user_id, config).await? {
+        return Ok(None);
+    }
+    for notification in &view.notifications {
+        if let Some(crate::core::types::DisplaySource::Device { entity_id, .. }) =
+            &notification.source
+        {
+            if !db::access::can_notify_entity(user_id, entity_id, &config.db).await? {
+                return Ok(None);
+            }
+        }
+    }
+    // Rendered data can wait behind the UI lock, media generation, or a retry.
+    // Recheck the source screen, including owner-bound text pages, at delivery.
+    use crate::bot::router::{ControlPayload, SettingsPayload};
+    let source = super::text_pages::source_payload(view, user_id, config).await?;
+    let device = match source {
+        Payload::DeviceDetails { device, .. }
+        | Payload::Control(
+            ControlPayload::DeviceControl { device, .. }
+            | ControlPayload::QuickAction { device, .. },
+        ) => Some((device, false)),
+        Payload::TemperatureInput { device, .. } => Some((device, true)),
+        Payload::Settings(settings) | Payload::AdminSettings(settings) => match settings {
+            SettingsPayload::DeviceDetail { device, .. }
+            | SettingsPayload::ToggleNotify { device, .. }
+            | SettingsPayload::ToggleHide { device, .. }
+            | SettingsPayload::EditName { device, .. }
+            | SettingsPayload::StateAliases { device, .. }
+            | SettingsPayload::EditStateAlias { device, .. }
+            | SettingsPayload::StateAliasEditContext { device, .. }
+            | SettingsPayload::StateAliasResetContext { device, .. }
+            | SettingsPayload::ResetStateAlias { device, .. }
+            | SettingsPayload::ToggleStateInversion { device, .. }
+            | SettingsPayload::ToggleCritical { device, .. } => Some((device, false)),
+            _ => None,
+        },
+        Payload::TextPage { .. } => return Ok(None),
+        _ => None,
+    };
+    if let Some((device, control)) = device {
+        let access = db::access::get_effective_device_access(
+            user_id,
+            user_id == config.root_user,
+            device,
+            &config.db,
+        )
+        .await?;
+        if !access.can_view || (control && !access.can_control) {
+            return Ok(None);
+        }
+    }
+    if !db::admission_is_current(user_id, &generation, &config.db).await? {
+        return Ok(None);
+    }
+    Ok(Some(generation))
+}
+
 async fn clear_ghost_session(config: &Arc<AppConfig>, user_id: u64) {
     config.sessions.remove(&user_id);
-    config.ui_locks.remove(&user_id);
 
     if let Err(e) = db::clear_user_session(user_id, &config.db).await {
         log::error!("Failed to clear ghost session for user {}: {}", user_id, e);
@@ -1711,13 +2897,19 @@ fn log_telegram_retry_after(
     );
 }
 
-async fn resolve_view_image(view: &View, user_id: u64, config: &Arc<AppConfig>) -> Vec<u8> {
+async fn resolve_view_image(view: &mut View, user_id: u64, config: &Arc<AppConfig>) -> Vec<u8> {
     if let Some(image) = &view.image {
         return non_empty_image_or_placeholder(Some(image.as_slice()), "view image");
     }
 
     let background = crate::core::ui_background::resolve(config.clone(), user_id).await;
-    non_empty_image_or_placeholder(background.as_deref(), "UI background")
+    if let Some((id, bytes)) = background {
+        view.displayed_resources
+            .push(crate::core::types::DisplaySource::Camera { id });
+        non_empty_image_or_placeholder(Some(&bytes), "UI background")
+    } else {
+        non_empty_image_or_placeholder(None, "UI background")
+    }
 }
 
 fn non_empty_image_or_placeholder(image: Option<&[u8]>, source: &str) -> Vec<u8> {
@@ -1738,10 +2930,98 @@ async fn send_new_view(
     view: View,
     config: Arc<AppConfig>,
 ) -> Result<()> {
-    let text = view.get_text();
+    send_new_view_cancellable(bot, chat_id, user_id, view, config, None).await
+}
+
+async fn send_new_view_cancellable(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<()> {
+    // Serialize new messages and session publication with edits/reanchors. An
+    // in-flight Telegram request must finish before the newer screen is sent.
+    let ui_lock = config.ui_lock_for(user_id);
+    let _guard = if let Some(token) = cancellation {
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => return Ok(()),
+            guard = ui_lock.lock() => guard,
+        }
+    } else {
+        ui_lock.lock().await
+    };
+    send_new_view_inner(bot, chat_id, user_id, view, config, cancellation)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn send_new_view_inner(
+    bot: &Bot,
+    chat_id: ChatId,
+    user_id: u64,
+    view: View,
+    config: Arc<AppConfig>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<bool> {
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        return Ok(false);
+    }
+    let Some(generation) = view_admission(&view, &config, user_id, chat_id).await? else {
+        return Ok(false);
+    };
+    let mut view = view;
+    view.admission_generation = Some(generation.clone());
+    super::text_pages::prepare(&mut view, user_id, &config).await?;
     let payload_str = view.payload.to_string();
 
-    if should_send_view_as_text(&text) {
+    if super::html_ui::preferred(&config, user_id).await {
+        match super::html_ui::deliver(bot, &config, user_id, chat_id, None, &view, cancellation)
+            .await
+        {
+            Ok(Some(message)) => {
+                crate::core::update_user_state_for_admission(
+                    &config,
+                    user_id,
+                    message.0,
+                    &payload_str,
+                    UiMessageMode::Html,
+                    &generation,
+                )
+                .await;
+                return Ok(true);
+            }
+            Ok(None) => {}
+            Err(error) if error.downcast_ref::<RequestError>().is_some() => return Err(error),
+            Err(error) => log::warn!("HTML delivery failed; using classic view: {error}"),
+        }
+        if view_admission(&view, &config, user_id, chat_id)
+            .await?
+            .is_none()
+            || cancellation.is_some_and(|token| token.is_cancelled())
+        {
+            return Ok(false);
+        }
+        view.notice.get_or_insert_with(|| {
+            super::personal::words(
+                view.lang,
+                "Этот экран открыт обычным видом. Выбор HTML сохранён.",
+                "This screen uses the classic view. Your HTML preference is saved.",
+            )
+            .into()
+        });
+        // A failed HTML send must still fit native Telegram limits. The earlier
+        // preparation deliberately skipped the classic pager for HTML content.
+        super::text_pages::prepare_classic(&mut view, user_id, &config).await?;
+    }
+    let payload_str = view.payload.to_string();
+    let text = view.get_text();
+
+    if (view.text_page.is_some() && view.image.is_none())
+        || view_mode(&view.get_plain_text()) == UiMessageMode::Text
+    {
         log::debug!(
             "New UI view for user {} payload {} uses text mode: {} chars exceed Telegram photo caption limit {}",
             user_id,
@@ -1749,25 +3029,45 @@ async fn send_new_view(
             text.chars().count(),
             TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
         );
+        if view_admission(&view, &config, user_id, chat_id)
+            .await?
+            .is_none()
+            || cancellation.is_some_and(|token| token.is_cancelled())
+        {
+            return Ok(false);
+        }
         let sent = bot
-            .send_message(chat_id, telegram_text_message(&view.get_plain_text()))
+            .send_message(chat_id, view.get_plain_text())
             .reply_markup(view.kb)
             .await?;
 
-        crate::core::update_user_state_with_mode(
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            let _ = bot.delete_message(chat_id, sent.id).await;
+            return Ok(false);
+        }
+        crate::core::update_user_state_for_admission(
             &config,
             user_id,
             sent.id.0,
             &payload_str,
             UiMessageMode::Text,
+            &generation,
         )
         .await;
-        return Ok(());
+        config.html_ui.clear(user_id);
+        return Ok(true);
     }
 
     // Исправлено: send_photo принимает InputFile, а не InputMedia
-    let image = resolve_view_image(&view, user_id, &config).await;
+    let image = resolve_view_image(&mut view, user_id, &config).await;
     let input_file = InputFile::memory(image);
+    if view_admission(&view, &config, user_id, chat_id)
+        .await?
+        .is_none()
+        || cancellation.is_some_and(|token| token.is_cancelled())
+    {
+        return Ok(false);
+    }
 
     let sent = bot
         .send_photo(chat_id, input_file)
@@ -1776,25 +3076,28 @@ async fn send_new_view(
         .reply_markup(view.kb)
         .await?;
 
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
+        let _ = bot.delete_message(chat_id, sent.id).await;
+        return Ok(false);
+    }
     // Критическая правка: сохраняем ID СООБЩЕНИЯ БОТА (sent.id), а не входящего апдейта
-    crate::core::update_user_state_with_mode(
+    crate::core::update_user_state_for_admission(
         &config,
         user_id,
         sent.id.0,
         &payload_str,
         UiMessageMode::Photo,
+        &generation,
     )
     .await;
-    Ok(())
+    config.html_ui.clear(user_id);
+    Ok(true)
 }
 
-fn edit_view_mode(config: &Arc<AppConfig>, user_id: u64, text: &str) -> UiMessageMode {
-    let current_is_text = config
-        .sessions
-        .get(&user_id)
-        .is_some_and(|session| session.ui_message_mode == UiMessageMode::Text);
-
-    if current_is_text || should_send_view_as_text(text) {
+fn view_mode(text: &str) -> UiMessageMode {
+    // Compact formatting must not disable the configured background. Text is
+    // only a fallback for captions that exceed Telegram's photo limit.
+    if should_send_view_as_text(text) {
         UiMessageMode::Text
     } else {
         UiMessageMode::Photo
@@ -1802,30 +3105,135 @@ fn edit_view_mode(config: &Arc<AppConfig>, user_id: u64, text: &str) -> UiMessag
 }
 
 fn should_send_view_as_text(text: &str) -> bool {
-    text.chars().count() > TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
-}
-
-fn telegram_text_message(text: &str) -> String {
-    if text.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS {
-        return text.to_string();
-    }
-
-    let marker = "\n\nСообщение сокращено: экран слишком длинный для Telegram.";
-    let keep_chars = TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS.saturating_sub(marker.chars().count());
-    let mut shortened = text.chars().take(keep_chars).collect::<String>();
-    while shortened.ends_with('\\') {
-        shortened.pop();
-    }
-    log::warn!(
-        "Telegram text view truncated from {} to <= {} chars",
-        text.chars().count(),
-        TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS
-    );
-    shortened.push_str(marker);
-    shortened
+    super::text_pages::text_len(text) > TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS
 }
 
 // --- ОБРАБОТЧИКИ ДИАЛОГОВ ---
+
+pub(crate) async fn cancel_input_payload(
+    state: &State,
+    user: u64,
+    config: &AppConfig,
+) -> Result<Payload> {
+    use crate::bot::router::{ControlPayload, SettingsPayload};
+    if let State::WaitingForNameDraft { draft_id, .. } = state {
+        sqlx::query("UPDATE ui_drafts SET status='cancelled',revision=revision+1 WHERE id=? AND owner_id=? AND kind='device_name' AND status='editing'")
+            .bind(draft_id).bind(user as i64).execute(&config.db).await?;
+    }
+    Ok(match state {
+        State::EditUserAlias { user_id } => {
+            Payload::Admin(AdminPayload::UserProfile { id: *user_id })
+        }
+        State::ScheduleDraftTime { id, .. } => {
+            Payload::Schedule(super::schedule_drafts::SchedulePayload::Review { id: *id })
+        }
+        State::PersonalQuietHours => Payload::Personal(super::personal::PersonalPayload::Settings),
+        State::ExactTemperature { room_id, device_id }
+        | State::WaitingForGraphInterval { room_id, device_id } => {
+            Payload::Control(ControlPayload::DeviceControl {
+                room: *room_id,
+                device: *device_id,
+            })
+        }
+        State::WaitingForName { room_id, device_id }
+        | State::WaitingForNameDraft {
+            room_id, device_id, ..
+        }
+        | State::WaitingForStateAlias {
+            room_id, device_id, ..
+        } => {
+            let back = SettingsPayload::DeviceDetail {
+                room: *room_id,
+                device: *device_id,
+            };
+            if matches!(
+                current_input_payload(config, user).await?,
+                Some(Payload::AdminSettings(_))
+            ) {
+                Payload::AdminSettings(back)
+            } else {
+                settings_payload_for_current_session(config, Some(user), back).await?
+            }
+        }
+        State::AddActionScheduleTime { target, .. }
+        | State::EditActionScheduleTime { target, .. } => {
+            Payload::Admin(AdminPayload::ActionSchedules { target: *target })
+        }
+        State::EditRecordingRule { room_id, rule_id }
+        | State::EditRecordingRuleNumber {
+            room_id, rule_id, ..
+        }
+        | State::EditRecordingRuleActiveTime { room_id, rule_id }
+        | State::EditRecordingRuleConditionValue {
+            room_id, rule_id, ..
+        }
+        | State::AddRecordingRuleGroupForEdit { room_id, rule_id } => {
+            Payload::Admin(AdminPayload::RecordingRuleDetail {
+                room: *room_id,
+                rule: *rule_id,
+            })
+        }
+        State::RecordingRuleWizardSourceValue { .. }
+        | State::RecordingRuleWizardActiveTimeValue
+        | State::RecordingRuleWizardConditionValue
+        | State::AddRecordingRuleGroupForWizard => {
+            let current_id = match current_input_payload(config, user).await? {
+                Some(Payload::Admin(
+                    AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+                )) => Some(id),
+                _ => config.sessions.get(&user).and_then(|session| {
+                    session
+                        .recording_rule_wizard
+                        .as_ref()
+                        .and_then(|wizard| wizard.draft_id)
+                }),
+            };
+            let draft = match current_id {
+                Some(id) => db::ui_drafts::load(id, user, "recording_rule", &config.db).await?,
+                None => db::ui_drafts::latest(user, "recording_rule", &config.db).await?,
+            };
+            draft
+                .map(|draft| Payload::Admin(AdminPayload::WizardResume { id: draft.id }))
+                .unwrap_or(Payload::Home)
+        }
+        State::AddRecordingRule { room_id } => {
+            match recording_text_draft(config, user, *room_id).await {
+                Ok(Some(wizard)) => wizard
+                    .draft_id
+                    .map(|id| Payload::Admin(AdminPayload::WizardResume { id }))
+                    .unwrap_or(Payload::Home),
+                _ => Payload::Admin(AdminPayload::RecordingRules { room: *room_id }),
+            }
+        }
+        State::AddCamera { room_id } => {
+            Payload::Admin(AdminPayload::RoomCameras { room: *room_id })
+        }
+        State::RenameActionGroup { group_id } => {
+            Payload::Admin(AdminPayload::ActionGroupDetail { group: *group_id })
+        }
+        State::RenameHaNativeTarget { target_id } => {
+            Payload::Admin(AdminPayload::HaNativeActionDetail { action: *target_id })
+        }
+        State::Idle => match current_input_payload(config, user).await? {
+            Some(Payload::Command(
+                CommandPayload::Choice { id, .. }
+                | CommandPayload::Choose { id, .. }
+                | CommandPayload::CancelChoice { id },
+            )) => db::command_choices::get(id, user, &config.db)
+                .await?
+                .and_then(|record| {
+                    serde_json::from_str::<crate::core::commands::ChoiceContext>(
+                        &record.context_json,
+                    )
+                    .ok()
+                })
+                .map(|context| context.back.for_refresh())
+                .unwrap_or(Payload::Home),
+            _ => Payload::Home,
+        },
+        _ => Payload::Home,
+    })
+}
 
 pub async fn handle_custom_interval(
     bot: Bot,
@@ -1837,12 +3245,25 @@ pub async fn handle_custom_interval(
     let text = msg.text().unwrap_or("").trim();
 
     // Пытаемся распарсить ввод
-    if let Ok(hours) = text.parse::<u32>() {
-        let new_payload = Payload::Control(crate::bot::router::ControlPayload::QuickAction {
-            room: room_id,
-            device: device_id,
-            cmd: crate::bot::router::DeviceCmd::ShowChart { h: hours, o: 0 },
-        });
+    if let Some(hours) = text.parse::<u32>().ok().filter(|hours| {
+        (1..=crate::bot::screens::control::sensor_view::MAX_PERIOD_HOURS).contains(hours)
+    }) {
+        let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+        let mut new_payload = crate::bot::screens::control::sensor_view::saved_chart_payload(
+            user_id, room_id, device_id, &config,
+        )
+        .await?;
+        if let Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) =
+            &mut new_payload
+        {
+            match cmd {
+                crate::bot::router::DeviceCmd::ShowChart { h, .. } => *h = hours,
+                crate::bot::router::DeviceCmd::ShowChartRange { start, end } => {
+                    *start = *end - i64::from(hours) * 3600
+                }
+                _ => {}
+            }
+        }
 
         // Завершаем диалог с ПЕРЕХОДОМ на новый график
         return finalize_dialogue(bot, dialogue, msg, config, Some(new_payload)).await;
@@ -1853,9 +3274,97 @@ pub async fn handle_custom_interval(
         &dialogue,
         &msg,
         State::WaitingForGraphInterval { device_id, room_id },
-        "⚠️ Ошибка: введите целое число часов.".to_string(),
+        "⚠️ Ошибка: введите целое число часов от 1 до 240.".to_string(),
     )
     .await
+}
+
+pub async fn handle_device_name_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    (device_id, room_id, draft_id): (i64, i64, Option<i64>),
+) -> Result<()> {
+    let Some(user) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let user_id = user.id.0;
+    if !msg.chat.is_private() || msg.chat.id.0 != user_id as i64 || user_id != config.root_user {
+        return Ok(());
+    }
+    let lang = db::get_user_language(user_id, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let Some(draft_id) = draft_id else {
+        bot.send_message(
+            msg.chat.id,
+            super::personal::words(
+                lang,
+                "Форма устарела. Нажмите «Изменить имя» снова.",
+                "This form expired. Open Rename again.",
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+    let Some(raw) = msg.text() else {
+        return Ok(());
+    };
+    if raw.starts_with('/') {
+        return Ok(());
+    }
+    let Ok(name) = db::devices::validate_device_name(raw) else {
+        bot.send_message(
+            msg.chat.id,
+            super::personal::words(
+                lang,
+                "Введите имя длиной 1–128 символов без переносов строки и управляющих символов.",
+                "Enter a name of 1–128 characters without line breaks or control characters.",
+            ),
+        )
+        .await?;
+        return Ok(());
+    };
+    let back = settings_payload_for_current_session(
+        &config,
+        Some(user_id),
+        crate::bot::router::SettingsPayload::DeviceDetail {
+            room: room_id,
+            device: device_id,
+        },
+    )
+    .await?;
+    {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        if !db::user_exists(user_id, &config.db).await {
+            return Ok(());
+        }
+        let current = dialogue.get().await?.unwrap_or_default();
+        if !matches!(current, State::WaitingForNameDraft { device_id: d, room_id: r, draft_id: draft } if d == device_id && r == room_id && draft == draft_id)
+        {
+            return Ok(());
+        }
+        let expected = crate::bot::router::SettingsPayload::EditName {
+            room: room_id,
+            device: device_id,
+        };
+        if !matches!(current_input_payload(&config, user_id).await?,
+            Some(Payload::Settings(payload) | Payload::AdminSettings(payload)) if payload == expected)
+        {
+            return Ok(());
+        }
+        let Some(device) = db::devices::get_device_by_id(device_id, &config.db).await? else {
+            return Ok(());
+        };
+        if !db::devices::commit_name_draft(user_id, device_id, draft_id, name, &config.db).await? {
+            return Ok(());
+        }
+        config
+            .name_aliases
+            .insert(device.entity_id, name.to_owned());
+    }
+    finalize_dialogue(bot, dialogue, msg, config, Some(back)).await
 }
 
 pub async fn handle_state_alias_input(
@@ -1908,32 +3417,80 @@ pub async fn handle_state_alias_input(
             room: room_id,
             device: device_id,
         },
-    );
+    )
+    .await?;
 
     finalize_dialogue(bot, dialogue, msg, config, Some(target_payload)).await
 }
 
-fn settings_payload_for_current_session(
-    config: &Arc<AppConfig>,
+async fn settings_payload_for_current_session(
+    config: &AppConfig,
     user_id: Option<u64>,
     payload: crate::bot::router::SettingsPayload,
-) -> Payload {
-    let Some(user_id) = user_id else {
-        return Payload::Settings(payload);
-    };
-
-    let from_admin_settings = config.sessions.get(&user_id).is_some_and(|session| {
+) -> Result<Payload> {
+    let from_admin_settings = if let Some(user) = user_id {
         matches!(
-            Payload::from_string(&session.current_context),
-            Ok(Payload::AdminSettings(_))
+            current_input_payload(config, user).await?,
+            Some(Payload::AdminSettings(_))
         )
-    });
-
-    if from_admin_settings {
+    } else {
+        false
+    };
+    Ok(if from_admin_settings {
         Payload::AdminSettings(payload)
     } else {
         Payload::Settings(payload)
+    })
+}
+
+pub async fn handle_user_alias_input(
+    bot: Bot,
+    msg: Message,
+    config: Arc<AppConfig>,
+    dialogue: MyDialogue,
+    user_id: u64,
+) -> Result<()> {
+    if msg.from.as_ref().map(|user| user.id.0) != Some(config.root_user) {
+        return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    if user_id != config.root_user && !crate::db::user_exists(user_id, &config.db).await {
+        return finalize_dialogue(
+            bot,
+            dialogue,
+            msg,
+            config,
+            Some(Payload::Admin(crate::bot::router::AdminPayload::ListUsers)),
+        )
+        .await;
+    }
+    let lang = crate::db::get_user_language(config.root_user, &config.db)
+        .await?
+        .unwrap_or(config.default_language);
+    let input = msg.text().unwrap_or("").trim();
+    if input.is_empty() || input.chars().count() > 80 {
+        bot.send_message(
+            msg.chat.id,
+            if lang == crate::i18n::Language::Ru {
+                "Введите псевдоним длиной от 1 до 80 символов или - для сброса."
+            } else {
+                "Enter an alias between 1 and 80 characters, or - to reset."
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    crate::db::user_display::set_alias(user_id, (input != "-").then_some(input), &config.db)
+        .await?;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Admin(
+            crate::bot::router::AdminPayload::UserProfile { id: user_id },
+        )),
+    )
+    .await
 }
 
 pub async fn handle_add_user_input(
@@ -2048,6 +3605,92 @@ pub async fn handle_add_camera_input(
     }
 }
 
+async fn current_input_payload(config: &AppConfig, owner: u64) -> Result<Option<Payload>> {
+    let mut payload = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| Payload::from_string(&session.current_context).ok());
+    if let Some(Payload::TextPage { screen, .. }) = payload {
+        payload = db::ui_text_pages::context(screen, owner, &config.db)
+            .await?
+            .and_then(|context| serde_json::from_str::<serde_json::Value>(&context).ok())
+            .and_then(|context| {
+                context
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|source| Payload::from_string(source).ok())
+            });
+    }
+    Ok(payload)
+}
+
+pub(crate) async fn recording_text_draft(
+    config: &AppConfig,
+    owner: u64,
+    room: i64,
+) -> Result<Option<crate::bot::recording_rule_wizard::RecordingRuleWizard>> {
+    let context = current_input_payload(config, owner).await?;
+    let current = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| session.recording_rule_wizard.clone());
+    // The independent legacy form must not accidentally edit an unrelated saved draft.
+    if matches!(
+        context,
+        Some(Payload::Admin(AdminPayload::PromptAddRecordingRule { .. }))
+    ) {
+        return Ok(None);
+    }
+    let context_id = match context {
+        Some(Payload::Admin(
+            AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+        )) => Some(id),
+        _ => None,
+    };
+    let from_wizard =
+        context_id.is_some() || current.as_ref().is_some_and(|wizard| wizard.editing_text);
+    if !from_wizard {
+        return Ok(None);
+    }
+    let id = context_id.or_else(|| current.as_ref().and_then(|wizard| wizard.draft_id));
+    let wizard = if id.is_some() {
+        crate::bot::recording_rule_wizard::restore_draft(config, owner, id).await?
+    } else {
+        current
+    };
+    let wizard = wizard
+        .filter(|wizard| {
+            wizard.editing_text && wizard.room_id == room && wizard.committed_rule_id.is_none()
+        })
+        .context("Recording draft is expired or no longer accepting text")?;
+    if let Some(mut session) = config.sessions.get_mut(&owner) {
+        session.recording_rule_wizard = Some(wizard.clone());
+    }
+    Ok(Some(wizard))
+}
+
+async fn restore_recording_wizard_input(config: &AppConfig, owner: u64) -> Result<()> {
+    let current = config
+        .sessions
+        .get(&owner)
+        .and_then(|session| session.recording_rule_wizard.clone());
+    let context = current_input_payload(config, owner).await?;
+    let id = match context {
+        Some(Payload::Admin(
+            AdminPayload::WizardResume { id } | AdminPayload::WizardDraft { id, .. },
+        )) => Some(id),
+        _ => current.as_ref().and_then(|wizard| wizard.draft_id),
+    };
+    if current.is_some() && id.is_none() {
+        return Ok(());
+    }
+    let saved = crate::bot::recording_rule_wizard::restore_draft(config, owner, id).await?;
+    if let Some(mut session) = config.sessions.get_mut(&owner) {
+        session.recording_rule_wizard = saved;
+    }
+    Ok(())
+}
+
 pub async fn handle_add_recording_rule_input(
     bot: Bot,
     msg: Message,
@@ -2059,6 +3702,20 @@ pub async fn handle_add_recording_rule_input(
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
 
+    let user_id = msg.from.as_ref().context("User context missing")?.id.0;
+    let editing_wizard = match recording_text_draft(&config, user_id, room_id).await {
+        Ok(wizard) => wizard,
+        Err(_) => return finish_stale_wizard_input(&bot, &dialogue, &msg).await,
+    };
+    if editing_wizard.is_some() {
+        if let Some(mut session) = config.sessions.get_mut(&user_id) {
+            if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+                wizard.raw_text = Some(msg.text().unwrap_or("").to_owned());
+            }
+        }
+        crate::bot::recording_rule_wizard::persist_draft(&config, user_id).await?;
+    }
+
     match parse_recording_rule_input(
         msg.text().unwrap_or(""),
         config.camera_recording_max_tail_seconds,
@@ -2067,6 +3724,16 @@ pub async fn handle_add_recording_rule_input(
         Ok(input) => {
             let cameras = crate::db::cameras::list_room_cameras(room_id, &config.db).await?;
             if !cameras.iter().any(|camera| camera.id == input.camera_id) {
+                if editing_wizard.is_some() {
+                    return keep_dialogue_with_error(
+                        &bot,
+                        &dialogue,
+                        &msg,
+                        State::AddRecordingRule { room_id },
+                        "Строка 2: камера не принадлежит выбранной комнате.".into(),
+                    )
+                    .await;
+                }
                 let err_msg = bot
                     .send_message(
                         msg.chat.id,
@@ -2077,7 +3744,79 @@ pub async fn handle_add_recording_rule_input(
                 return finalize_dialogue(bot, dialogue, msg, config, None).await;
             }
 
-            let rule_id = crate::db::camera_recording_rules::create_rule(
+            if let Some(mut wizard) = editing_wizard {
+                // Parse first; assign the complete legacy block only after all checks pass.
+                // Fields absent from that block (groups/window/pre-roll) remain unchanged.
+                let conditions = input
+                    .conditions
+                    .iter()
+                    .map(
+                        |condition| crate::bot::recording_rule_wizard::WizardCondition {
+                            entity_id: condition.entity_id.clone(),
+                            operator: condition.operator,
+                            from_state: condition.from_state.clone(),
+                            to_state: condition.to_state.clone(),
+                            value: condition.value.clone(),
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                let source_id: Option<i64> =
+                    sqlx::query_scalar("SELECT id FROM devices WHERE entity_id=? AND archived=0")
+                        .bind(&conditions[0].entity_id)
+                        .fetch_optional(&config.db)
+                        .await?;
+                if wizard.source_device_id.is_none() {
+                    wizard.source_device_id = source_id;
+                }
+                if wizard.source_mode.is_none() {
+                    wizard.source_mode =
+                        Some(crate::bot::recording_rule_wizard::WizardTriggerMode::AnyChange);
+                }
+                // Use the revision after retaining the user's raw text.
+                if let Some(current) = config
+                    .sessions
+                    .get(&user_id)
+                    .and_then(|session| session.recording_rule_wizard.clone())
+                {
+                    wizard.revision = current.revision;
+                }
+                apply_recording_rule_input_to_wizard(&mut wizard, input, conditions);
+                if let Some(mut session) = config.sessions.get_mut(&user_id) {
+                    session.recording_rule_wizard = Some(wizard);
+                }
+                crate::bot::recording_rule_wizard::persist_draft(&config, user_id).await?;
+                return finalize_dialogue(
+                    bot,
+                    dialogue,
+                    msg,
+                    config,
+                    Some(Payload::Admin(AdminPayload::WizardConfirmGroups)),
+                )
+                .await;
+            }
+
+            let pre_roll_enabled = crate::db::settings::get_i64(
+                crate::db::settings::CAMERA_PRE_ROLL_ENABLED,
+                &config.db,
+            )
+            .await?
+            .unwrap_or(0)
+                != 0;
+
+            let conditions = input
+                .conditions
+                .iter()
+                .map(
+                    |condition| crate::db::camera_recording_rules::NewRecordingConditionDraft {
+                        entity_id: &condition.entity_id,
+                        operator: condition.operator,
+                        from_state: condition.from_state.as_deref(),
+                        to_state: condition.to_state.as_deref(),
+                        value: condition.value.as_deref(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            crate::db::camera_recording_rules::create_rule_with_conditions_and_groups(
                 crate::db::camera_recording_rules::NewRecordingRule {
                     name: &input.name,
                     camera_id: input.camera_id,
@@ -2086,25 +3825,14 @@ pub async fn handle_add_recording_rule_input(
                     max_segment_seconds: i64::from(input.max_segment_seconds),
                     cooldown_s: i64::from(input.cooldown_s),
                     retention_days: i64::from(input.retention_days),
+                    pre_roll_enabled,
+                    pre_roll_seconds: crate::db::camera_recording_rules::DEFAULT_PRE_ROLL_SECONDS,
                 },
+                &conditions,
+                &[],
                 &config.db,
             )
             .await?;
-
-            for condition in &input.conditions {
-                crate::db::camera_recording_rules::add_condition(
-                    crate::db::camera_recording_rules::NewRecordingCondition {
-                        rule_id,
-                        entity_id: &condition.entity_id,
-                        operator: condition.operator,
-                        from_state: condition.from_state.as_deref(),
-                        to_state: condition.to_state.as_deref(),
-                        value: condition.value.as_deref(),
-                    },
-                    &config.db,
-                )
-                .await?;
-            }
 
             finalize_dialogue(
                 bot,
@@ -2118,6 +3846,16 @@ pub async fn handle_add_recording_rule_input(
             .await
         }
         Err(text) => {
+            if editing_wizard.is_some() {
+                return keep_dialogue_with_error(
+                    &bot,
+                    &dialogue,
+                    &msg,
+                    State::AddRecordingRule { room_id },
+                    text,
+                )
+                .await;
+            }
             let err_msg = bot.send_message(msg.chat.id, text).await?;
             crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, err_msg.id, 10);
             finalize_dialogue(bot, dialogue, msg, config, None).await
@@ -2185,6 +3923,8 @@ pub async fn handle_add_recording_rule_group_for_wizard_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
 
     let user_id = msg.from.as_ref().context("User context missing")?.id.0;
     let has_wizard = config
@@ -2234,6 +3974,8 @@ pub async fn handle_add_recording_rule_group_for_wizard_input(
         &config.db,
     )
     .await;
+
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -2608,53 +4350,32 @@ pub async fn handle_add_action_schedule_time_input(
         }
     };
 
-    match crate::db::action_groups::create_action_schedule(
+    let data = db::schedule_drafts::ScheduleDraft {
         target,
         command,
-        time_minute,
-        crate::db::action_groups::ALL_DAYS_MASK,
+        time_minute: Some(time_minute),
+        days_mask: 127,
+        enabled: false,
+        existing: None,
+    };
+    let draft = db::ui_drafts::create(
+        config.root_user,
+        db::schedule_drafts::KIND,
+        &serde_json::to_string(&data)?,
+        config.session_ttl_hours,
         &config.db,
     )
+    .await?;
+    finalize_dialogue(
+        bot,
+        dialogue,
+        msg,
+        config,
+        Some(Payload::Schedule(
+            super::schedule_drafts::SchedulePayload::Review { id: draft.id },
+        )),
+    )
     .await
-    {
-        Ok(schedule_id) => {
-            let schedule_id_text = schedule_id.to_string();
-            let _ = crate::db::activity_log::log(
-                crate::db::activity_log::NewActivity {
-                    user_id: msg.from.as_ref().map(|user| user.id.0),
-                    kind: "action_group",
-                    entity_type: "action_schedule",
-                    entity_id: Some(&schedule_id_text),
-                    action: "action_group.schedule_create",
-                    status: "ok",
-                    message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
-                },
-                &config.db,
-            )
-            .await;
-            finalize_dialogue(
-                bot,
-                dialogue,
-                msg,
-                config,
-                Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
-                    target,
-                    schedule: schedule_id,
-                })),
-            )
-            .await
-        }
-        Err(error) => {
-            keep_dialogue_with_error(
-                &bot,
-                &dialogue,
-                &msg,
-                State::AddActionScheduleTime { target, command },
-                error.to_string(),
-            )
-            .await
-        }
-    }
 }
 
 pub async fn handle_edit_action_schedule_time_input(
@@ -2668,7 +4389,7 @@ pub async fn handle_edit_action_schedule_time_input(
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
 
-    let time_minute = match crate::db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
+    let time_minute = match db::action_groups::parse_time_minute(msg.text().unwrap_or("")) {
         Ok(value) => value,
         Err(error) => {
             keep_dialogue_with_error(
@@ -2685,62 +4406,25 @@ pub async fn handle_edit_action_schedule_time_input(
             return Ok(());
         }
     };
-
-    let schedule_matches = crate::db::action_groups::get_action_schedule(schedule_id, &config.db)
-        .await?
-        .map(|schedule| schedule.target_ref())
-        .transpose()?
-        .is_some_and(|schedule_target| schedule_target == target);
-    if !schedule_matches {
-        let user_id = msg.from.as_ref().map(|user| user.id.0);
-        let lang = match user_id {
-            Some(user_id) => crate::db::get_user_language(user_id, &config.db)
-                .await?
-                .unwrap_or(config.default_language),
-            None => config.default_language,
-        };
-        let notice = bot
-            .send_message(
-                msg.chat.id,
-                crate::i18n::t(lang, "action_groups.schedule_not_found"),
-            )
-            .await?;
-        crate::bot::utils::spawn_delayed_delete(bot.clone(), msg.chat.id, notice.id, 8);
-        return finalize_dialogue(
-            bot,
-            dialogue,
-            msg,
-            config,
-            Some(Payload::Admin(AdminPayload::ActionSchedules { target })),
-        )
-        .await;
-    }
-
-    crate::db::action_groups::update_action_schedule_time(schedule_id, time_minute, &config.db)
-        .await?;
-    let schedule_id_text = schedule_id.to_string();
-    let _ = crate::db::activity_log::log(
-        crate::db::activity_log::NewActivity {
-            user_id: msg.from.as_ref().map(|user| user.id.0),
-            kind: "action_group",
-            entity_type: "action_schedule",
-            entity_id: Some(&schedule_id_text),
-            action: "action_group.schedule_time_update",
-            status: "ok",
-            message: Some(&crate::db::action_groups::format_time_minute(time_minute)),
-        },
+    let mut data =
+        db::schedule_drafts::ScheduleDraft::from_existing(schedule_id, target, &config.db).await?;
+    data.time_minute = Some(time_minute);
+    let draft = db::ui_drafts::create(
+        config.root_user,
+        db::schedule_drafts::KIND,
+        &serde_json::to_string(&data)?,
+        config.session_ttl_hours,
         &config.db,
     )
-    .await;
+    .await?;
     finalize_dialogue(
         bot,
         dialogue,
         msg,
         config,
-        Some(Payload::Admin(AdminPayload::ActionScheduleDetail {
-            target,
-            schedule: schedule_id,
-        })),
+        Some(Payload::Schedule(
+            super::schedule_drafts::SchedulePayload::Review { id: draft.id },
+        )),
     )
     .await
 }
@@ -2755,6 +4439,14 @@ pub async fn handle_recording_rule_wizard_source_value_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let value =
         match crate::bot::recording_rule_wizard::source_threshold_value(msg.text().unwrap_or("")) {
@@ -2789,6 +4481,13 @@ pub async fn handle_recording_rule_wizard_source_value_input(
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
 
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
+
     finalize_dialogue(
         bot,
         dialogue,
@@ -2810,6 +4509,14 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let active_time =
         match crate::db::camera_recording_rules::parse_active_time_window(msg.text().unwrap_or(""))
@@ -2832,7 +4539,10 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     let updated = {
         if let Some(mut session) = config.sessions.get_mut(&user_id) {
             if let Some(wizard) = session.recording_rule_wizard.as_mut() {
-                wizard.active_time = active_time;
+                wizard.active_time = crate::db::camera_recording_rules::RecordingRuleActiveTime {
+                    days_mask: wizard.active_time.days_mask,
+                    ..active_time
+                };
                 true
             } else {
                 false
@@ -2844,6 +4554,13 @@ pub async fn handle_recording_rule_wizard_active_time_input(
     if !updated {
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
+
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -2864,6 +4581,14 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
     if msg.from.as_ref().map(|u| u.id.0) != Some(config.root_user) {
         return finalize_dialogue(bot, dialogue, msg, config, Some(Payload::Home)).await;
     }
+    let draft_owner = msg.from.as_ref().context("User context missing")?.id.0;
+    restore_recording_wizard_input(&config, draft_owner).await?;
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = Some(msg.text().unwrap_or("").to_owned());
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     let user_id = msg.from.as_ref().context("User context missing")?.id.0;
     let pending = config
@@ -2927,6 +4652,13 @@ pub async fn handle_recording_rule_wizard_condition_value_input(
     if !updated {
         return finish_stale_wizard_input(&bot, &dialogue, &msg).await;
     }
+
+    if let Some(mut session) = config.sessions.get_mut(&draft_owner) {
+        if let Some(wizard) = session.recording_rule_wizard.as_mut() {
+            wizard.pending_input = None;
+        }
+    }
+    crate::bot::recording_rule_wizard::persist_draft(&config, draft_owner).await?;
 
     finalize_dialogue(
         bot,
@@ -3256,6 +4988,9 @@ pub async fn handle_edit_recording_rule_input(
                     },
                 )
                 .collect::<Vec<_>>();
+            let existing_rule = crate::db::camera_recording_rules::get_rule(rule_id, &config.db)
+                .await?
+                .context("Recording rule not found")?;
 
             crate::db::camera_recording_rules::update_rule_replace_conditions(
                 rule_id,
@@ -3267,6 +5002,8 @@ pub async fn handle_edit_recording_rule_input(
                     max_segment_seconds: i64::from(input.max_segment_seconds),
                     cooldown_s: i64::from(input.cooldown_s),
                     retention_days: i64::from(input.retention_days),
+                    pre_roll_enabled: existing_rule.pre_roll_enabled(),
+                    pre_roll_seconds: existing_rule.normalized_pre_roll_seconds(),
                 },
                 &conditions,
                 &config.db,
@@ -3486,6 +5223,27 @@ struct RecordingConditionInput {
     value: Option<String>,
 }
 
+fn apply_recording_rule_input_to_wizard(
+    wizard: &mut crate::bot::recording_rule_wizard::RecordingRuleWizard,
+    input: RecordingRuleInput,
+    conditions: Vec<crate::bot::recording_rule_wizard::WizardCondition>,
+) {
+    wizard.name_touched |= wizard.name.as_deref() != Some(input.name.as_str());
+    wizard.name = Some(input.name);
+    wizard.camera_id = Some(input.camera_id);
+    wizard.logic_touched |= wizard.condition_logic != input.logic;
+    wizard.condition_logic = input.logic;
+    wizard.custom_conditions = Some(conditions);
+    wizard.tail_seconds = Some(input.tail_seconds);
+    wizard.max_segment_seconds = Some(input.max_segment_seconds);
+    wizard.cooldown_touched |= wizard.cooldown_s != Some(input.cooldown_s);
+    wizard.cooldown_s = Some(input.cooldown_s);
+    wizard.retention_days = Some(input.retention_days);
+    wizard.raw_text = None;
+    wizard.editing_text = false;
+    wizard.step = Payload::Admin(AdminPayload::WizardConfirmGroups).to_string();
+}
+
 fn parse_recording_rule_input(
     text: &str,
     max_tail_seconds: u32,
@@ -3515,8 +5273,11 @@ fn parse_recording_rule_input(
     };
 
     let mut conditions = Vec::new();
-    for line in &lines[3..numbers_start] {
-        conditions.push(parse_recording_condition(line)?);
+    for (index, line) in lines[3..numbers_start].iter().enumerate() {
+        conditions.push(
+            parse_recording_condition(line)
+                .map_err(|error| format!("Строка {}: {}", index + 4, error))?,
+        );
     }
 
     if conditions.is_empty() {
@@ -3554,6 +5315,7 @@ fn extract_recording_rule_block(text: &str) -> String {
         if trimmed.contains("Текст правила")
             || trimmed.contains("Отправьте исправленный блок")
             || trimmed.contains("Скопируйте блок")
+            || trimmed.contains("Текст правила: скопируйте блок")
         {
             use_tail = true;
             lines.clear();
@@ -3723,8 +5485,118 @@ async fn finalize_dialogue(
 }
 
 #[cfg(test)]
+#[path = "video_delivery_tests.rs"]
+mod video_delivery_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn camera_background_keeps_its_source_until_delivery() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',1,'rtsp://unused.invalid')").execute(&config.db).await?;
+        db::settings::set_i64(db::settings::UI_BACKGROUND_CAMERA_ID, 1, &config.db).await?;
+        *config.ui_background_cache.lock().await = Some(crate::models::UiBackgroundCache {
+            camera_id: 1,
+            bytes: Some(vec![1, 2, 3]),
+            captured_at: Some(Utc::now()),
+            failed_at: None,
+            last_warned_at: None,
+            last_error: None,
+            refreshing: false,
+        });
+        let mut view = View::default();
+        assert_eq!(
+            resolve_view_image(&mut view, 42, &config).await,
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            view.displayed_resources,
+            vec![crate::core::types::DisplaySource::Camera { id: 1 }]
+        );
+        assert!(view_admission(&view, &config, 42, ChatId(42))
+            .await?
+            .is_some());
+        db::access::set_room_access(42, 1, false, false, &config.db).await?;
+        assert!(view_admission(&view, &config, 42, ChatId(42))
+            .await?
+            .is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manual_video_shares_upload_limit_and_reports_failed_compression() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',1,'rtsp://unused.invalid')").execute(&config.db).await?;
+        let access = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        let message = serde_json::json!({"ok":true,"result":{"message_id":7,"date":1_700_000_000,"chat":{"id":42,"type":"private"},"text":"ok"}});
+        let (bot, server) = crate::bot::router::control_tests::mock_telegram_edits(vec![
+            (200, message.clone()),
+            (200, message),
+        ])
+        .await?;
+        assert!(
+            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", 10, &access)
+                .await?
+        );
+        // Invalid oversized input must enter compression and produce a readable
+        // error instead of sending a video that Telegram would reject.
+        assert!(
+            !send_manual_camera_video(
+                &bot,
+                ChatId(42),
+                vec![0; TELEGRAM_STANDARD_UPLOAD_LIMIT_BYTES as usize + 1],
+                "Manual 120s",
+                120,
+                &access
+            )
+            .await?
+        );
+        let requests = tokio::time::timeout(StdDuration::from_secs(5), server).await???;
+        assert!(requests[0]["method"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("sendvideo"));
+        assert!(requests[1]["method"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("sendmessage"));
+        assert!(requests[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Не удалось сжать"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delayed_camera_delivery_rejects_revoked_readded_user_and_changed_acl() -> Result<()> {
+        let config = crate::test_support::config().await;
+        db::add_user(42, &config.db).await?;
+        db::rooms::sync_rooms_from_ha("test", "Test", &config.db).await?;
+        let room: i64 = sqlx::query_scalar("SELECT id FROM rooms WHERE area='test'")
+            .fetch_one(&config.db)
+            .await?;
+        sqlx::query("INSERT INTO cameras(id,key,name,room_id,stream_url) VALUES(1,'test','Test',?,'rtsp://unused.invalid')")
+            .bind(room).execute(&config.db).await?;
+        let old = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        db::delete_user(42, &config.db).await?;
+        db::add_user(42, &config.db).await?;
+        assert!(old.check().await.is_err());
+        let current = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+        db::access::set_room_access(42, room, false, false, &config.db).await?;
+        assert!(current.check().await.is_err());
+        assert!(CameraDeliveryAccess::new(ChatId(-42), 42, 1, &config)
+            .await
+            .is_err());
+        Ok(())
+    }
     use crate::bot::text_commands;
 
     #[test]
@@ -3856,6 +5728,63 @@ mod tests {
     }
 
     #[test]
+    fn recording_draft_text_roundtrip_preserves_fields_absent_from_legacy_format() {
+        use crate::bot::recording_rule_wizard::{
+            build_advanced_rule_text_with_logic, build_source_conditions, RecordingRuleWizard,
+            WizardTriggerMode,
+        };
+        use crate::db::camera_recording_rules::{ConditionLogic, RecordingRuleActiveTime};
+        let mut wizard = RecordingRuleWizard::new(1);
+        wizard.name = Some("Door".into());
+        wizard.camera_id = Some(3);
+        wizard.source_device_id = Some(4);
+        wizard.source_mode = Some(WizardTriggerMode::AnyChange);
+        wizard.cooldown_s = Some(30);
+        wizard.active_time = RecordingRuleActiveTime::window(1320, 420, 31).unwrap();
+        wizard.group_ids = vec![2, 9];
+        wizard.pre_roll_enabled = Some(true);
+        wizard.pre_roll_seconds = 23;
+        let conditions = build_source_conditions(
+            "binary_sensor.door",
+            WizardTriggerMode::AnyChange,
+            None,
+            false,
+        )
+        .unwrap();
+        let text = build_advanced_rule_text_with_logic(
+            "Door",
+            3,
+            ConditionLogic::Any,
+            &conditions,
+            120,
+            240,
+            30,
+            90,
+        );
+        let input = parse_recording_rule_input(&text, 300, 300).unwrap();
+        apply_recording_rule_input_to_wizard(&mut wizard, input, conditions);
+        assert_eq!(
+            wizard.active_time,
+            RecordingRuleActiveTime::window(1320, 420, 31).unwrap()
+        );
+        assert_eq!(wizard.group_ids, vec![2, 9]);
+        assert_eq!(wizard.pre_roll_enabled, Some(true));
+        assert_eq!(wizard.pre_roll_seconds, 23);
+        assert!(!wizard.name_touched);
+        assert!(!wizard.cooldown_touched);
+        assert_eq!(wizard.custom_conditions.as_ref().unwrap().len(), 1);
+        assert_eq!(wizard.tail_seconds, Some(120));
+        assert_eq!(wizard.max_segment_seconds, Some(240));
+        assert!(parse_recording_rule_input(
+            "Bad\n3\nany\nsensor.a;bogus;;;4\n60\n240\n10\n30",
+            300,
+            300
+        )
+        .unwrap_err()
+        .contains("Строка 4"));
+    }
+
+    #[test]
     fn recording_rule_input_extracts_copy_block_from_detail_text() {
         let input = parse_recording_rule_input(
             "1. switch.vykliuchatel_0;changed_from_to;off;on;\n2. switch.vykliuchatel_0;changed_from_to;on;off;\n\nТекст правила для копирования и изменения:\nТест: свет в коридоре\n3\nany\nswitch.vykliuchatel_0;changed_from_to;off;on;\nswitch.vykliuchatel_0;changed_from_to;on;off;\n60\n30\n0\n15\n\nЧтобы изменить правило: нажмите ✏️ Изменить.",
@@ -3900,27 +5829,24 @@ mod tests {
     }
 
     #[test]
-    fn telegram_text_message_is_truncated_to_limit() {
-        let text = "x".repeat(TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS + 100);
-        let shortened = telegram_text_message(&text);
-
-        assert!(shortened.chars().count() <= TELEGRAM_TEXT_MESSAGE_LIMIT_CHARS);
-        assert!(shortened.contains("Сообщение сокращено"));
+    fn compact_menus_keep_background_and_images_with_text_fallback_for_long_captions() {
+        let mut view = View {
+            compact: true,
+            text: "Кухня".into(),
+            ..Default::default()
+        };
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.image = Some(vec![1, 2, 3]);
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.compact = false;
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Photo);
+        view.text = "x".repeat(TELEGRAM_PHOTO_CAPTION_LIMIT_CHARS + 1);
+        assert_eq!(view_mode(&view.get_text()), UiMessageMode::Text);
     }
 
     #[test]
     fn file_size_is_formatted_in_decimal_mb() {
         assert_eq!(crate::bot::format::decimal_mb(58_858_228), "58.9 MB");
-    }
-
-    #[test]
-    fn telegram_compressed_path_uses_sidecar_mp4() {
-        let path = std::path::Path::new("data/recordings/a/b/camera_1_segment_1.mp4");
-
-        assert_eq!(
-            telegram_compressed_path(path),
-            std::path::PathBuf::from("data/recordings/a/b/camera_1_segment_1.telegram.v4.mp4")
-        );
     }
 
     #[test]
@@ -3930,3 +5856,11 @@ mod tests {
         assert!(!is_usable_telegram_compressed_video(51_000_000));
     }
 }
+
+#[cfg(test)]
+#[path = "voice_delivery_tests.rs"]
+mod voice_delivery_tests;
+
+#[cfg(test)]
+#[path = "command_delivery_tests.rs"]
+mod command_delivery_tests;

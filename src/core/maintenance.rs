@@ -2,13 +2,11 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use log::{debug, error, info};
-use teloxide::prelude::*;
-use teloxide::types::{ChatId, MessageId};
+use teloxide::Bot;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use crate::bot::handlers::refresh_current_view;
 use crate::db;
 use crate::ha::models::Entity;
 use crate::ha::Room;
@@ -27,7 +25,7 @@ pub fn spawn_background_maintenance(
 }
 
 pub async fn start_background_maintenance(
-    bot: Bot,
+    _bot: Bot,
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
 ) {
@@ -52,8 +50,11 @@ pub async fn start_background_maintenance(
                 cleanup_expired_sessions(&config).await;
                 cleanup_activity_log(&config).await;
                 cleanup_pending_commands(&config).await;
+                if let Err(error) = db::ui_drafts::purge_expired(&config.db).await {
+                    error!("UI draft cleanup error: {}", error);
+                }
                 cleanup_camera_recordings(&config).await;
-                refresh_all_active_sessions(&bot, &config).await;
+                refresh_all_active_sessions(&config).await;
                 refresh_system_data(&config).await;
             }
             _ = cancel_token.cancelled() => {
@@ -65,6 +66,9 @@ pub async fn start_background_maintenance(
 }
 
 async fn cleanup_pending_commands(config: &Arc<AppConfig>) {
+    if let Err(error) = db::ui_confirmations::purge_expired(&config.db).await {
+        error!("UI confirmation cleanup error: {}", error);
+    }
     match db::pending_commands::expire_old(&config.db).await {
         Ok(count) if count > 0 => debug!("Maintenance: expired {} pending commands", count),
         Err(e) => error!("Pending command cleanup error: {}", e),
@@ -193,7 +197,7 @@ async fn refresh_entities(
     }
 }
 
-async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
+pub(crate) async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
     let ttl_hours = i64::try_from(config.session_ttl_hours).unwrap_or(i64::MAX);
     let cutoff = Utc::now() - ChronoDuration::hours(ttl_hours);
 
@@ -214,8 +218,18 @@ async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
     }
 
     for user_id in expired_user_ids {
+        let _lifecycle = config.admission_lifecycle.lock().await;
+        // A user can become active after the candidate snapshot was collected.
+        // Serialize with activity/session saves and check the current lease.
+        if config
+            .sessions
+            .get(&user_id)
+            .is_none_or(|session| session.last_seen_at >= cutoff)
+        {
+            continue;
+        }
+        config.cancel_view_update(user_id);
         config.sessions.remove(&user_id);
-        config.ui_locks.remove(&user_id);
 
         if let Err(e) = db::clear_user_session(user_id, &config.db).await {
             error!("Failed to clear expired session {}: {}", user_id, e);
@@ -225,19 +239,35 @@ async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
     }
 }
 
-async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
+pub(crate) async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
+    // Retry existing deletions first. Storage errors never hide additional archives.
+    match crate::core::camera_recording::retry_pending_recording_deletes(config).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            error!("Maintenance: pending recording cleanup failed: {}", error);
+            return;
+        }
+    }
+    crate::core::camera_recording::cleanup_recording_tmp_files(config).await;
+
     match db::camera_recording_sessions::find_expired_sessions(&config.db).await {
         Ok(sessions) => {
-            for session in sessions {
-                if let Err(error) = crate::core::camera_recording::delete_recording_session_files(
+            for session in sessions.into_iter().take(128) {
+                match crate::core::camera_recording::delete_recording_session_files_if_unpinned(
                     config, session.id,
                 )
                 .await
                 {
-                    error!(
-                        "Maintenance: failed to delete expired recording session {}: {}",
-                        session.id, error
-                    );
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        error!(
+                            "Maintenance: failed to delete expired recording session {}: {}",
+                            session.id, error
+                        );
+                        return;
+                    }
                 }
             }
         }
@@ -254,7 +284,7 @@ async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
     }
 
     let quota_bytes = quota_mb.saturating_mul(1024 * 1024);
-    loop {
+    for _ in 0..128 {
         let size = match db::camera_recording_segments::sum_ready_size_bytes(&config.db).await {
             Ok(size) => size,
             Err(error) => {
@@ -286,57 +316,44 @@ async fn cleanup_camera_recordings(config: &Arc<AppConfig>) {
             break;
         };
 
-        if let Err(error) =
-            crate::core::camera_recording::delete_recording_session_files(config, session.id).await
+        match crate::core::camera_recording::delete_recording_session_files_if_unpinned(
+            config, session.id,
+        )
+        .await
         {
-            error!(
-                "Maintenance: failed to delete quota recording session {}: {}",
-                session.id, error
-            );
-            break;
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(error) => {
+                error!(
+                    "Maintenance: failed to delete quota recording session {}: {}",
+                    session.id, error
+                );
+                break;
+            }
         }
     }
 }
 
-async fn refresh_all_active_sessions(bot: &Bot, config: &Arc<AppConfig>) {
-    if config.sessions.is_empty() {
-        return;
+async fn refresh_all_active_sessions(config: &Arc<AppConfig>) {
+    // Copy only IDs; the shared queue captures current context and admission
+    // together. This producer never spawns tasks or waits for Telegram.
+    let users = config
+        .sessions
+        .iter()
+        .map(|entry| *entry.key())
+        .collect::<Vec<_>>();
+    if !users.is_empty() {
+        debug!(
+            "Heartbeat: enqueue refresh for {} active sessions",
+            users.len()
+        );
     }
-
-    debug!(
-        "Heartbeat: refresh {} active session",
-        config.sessions.len()
-    );
-
-    let now = Utc::now();
-
-    for entry in config.sessions.iter() {
-        let (user_id, session) = entry.pair();
-
-        if session.is_ui_refresh_blocked(now) {
-            continue;
+    for user_id in users {
+        if let Err(error) = super::notification::enqueue_current_refresh(config, user_id).await {
+            debug!(
+                "Heartbeat: cannot enqueue refresh for {}: {}",
+                user_id, error
+            );
         }
-
-        let bot_clone = bot.clone();
-        let config_clone = config.clone();
-
-        let uid = *user_id;
-        let mid = MessageId(session.last_menu_id);
-        let ctx = session.current_context.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = refresh_current_view(
-                &bot_clone,
-                &config_clone,
-                uid,
-                ChatId(uid as i64),
-                mid,
-                &ctx,
-            )
-            .await
-            {
-                debug!("Fail update screen {}: {}", uid, e);
-            }
-        });
     }
 }

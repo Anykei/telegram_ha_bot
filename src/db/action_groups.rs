@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+#[path = "action_schedule_runs.rs"]
+pub mod runs;
+
 pub const ACCESS_ALL_USERS: &str = "all_users";
 pub const TARGET_BOT_GROUP: &str = "bot_group";
 pub const TARGET_HA_NATIVE: &str = "ha_native";
@@ -219,7 +222,7 @@ pub async fn list_action_groups(pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
         LEFT JOIN action_schedules s
           ON s.target_type = 'bot_group' AND s.target_id = g.id
         GROUP BY g.id
-        ORDER BY g.name COLLATE NOCASE
+        ORDER BY g.name COLLATE NOCASE, g.id
         "#,
         pool,
     )
@@ -247,7 +250,7 @@ pub async fn list_visible_action_groups(
         WHERE g.access_scope = 'all_users'
           AND g.enabled = 1
         GROUP BY g.id
-        ORDER BY g.name COLLATE NOCASE
+        ORDER BY g.name COLLATE NOCASE, g.id
         "#,
     )
     .fetch_all(pool)
@@ -274,7 +277,7 @@ pub async fn get_action_group(group_id: i64, pool: &SqlitePool) -> Result<Option
     .await?)
 }
 
-async fn action_group_query(sql: &str, pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
+async fn action_group_query(sql: &'static str, pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
     Ok(sqlx::query_as::<_, ActionGroup>(sql)
         .fetch_all(pool)
         .await?)
@@ -531,7 +534,8 @@ pub async fn sync_ha_native_targets(
                 "UPDATE ha_native_targets SET archived = 1, updated_at = CURRENT_TIMESTAMP WHERE entity_id NOT IN ({})",
                 placeholders
             );
-            let mut query = sqlx::query(&query);
+            // Only placeholder count is interpolated; entity IDs are bound below.
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(query));
             for entity_id in entity_ids {
                 query = query.bind(entity_id);
             }
@@ -553,7 +557,7 @@ pub async fn list_ha_native_targets(pool: &SqlitePool) -> Result<Vec<HaNativeTar
         LEFT JOIN action_schedules s
           ON s.target_type = 'ha_native' AND s.target_id = h.id
         GROUP BY h.id
-        ORDER BY h.archived ASC, COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE
+        ORDER BY h.archived ASC, COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE, h.id
         "#,
     )
     .fetch_all(pool)
@@ -580,7 +584,7 @@ pub async fn list_visible_ha_native_targets(
           AND h.enabled = 1
           AND h.archived = 0
         GROUP BY h.id
-        ORDER BY COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE
+        ORDER BY COALESCE(NULLIF(TRIM(h.display_name), ''), h.ha_name, h.entity_id) COLLATE NOCASE, h.id
         "#,
     )
     .fetch_all(pool)
@@ -717,6 +721,7 @@ pub async fn get_action_schedule(
     .await?)
 }
 
+#[cfg(test)]
 pub async fn create_action_schedule(
     target: ActionTargetRef,
     command: ActionScheduleCommand,
@@ -741,23 +746,7 @@ pub async fn create_action_schedule(
     Ok(result.last_insert_rowid())
 }
 
-pub async fn update_action_schedule_time(
-    schedule_id: i64,
-    time_minute: i64,
-    pool: &SqlitePool,
-) -> Result<()> {
-    ensure!((0..=1439).contains(&time_minute), "Invalid schedule time");
-    let result = sqlx::query(
-        "UPDATE action_schedules SET time_minute = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(time_minute)
-    .bind(schedule_id)
-    .execute(pool)
-    .await?;
-    ensure!(result.rows_affected() > 0, "Action schedule not found");
-    Ok(())
-}
-
+#[cfg(test)]
 pub async fn update_action_schedule_days(
     schedule_id: i64,
     days_mask: i64,
@@ -776,30 +765,6 @@ pub async fn update_action_schedule_days(
     .await?;
     ensure!(result.rows_affected() > 0, "Action schedule not found");
     Ok(())
-}
-
-pub async fn cycle_action_schedule_command(schedule_id: i64, pool: &SqlitePool) -> Result<String> {
-    let schedule = get_action_schedule(schedule_id, pool)
-        .await?
-        .ok_or_else(|| anyhow!("Schedule not found"))?;
-    ensure!(
-        schedule.target_type == TARGET_BOT_GROUP,
-        "HA-native schedule command is fixed"
-    );
-    let next = match schedule.command.as_str() {
-        COMMAND_TURN_ON => COMMAND_TURN_OFF,
-        COMMAND_TURN_OFF => COMMAND_TURN_ON,
-        _ => COMMAND_TURN_ON,
-    };
-    let result = sqlx::query(
-        "UPDATE action_schedules SET command = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(next)
-    .bind(schedule_id)
-    .execute(pool)
-    .await?;
-    ensure!(result.rows_affected() > 0, "Action schedule not found");
-    Ok(next.to_string())
 }
 
 pub async fn toggle_action_schedule_enabled(schedule_id: i64, pool: &SqlitePool) -> Result<bool> {
@@ -865,6 +830,7 @@ pub async fn list_due_action_schedules(
     .await?)
 }
 
+#[cfg(test)]
 pub async fn mark_action_schedule_run(
     schedule_id: i64,
     run_key: &str,
@@ -880,6 +846,7 @@ pub async fn mark_action_schedule_run(
     Ok(())
 }
 
+#[cfg(test)]
 async fn validate_schedule(
     target: ActionTargetRef,
     command: ActionScheduleCommand,
@@ -949,15 +916,6 @@ pub fn parse_time_minute(value: &str) -> Result<i64> {
         "Минуты должны быть от 00 до 59"
     );
     Ok(hours * 60 + minutes)
-}
-
-pub fn format_days_mask(days_mask: i64) -> &'static str {
-    match days_mask {
-        0b111_1111 => "ежедневно",
-        0b001_1111 => "Пн-Пт",
-        0b110_0000 => "Сб-Вс",
-        _ => "выбранные дни",
-    }
 }
 
 #[cfg(test)]

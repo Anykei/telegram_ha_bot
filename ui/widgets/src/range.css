@@ -1,0 +1,10 @@
+[data-kind=calendar] { padding:6px 6px 16px; }
+[data-kind=calendar] #r-top { margin:6px 6px 0; }
+.g-days { display:grid; grid-template-columns:repeat(7,1fr); margin-top:8px; }
+.g-days button { padding:2px; text-align:center; }
+@media(max-width:319px) { .g-days { grid-template-columns:repeat(3,1fr); } }
+
+.t-value { display:block; font-size:28px; line-height:1.2; }
+.t-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:4px; margin-top:8px; padding:4px; border:1px solid var(--ha-line); border-radius:12px; background:var(--ha-surface-soft); }
+.t-grid button { text-align:center; padding:2px; }
+@media(max-width:319px) { .t-grid { grid-template-columns:repeat(3,1fr); } }

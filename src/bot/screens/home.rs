@@ -1,19 +1,48 @@
-use crate::bot::models::View;
-use crate::bot::router::{
-    AdminPayload, CameraPayload, ControlPayload, Payload, RenderContext, SettingsPayload,
-};
+use crate::bot::models::{HtmlSection, View};
+use crate::bot::personal::{words, PersonalPayload};
+use crate::bot::router::{AdminPayload, CameraPayload, ControlPayload, Payload, RenderContext};
 use crate::i18n::{t, Language};
 
 use anyhow::Result;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 pub async fn render(ctx: RenderContext) -> Result<View> {
-    let text = t(ctx.lang, "home.title").to_string();
-    let kb = make_keyboard(ctx.is_admin, ctx.lang);
+    let title = words(ctx.lang, "Мой дом", "My home").to_string();
+    let mut kb = make_keyboard(ctx.is_admin, ctx.lang);
+    let mut html_sections = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
+    let (favorites, _, _) = crate::bot::personal::favorite_buttons(&ctx, 0, 4).await?;
+    if !favorites.is_empty() {
+        html_sections.push(HtmlSection {
+            start_row: kb.inline_keyboard.len(),
+            title: words(ctx.lang, "Избранное", "Favorites").into(),
+        });
+        for (index, (_, action, button)) in favorites.into_iter().enumerate() {
+            if let teloxide::types::InlineKeyboardButtonKind::CallbackData(callback) = &button.kind
+            {
+                html_button_labels.insert(
+                    callback.clone(),
+                    crate::bot::personal::favorite_html_label(
+                        &action,
+                        &button,
+                        ctx.lang,
+                        index + 1,
+                    ),
+                );
+            }
+            kb.inline_keyboard.push(vec![button]);
+        }
+    }
 
     Ok(View {
+        compact: true,
+        header: Some(title.clone()),
+        html_title: Some(title),
+        html_summary: Some(String::new()),
+        html_sections,
+        html_button_labels,
+        html_details_title: Some(words(ctx.lang, "Сводка дома", "Home overview").into()),
         notifications: ctx.notifications.clone(),
-        text,
         kb,
         payload: Payload::Home {},
         ..Default::default()
@@ -21,26 +50,39 @@ pub async fn render(ctx: RenderContext) -> Result<View> {
 }
 
 pub fn make_keyboard(root_admin: bool, lang: Language) -> InlineKeyboardMarkup {
-    let mut rows = vec![vec![InlineKeyboardButton::callback(
-        t(lang, "home.control"),
-        Payload::Control(ControlPayload::ListRooms).to_string(),
-    )]];
-
-    rows.push(vec![InlineKeyboardButton::callback(
-        t(lang, "home.action_groups"),
-        Payload::Control(ControlPayload::ActionGroups).to_string(),
-    )]);
-
-    rows.push(vec![InlineKeyboardButton::callback(
-        t(lang, "home.cameras"),
-        Payload::Camera(CameraPayload::ListCameras).to_string(),
-    )]);
-
+    let mut rows = vec![
+        vec![
+            InlineKeyboardButton::callback(
+                t(lang, "home.control"),
+                Payload::Control(ControlPayload::ListRooms).to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                t(lang, "home.action_groups"),
+                Payload::Control(ControlPayload::ActionGroups).to_string(),
+            ),
+        ],
+        vec![
+            InlineKeyboardButton::callback(
+                t(lang, "home.cameras"),
+                Payload::Camera(CameraPayload::ListCameras).to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                words(lang, "Избранное", "Favorites"),
+                Payload::Personal(PersonalPayload::Favorites { page: 0 }).to_string(),
+            ),
+        ],
+        vec![
+            InlineKeyboardButton::callback(
+                words(lang, "Мои настройки", "My settings"),
+                Payload::Personal(PersonalPayload::Settings).to_string(),
+            ),
+            InlineKeyboardButton::callback(
+                words(lang, "Помощь", "Help"),
+                Payload::Help.to_string(),
+            ),
+        ],
+    ];
     if root_admin {
-        rows.push(vec![InlineKeyboardButton::callback(
-            t(lang, "home.settings"),
-            Payload::Settings(SettingsPayload::ListRooms).to_string(),
-        )]);
         rows.push(vec![InlineKeyboardButton::callback(
             t(lang, "home.admin"),
             Payload::Admin(AdminPayload::ListActions).to_string(),

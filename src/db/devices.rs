@@ -58,10 +58,10 @@ pub async fn sync_device(
         ON CONFLICT(entity_id) DO UPDATE SET
             room_id = (SELECT id FROM rooms WHERE area = ?1),
             alias = CASE
-                WHEN alias IS NULL
+                WHEN alias_is_manual = 0 AND (alias IS NULL
                   OR TRIM(alias) = ''
                   OR alias = entity_id
-                  OR alias = COALESCE(ha_name, alias)
+                  OR alias = COALESCE(ha_name, alias))
                 THEN ?3
                 ELSE alias
             END,
@@ -69,6 +69,22 @@ pub async fn sync_device(
             device_class = ?4,
             device_domain = ?5,
             archived = 0
+        WHERE
+            room_id IS NOT (SELECT id FROM rooms WHERE area = ?1)
+            OR (
+                CASE
+                    WHEN alias_is_manual = 0 AND (alias IS NULL
+                      OR TRIM(alias) = ''
+                      OR alias = entity_id
+                      OR alias = COALESCE(ha_name, alias))
+                    THEN ?3
+                    ELSE alias
+                END
+            ) IS NOT alias
+            OR ha_name IS NOT ?3
+            OR device_class IS NOT ?4
+            OR device_domain IS NOT ?5
+            OR archived != 0
         "#,
     )
     .bind(ha_area_id)
@@ -87,6 +103,67 @@ pub async fn sync_device(
         .await?;
 
     Ok(())
+}
+
+/// Explicit aliases retain their provenance even if equal to the current HA name.
+#[cfg(test)]
+pub async fn set_manual_alias(
+    device_id: i64,
+    alias: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<bool> {
+    let alias = validate_device_name(alias)?;
+    let result = sqlx::query(
+        "UPDATE devices SET alias = ?, alias_is_manual = 1 WHERE id = ? AND archived = 0",
+    )
+    .bind(alias)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn commit_name_draft(
+    owner: u64,
+    device_id: i64,
+    draft_id: i64,
+    name: &str,
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<bool> {
+    let name = validate_device_name(name)?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ui_drafts d WHERE d.id=? AND d.owner_id=? AND d.kind='device_name' AND d.payload=? AND d.status='editing' AND d.expires_at>? AND NOT EXISTS(SELECT 1 FROM ui_drafts newer WHERE newer.owner_id=d.owner_id AND newer.kind=d.kind AND newer.id>d.id))")
+        .bind(draft_id).bind(owner as i64).bind(device_id.to_string()).bind(chrono::Utc::now().timestamp()).fetch_one(&mut *tx).await?;
+    if !valid {
+        return Ok(false);
+    }
+    let updated =
+        sqlx::query("UPDATE devices SET alias=?,alias_is_manual=1 WHERE id=? AND archived=0")
+            .bind(name)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            == 1;
+    if updated {
+        sqlx::query("UPDATE ui_drafts SET status='saved',revision=revision+1,committed_target_id=? WHERE id=?")
+            .bind(device_id).bind(draft_id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(updated)
+}
+
+pub fn validate_device_name(value: &str) -> anyhow::Result<&str> {
+    anyhow::ensure!(
+        !value.chars().any(char::is_control),
+        "Name contains control characters"
+    );
+    let name = value.trim();
+    anyhow::ensure!(
+        !name.is_empty() && name.chars().count() <= 128 && !name.starts_with('/'),
+        "Name must contain 1–128 characters"
+    );
+    Ok(name)
 }
 
 /// Retrieves all devices associated with a specific room.
@@ -137,12 +214,13 @@ pub async fn get_devices_by_room_for_user(
         SELECT d.id, d.entity_id, d.alias
         FROM devices d
         JOIN rooms r ON r.id = d.room_id
-        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?
-        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?
-        WHERE d.room_id = ?
+        LEFT JOIN user_room_access ura ON ura.room_id = d.room_id AND ura.user_id = ?1
+        LEFT JOIN user_device_access uda ON uda.entity_id = d.entity_id AND uda.user_id = ?2
+        LEFT JOIN user_profiles up ON up.user_id = ?1
+        WHERE d.room_id = ?3
           AND d.archived = 0
           AND r.hide = 0
-          AND COALESCE(uda.can_view, ura.can_view, 1) != 0
+          AND COALESCE(uda.can_view, ura.can_view, CASE WHEN COALESCE(up.role, 'user') IN ('user', 'admin') THEN 1 ELSE 0 END) != 0
         ORDER BY d.id
         "#,
     )
@@ -429,7 +507,8 @@ pub async fn archive_missing_devices(
         placeholders
     );
 
-    let mut query = sqlx::query(&query_str);
+    // Only placeholder count is interpolated; entity IDs are bound below.
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(query_str));
     for entity_id in synced_entity_ids {
         query = query.bind(entity_id);
     }
@@ -603,7 +682,8 @@ mod tests {
                 ha_name TEXT,
                 device_class TEXT,
                 device_domain TEXT,
-                archived INTEGER NOT NULL DEFAULT 0
+                archived INTEGER NOT NULL DEFAULT 0,
+                alias_is_manual INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -611,6 +691,72 @@ mod tests {
         .await?;
 
         Ok(pool)
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_reopened_name_draft_rejects_delayed_input() -> anyhow::Result<()> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        crate::db::rooms::sync_rooms_from_ha("room", "Room", &pool).await?;
+        sync_device("light.test", "room", "Original", "light", &pool).await?;
+        let old = crate::db::ui_drafts::create(1, "device_name", "1", 24, &pool).await?;
+        let (entered, received) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let old_id = old.id;
+        let task_pool = pool.clone();
+        let job = tokio::spawn(async move {
+            entered.send(()).unwrap();
+            wait.await.unwrap();
+            commit_name_draft(1, 1, old_id, "Stale", &task_pool).await
+        });
+        received.await?;
+        crate::db::ui_drafts::cancel(old.id, 1, old.revision, &pool).await?;
+        let fresh = crate::db::ui_drafts::create(1, "device_name", "1", 24, &pool).await?;
+        release.send(()).unwrap();
+        assert!(!job.await??);
+        assert_eq!(
+            get_device_by_id(1, &pool).await?.unwrap().alias.as_deref(),
+            Some("Original")
+        );
+        assert!(!commit_name_draft(2, 1, fresh.id, "Wrong owner", &pool).await?);
+        assert!(commit_name_draft(1, 1, fresh.id, "Fresh", &pool).await?);
+        assert!(!commit_name_draft(1, 1, fresh.id, "Repeated", &pool).await?);
+        assert_eq!(
+            get_device_by_id(1, &pool).await?.unwrap().alias.as_deref(),
+            Some("Fresh")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manual_name_validation_counts_unicode_and_rejects_control_characters() {
+        assert_eq!(validate_device_name("  Дом 🏠  ").unwrap(), "Дом 🏠");
+        assert!(validate_device_name(&"😀".repeat(128)).is_ok());
+        assert!(validate_device_name(&"😀".repeat(129)).is_err());
+        for bad in ["", "  ", "one\ntwo", "one\rtwo", "one\ttwo", "/cancel"] {
+            assert!(validate_device_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_device_name("_*[]()!`").is_ok());
+    }
+
+    #[tokio::test]
+    async fn explicit_name_equal_to_ha_name_survives_sync() -> anyhow::Result<()> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        crate::db::rooms::sync_rooms_from_ha("room", "Room", &pool).await?;
+        sync_device("light.test", "room", "HA name", "light", &pool).await?;
+        assert!(set_manual_alias(1, "HA name", &pool).await?);
+        sync_device("light.test", "room", "Changed HA name", "light", &pool).await?;
+        assert_eq!(
+            get_device_by_id(1, &pool).await?.unwrap().alias.as_deref(),
+            Some("HA name")
+        );
+        sqlx::query("UPDATE devices SET archived = 1 WHERE id = 1")
+            .execute(&pool)
+            .await?;
+        assert!(!set_manual_alias(1, "ignored", &pool).await?);
+        assert!(!set_manual_alias(99, "ignored", &pool).await?);
+        Ok(())
     }
 
     #[tokio::test]

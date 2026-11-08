@@ -10,9 +10,25 @@ use std::path::Path;
 pub struct AppOptions {
     pub bot_token: String,
 
+    /// Isolated Telegram HTML demo; never initializes HA or the application database.
+    #[serde(default)]
+    pub widget_demo_enabled: bool,
+
+    /// Enable HTML presentation in the regular bot, independently of the demo.
+    #[serde(default)]
+    pub html_widgets_enabled: bool,
+
+    /// Run the regular bot against a persistent local HA mock and isolated database.
+    #[serde(default)]
+    pub ha_mock_enabled: bool,
+
     /// ID владельца бота. Может прийти как число или как строка в кавычках.
     #[serde(deserialize_with = "flexible_u64")]
     pub root_user: u64,
+
+    /// Auto-delete notification messages after this many seconds; 0 keeps them.
+    #[serde(default = "default_delete_notification_messages_timeout_s")]
+    pub delete_notification_messages_timeout_s: u64,
 
     /// Как часто фоновый worker обновляет открытые экраны и служебные данные.
     #[serde(default = "default_background_maintenance_interval_s")]
@@ -167,14 +183,27 @@ impl AppOptions {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read options file: {:?}", path))?;
 
-        let options: AppOptions =
+        let mut options: AppOptions =
             serde_json::from_str(&content).context("JSON schema mismatch in options file")?;
+        let document: serde_json::Value = serde_json::from_str(&content)?;
+        options.camera_recording_storage_root = resolve_recording_storage_root(
+            document
+                .get("camera_recording_storage_root")
+                .and_then(serde_json::Value::as_str),
+            std::env::var("CAMERA_RECORDING_STORAGE_ROOT")
+                .ok()
+                .as_deref(),
+        );
 
         // Бизнес-валидация
         ensure!(!options.bot_token.is_empty(), "bot_token cannot be empty");
         ensure!(
             options.root_user != 0,
             "root_user must be a valid Telegram ID"
+        );
+        ensure!(
+            options.delete_notification_messages_timeout_s <= 86400,
+            "delete_notification_messages_timeout_s must be 0..=86400 seconds"
         );
         ensure!(
             options.background_maintenance_interval_s > 0,
@@ -248,6 +277,10 @@ impl AppOptions {
     }
 }
 
+fn default_delete_notification_messages_timeout_s() -> u64 {
+    60
+}
+
 fn default_background_maintenance_interval_s() -> u64 {
     15
 }
@@ -286,6 +319,12 @@ fn default_camera_recording_max_parallel_jobs() -> usize {
 
 fn default_camera_recording_storage_root() -> String {
     "data/recordings".to_string()
+}
+
+fn resolve_recording_storage_root(json: Option<&str>, environment: Option<&str>) -> String {
+    json.or(environment)
+        .map(str::to_owned)
+        .unwrap_or_else(default_camera_recording_storage_root)
 }
 
 fn default_true() -> bool {
@@ -336,6 +375,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn archive_path_precedence_preserves_explicit_json() {
+        for (json, env, expected) in [
+            (
+                Some("relative/archive"),
+                Some("/data/recordings"),
+                "relative/archive",
+            ),
+            (
+                Some("/custom/archive"),
+                Some("/data/recordings"),
+                "/custom/archive",
+            ),
+            (None, Some("/data/recordings"), "/data/recordings"),
+            (None, None, "data/recordings"),
+            (Some(""), Some("/data/recordings"), ""),
+        ] {
+            assert_eq!(resolve_recording_storage_root(json, env), expected);
+        }
+    }
+
+    #[test]
     fn options_use_refresh_defaults_for_legacy_json() {
         let options: AppOptions = serde_json::from_str(
             r#"{
@@ -346,6 +406,7 @@ mod tests {
         .expect("options should parse");
 
         assert_eq!(options.background_maintenance_interval_s, 15);
+        assert_eq!(options.delete_notification_messages_timeout_s, 60);
         assert_eq!(options.event_refresh_min_interval_s, 5);
         assert_eq!(options.session_ttl_hours, 24);
         assert_eq!(options.telegram_retry_after_extra_delay_s, 1);
@@ -357,6 +418,7 @@ mod tests {
         assert_eq!(options.camera_recording_max_parallel_jobs, 4);
         assert_eq!(options.camera_recording_storage_root, "data/recordings");
         assert!(!options.voice_enabled);
+        assert!(!options.ha_mock_enabled);
         assert_eq!(options.voice_stt_provider, VoiceSttProvider::HaPipeline);
         assert_eq!(
             options.voice_command_engine,

@@ -8,6 +8,11 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 const ITEMS_PAGE_SIZE: usize = 8;
 
 pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
+    render_user_list_page(ctx, None).await
+}
+
+pub async fn render_user_list_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use super::common;
     let mut sync_alert = None;
     if let Err(error) = crate::core::action_groups::sync_ha_native_targets(&ctx.config).await {
         sync_alert = Some(format!(
@@ -22,23 +27,50 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
     let targets =
         db::action_groups::list_visible_ha_native_targets(ctx.is_admin, &ctx.config.db).await?;
 
-    let mut rows = Vec::new();
     for group in &groups {
-        let state = crate::core::action_groups::aggregate_group_state(
+        ctx.track_group(group.id);
+    }
+    for target in &targets {
+        ctx.track_native(target.id, &target.entity_id);
+    }
+
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Control(ControlPayload::ActionGroups),
+        requested,
+        groups.len() + targets.len(),
+    )
+    .await?;
+    let visible = page * common::LIST_PAGE_SIZE..(page + 1) * common::LIST_PAGE_SIZE;
+    let mut rows = Vec::new();
+    for (index, group) in groups.iter().enumerate() {
+        if !visible.contains(&index) {
+            continue;
+        }
+        let contributors = crate::core::action_groups::group_state_targets(
             group.id,
             ctx.user_id,
             ctx.is_admin,
             &ctx.config,
         )
-        .await
-        .unwrap_or(crate::core::action_groups::AggregateState::Unknown);
+        .await?;
+        for item in &contributors {
+            ctx.track_device(item.device_id, &item.entity_id);
+            ctx.track_room(item.room_id);
+        }
+        let state = crate::core::action_groups::aggregate_group_state(&contributors, &ctx.config)
+            .await
+            .unwrap_or(crate::core::action_groups::AggregateState::Unknown);
         rows.push(vec![InlineKeyboardButton::callback(
             format!("💡 {} · {}", group.name, aggregate_label(ctx.lang, state)),
             Payload::Control(ControlPayload::ActionGroupDetail { group: group.id }).to_string(),
         )]);
     }
 
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
+        if !visible.contains(&(groups.len() + index)) {
+            continue;
+        }
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "{} {} · {}",
@@ -51,6 +83,12 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Control(ControlPayload::ActionGroupsPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Home,
@@ -84,6 +122,11 @@ pub async fn render_user_list(ctx: RenderContext) -> Result<View> {
 }
 
 pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
+    render_admin_list_page(ctx, None).await
+}
+
+pub async fn render_admin_list_page(ctx: RenderContext, requested: Option<u16>) -> Result<View> {
+    use super::common;
     let mut sync_alert = None;
     if let Err(error) = crate::core::action_groups::sync_ha_native_targets(&ctx.config).await {
         sync_alert = Some(format!(
@@ -96,12 +139,30 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
     let groups = db::action_groups::list_action_groups(&ctx.config.db).await?;
     let targets = db::action_groups::list_ha_native_targets(&ctx.config.db).await?;
 
+    for group in &groups {
+        ctx.track_group(group.id);
+    }
+    for target in &targets {
+        ctx.track_native(target.id, &target.entity_id);
+    }
+
+    let (page, pages) = common::list_page(
+        &ctx,
+        &Payload::Admin(AdminPayload::ActionGroups),
+        requested,
+        groups.len() + targets.len(),
+    )
+    .await?;
+    let visible = page * common::LIST_PAGE_SIZE..(page + 1) * common::LIST_PAGE_SIZE;
     let mut rows = vec![vec![InlineKeyboardButton::callback(
         t(ctx.lang, "action_groups.create_group"),
         Payload::Admin(AdminPayload::PromptCreateActionGroup).to_string(),
     )]];
 
-    for group in &groups {
+    for (index, group) in groups.iter().enumerate() {
+        if !visible.contains(&index) {
+            continue;
+        }
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "💡 {} · {} {} · {}",
@@ -114,7 +175,10 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
+        if !visible.contains(&(groups.len() + index)) {
+            continue;
+        }
         let archived = if target.is_archived() {
             t(ctx.lang, "action_groups.not_found_suffix")
         } else {
@@ -133,6 +197,12 @@ pub async fn render_admin_list(ctx: RenderContext) -> Result<View> {
         )]);
     }
 
+    let pager = common::page_row(page, pages, |page| {
+        Payload::Admin(AdminPayload::ActionGroupsPage { page })
+    });
+    if !pager.is_empty() {
+        rows.push(pager);
+    }
     rows.push(vec![crate::bot::screens::common::back_button_lang(
         ctx.lang,
         Payload::Admin(AdminPayload::ListActions),
@@ -177,6 +247,7 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
         return Ok(view);
     }
 
+    ctx.track_group(group.id);
     let items = db::action_groups::list_action_group_items(group.id, &ctx.config.db).await?;
     let mut visible_items = Vec::new();
     for item in items {
@@ -192,6 +263,12 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
             continue;
         }
         visible_items.push(item);
+    }
+    // Aggregate state and counts depend on every contributor, including members
+    // beyond the twelve names shown in the detail text.
+    for item in &visible_items {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
     }
     let executable_items_count = visible_items
         .iter()
@@ -219,41 +296,67 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
     let mut rows = Vec::new();
     if group.is_enabled() && executable_items_count > 0 {
         let dynamic_command = aggregate.dynamic_command();
+        let dynamic = crate::bot::confirmations::prepare_button(
+            &ctx,
+            &execute_group_payload(admin, group.id, dynamic_command),
+        )
+        .await?;
+        let on = if dynamic_command == db::action_groups::ActionGroupCommand::TurnOn {
+            dynamic.clone()
+        } else {
+            crate::bot::confirmations::prepare_button(
+                &ctx,
+                &execute_group_payload(
+                    admin,
+                    group.id,
+                    db::action_groups::ActionGroupCommand::TurnOn,
+                ),
+            )
+            .await?
+        };
+        let off = if dynamic_command == db::action_groups::ActionGroupCommand::TurnOff {
+            dynamic.clone()
+        } else {
+            crate::bot::confirmations::prepare_button(
+                &ctx,
+                &execute_group_payload(
+                    admin,
+                    group.id,
+                    db::action_groups::ActionGroupCommand::TurnOff,
+                ),
+            )
+            .await?
+        };
         rows.push(vec![InlineKeyboardButton::callback(
             dynamic_button_label(ctx.lang, dynamic_command),
-            execute_group_payload(admin, group.id, dynamic_command).to_string(),
+            dynamic.to_string(),
         )]);
         rows.push(vec![
             InlineKeyboardButton::callback(
                 t(ctx.lang, "action_groups.turn_on_all"),
-                execute_group_payload(
-                    admin,
-                    group.id,
-                    db::action_groups::ActionGroupCommand::TurnOn,
-                )
-                .to_string(),
+                on.to_string(),
             ),
             InlineKeyboardButton::callback(
                 t(ctx.lang, "action_groups.turn_off_all"),
-                execute_group_payload(
-                    admin,
-                    group.id,
-                    db::action_groups::ActionGroupCommand::TurnOff,
-                )
-                .to_string(),
+                off.to_string(),
             ),
         ]);
     }
 
+    if !admin {
+        rows.push(vec![InlineKeyboardButton::callback(
+            t(ctx.lang, "action_groups.devices_button"),
+            Payload::GroupDevices {
+                group: group.id,
+                page: 0,
+            }
+            .to_string(),
+        )]);
+    }
     if admin {
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "action_groups.devices_button"),
-            Payload::Admin(AdminPayload::ActionGroupItems {
-                group: group.id,
-                page: 0,
-                filter: db::action_groups::ActionGroupItemsFilter::All,
-            })
-            .to_string(),
+            saved_group_items_payload(&ctx, group.id).await?.to_string(),
         )]);
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "action_groups.schedules_button"),
@@ -354,6 +457,19 @@ pub async fn render_group_detail(ctx: RenderContext, group_id: i64, admin: bool)
 
     Ok(View {
         header: Some(format!("⚡ {}", group.name)),
+        html_summary: Some(format!(
+            "{}: {}\n{} · {}: {}/{}",
+            t(ctx.lang, "action_groups.state"),
+            aggregate_label(ctx.lang, aggregate),
+            enabled_label(ctx.lang, group.is_enabled()),
+            t(ctx.lang, "action_groups.available_to_you"),
+            executable_items_count,
+            group.items_count
+        )),
+        html_details_title: Some(
+            crate::bot::personal::words(ctx.lang, "Состав и параметры", "Devices and settings")
+                .into(),
+        ),
         notifications: ctx.notifications,
         text: lines.join("\n"),
         kb: InlineKeyboardMarkup::new(rows),
@@ -393,16 +509,19 @@ pub async fn render_ha_native_detail(
         return Ok(view);
     }
 
+    ctx.track_native(target.id, &target.entity_id);
     let mut rows = Vec::new();
     if target.is_enabled() && !target.is_archived() {
+        let action = if admin {
+            Payload::Admin(AdminPayload::ExecuteHaNativeAction { action: target.id })
+        } else {
+            Payload::Control(ControlPayload::ExecuteHaNativeAction { action: target.id })
+        };
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "action_groups.execute"),
-            if admin {
-                Payload::Admin(AdminPayload::ExecuteHaNativeAction { action: target.id })
-            } else {
-                Payload::Control(ControlPayload::ExecuteHaNativeAction { action: target.id })
-            }
-            .to_string(),
+            crate::bot::confirmations::prepare_button(&ctx, &action)
+                .await?
+                .to_string(),
         )]);
     }
 
@@ -488,6 +607,20 @@ pub async fn render_ha_native_detail(
             ha_icon(&target.domain),
             target.display_name()
         )),
+        html_summary: Some(format!(
+            "Home Assistant · {}\n{}\n{}: {}",
+            target.domain,
+            if target.is_archived() {
+                t(ctx.lang, "action_groups.not_found_in_ha")
+            } else {
+                enabled_label(ctx.lang, target.is_enabled())
+            },
+            t(ctx.lang, "action_groups.access"),
+            access_label(ctx.lang, &target.access_scope)
+        )),
+        html_details_title: Some(
+            crate::bot::personal::words(ctx.lang, "Параметры сценария", "Scenario details").into(),
+        ),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -498,6 +631,39 @@ pub async fn render_ha_native_detail(
         },
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+#[path = "action_group_structure_tests.rs"]
+mod structure_tests;
+
+fn group_items_key(user: u64, group: i64) -> String {
+    format!("ui:group-items:{user}:{group}")
+}
+
+async fn saved_group_items_payload(ctx: &RenderContext, group: i64) -> Result<Payload> {
+    let saved = db::settings::get_string(&group_items_key(ctx.user_id, group), &ctx.config.db)
+        .await?
+        .and_then(|value| Payload::from_string(&value).ok());
+    if let Some(Payload::Admin(AdminPayload::ActionGroupItems {
+        group: saved_group,
+        page,
+        filter,
+    })) = saved
+    {
+        if saved_group == group {
+            return Ok(Payload::Admin(AdminPayload::ActionGroupItems {
+                group,
+                page,
+                filter,
+            }));
+        }
+    }
+    Ok(Payload::Admin(AdminPayload::ActionGroupItems {
+        group,
+        page: 0,
+        filter: db::action_groups::ActionGroupItemsFilter::All,
+    }))
 }
 
 pub async fn render_group_items(
@@ -512,6 +678,7 @@ pub async fn render_group_items(
         view.alert = Some(t(lang, "action_groups.group_not_found").to_string());
         return Ok(view);
     };
+    ctx.track_group(group.id);
     let candidates =
         db::action_groups::list_action_group_device_candidates(group_id, &ctx.config.db).await?;
     let candidates_count = candidates.len();
@@ -538,6 +705,8 @@ pub async fn render_group_items(
 
     let mut rows = Vec::new();
     for item in &slice {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
         rows.push(vec![InlineKeyboardButton::callback(
             format!(
                 "{} {} · {}{}",
@@ -619,6 +788,17 @@ pub async fn render_group_items(
         Payload::Admin(AdminPayload::ActionGroupDetail { group: group.id }),
     )]);
 
+    let payload = Payload::Admin(AdminPayload::ActionGroupItems {
+        group: group.id,
+        page: page as u16,
+        filter,
+    });
+    db::settings::set_string(
+        &group_items_key(ctx.user_id, group.id),
+        &payload.to_string(),
+        &ctx.config.db,
+    )
+    .await?;
     Ok(View {
         header: Some(t(ctx.lang, "action_groups.devices_title").to_string()),
         notifications: ctx.notifications,
@@ -636,11 +816,7 @@ pub async fn render_group_items(
             total_pages
         ),
         kb: InlineKeyboardMarkup::new(rows),
-        payload: Payload::Admin(AdminPayload::ActionGroupItems {
-            group: group.id,
-            page: page as u16,
-            filter,
-        }),
+        payload,
         ..Default::default()
     })
 }
@@ -665,6 +841,21 @@ pub async fn render_schedules(
     };
     let schedules = db::action_groups::list_action_schedules(target, &ctx.config.db).await?;
     let mut rows = Vec::new();
+    if let Some(draft) =
+        db::schedule_drafts::latest_for_target(ctx.user_id, target, &ctx.config.db).await?
+    {
+        let data: db::schedule_drafts::ScheduleDraft = serde_json::from_str(&draft.payload)?;
+        if data.target == target {
+            rows.push(vec![InlineKeyboardButton::callback(
+                crate::bot::personal::words(ctx.lang, "Продолжить черновик", "Continue draft"),
+                Payload::Schedule(crate::bot::schedule_drafts::SchedulePayload::Review {
+                    id: draft.id,
+                })
+                .to_string(),
+            )]);
+        }
+    }
+
     if can_create_schedule {
         match target {
             db::action_groups::ActionTargetRef::BotGroup(_) => {
@@ -776,28 +967,13 @@ pub async fn render_schedule_detail(
         .to_string(),
     )]];
     rows.push(vec![InlineKeyboardButton::callback(
-        t(ctx.lang, "action_groups.edit_time"),
-        Payload::Admin(AdminPayload::PromptEditActionScheduleTime {
+        crate::bot::personal::words(ctx.lang, "Изменить расписание", "Edit schedule"),
+        Payload::Schedule(crate::bot::schedule_drafts::SchedulePayload::Edit {
             target,
             schedule: schedule.id,
         })
         .to_string(),
     )]);
-    if matches!(target, db::action_groups::ActionTargetRef::BotGroup(_)) {
-        rows.push(vec![InlineKeyboardButton::callback(
-            format!(
-                "{}: {}",
-                t(ctx.lang, "action_groups.command_button"),
-                schedule_command_label(ctx.lang, command)
-            ),
-            Payload::Admin(AdminPayload::CycleActionScheduleCommand {
-                target,
-                schedule: schedule.id,
-            })
-            .to_string(),
-        )]);
-    }
-    rows.extend(day_rows(ctx.lang, target, schedule.id, schedule.days_mask));
     rows.push(vec![InlineKeyboardButton::callback(
         t(ctx.lang, "action_groups.delete"),
         Payload::Admin(AdminPayload::ConfirmDeleteActionSchedule {
@@ -876,34 +1052,11 @@ pub async fn render_schedule_time_input(
     target: db::action_groups::ActionTargetRef,
     command: db::action_groups::ActionScheduleCommand,
 ) -> Result<View> {
-    let lang = ctx.lang;
-    if target_title(&ctx, target).await?.is_none() {
-        let mut view = render_admin_list(ctx).await?;
-        view.alert = Some(t(lang, "action_groups.schedule_target_not_found").to_string());
-        return Ok(view);
-    }
-    if let db::action_groups::ActionTargetRef::HaNative(target_id) = target {
-        let Some(native_target) =
-            db::action_groups::get_ha_native_target(target_id, &ctx.config.db).await?
-        else {
-            let mut view = render_admin_list(ctx).await?;
-            view.alert = Some(t(lang, "action_groups.schedule_target_not_found").to_string());
-            return Ok(view);
-        };
-        if native_target.is_archived() {
-            let mut view = render_schedules(ctx, target).await?;
-            view.alert = Some(t(lang, "action_groups.not_found_in_ha").to_string());
-            return Ok(view);
-        }
-    }
-    Ok(crate::bot::screens::admin::list_actions::render_user_input(
+    crate::bot::schedule_drafts::route(
         ctx,
-        State::AddActionScheduleTime { target, command },
-        t(lang, "action_groups.schedule_time_title"),
-        t(lang, "action_groups.schedule_time_prompt"),
-        Payload::Admin(AdminPayload::PromptCreateActionScheduleTime { target, command }),
-        Payload::Admin(AdminPayload::ActionSchedules { target }),
-    ))
+        crate::bot::schedule_drafts::SchedulePayload::Start { target, command },
+    )
+    .await
 }
 
 pub async fn render_edit_schedule_time_input(
@@ -911,41 +1064,14 @@ pub async fn render_edit_schedule_time_input(
     target: db::action_groups::ActionTargetRef,
     schedule_id: i64,
 ) -> Result<View> {
-    let lang = ctx.lang;
-    if target_title(&ctx, target).await?.is_none() {
-        let mut view = render_admin_list(ctx).await?;
-        view.alert = Some(t(lang, "action_groups.schedule_target_not_found").to_string());
-        return Ok(view);
-    }
-    let Some(schedule) =
-        db::action_groups::get_action_schedule(schedule_id, &ctx.config.db).await?
-    else {
-        let mut view = render_schedules(ctx, target).await?;
-        view.alert = Some(t(lang, "action_groups.schedule_not_found").to_string());
-        return Ok(view);
-    };
-    if schedule.target_ref()? != target {
-        let mut view = render_schedules(ctx, target).await?;
-        view.alert = Some(t(lang, "action_groups.schedule_not_found").to_string());
-        return Ok(view);
-    }
-    Ok(crate::bot::screens::admin::list_actions::render_user_input(
+    crate::bot::schedule_drafts::route(
         ctx,
-        State::EditActionScheduleTime {
+        crate::bot::schedule_drafts::SchedulePayload::Edit {
             target,
-            schedule_id,
+            schedule: schedule_id,
         },
-        t(lang, "action_groups.schedule_time_title"),
-        t(lang, "action_groups.schedule_time_edit_prompt"),
-        Payload::Admin(AdminPayload::PromptEditActionScheduleTime {
-            target,
-            schedule: schedule_id,
-        }),
-        Payload::Admin(AdminPayload::ActionScheduleDetail {
-            target,
-            schedule: schedule_id,
-        }),
-    ))
+    )
+    .await
 }
 
 pub async fn render_confirm_delete_group(ctx: RenderContext, group_id: i64) -> Result<View> {
@@ -955,6 +1081,7 @@ pub async fn render_confirm_delete_group(ctx: RenderContext, group_id: i64) -> R
         view.alert = Some(t(lang, "action_groups.group_not_found").to_string());
         return Ok(view);
     };
+    ctx.track_group(group.id);
     Ok(
         crate::bot::screens::admin::list_actions::render_confirm_action(
             ctx,
@@ -1017,11 +1144,17 @@ async fn target_title(
     match target {
         db::action_groups::ActionTargetRef::BotGroup(group_id) => {
             let group = db::action_groups::get_action_group(group_id, &ctx.config.db).await?;
-            Ok(group.map(|group| group.name))
+            Ok(group.map(|group| {
+                ctx.track_group(group.id);
+                group.name
+            }))
         }
         db::action_groups::ActionTargetRef::HaNative(target_id) => {
             let target = db::action_groups::get_ha_native_target(target_id, &ctx.config.db).await?;
-            Ok(target.map(|target| target.display_name().to_string()))
+            Ok(target.map(|target| {
+                ctx.track_native(target.id, &target.entity_id);
+                target.display_name().to_string()
+            }))
         }
     }
 }
@@ -1057,41 +1190,6 @@ fn dynamic_button_label(
         db::action_groups::ActionGroupCommand::TurnOff => t(lang, "action_groups.dynamic_turn_off"),
         _ => t(lang, "action_groups.dynamic_turn_on"),
     }
-}
-
-fn day_rows(
-    lang: Language,
-    target: db::action_groups::ActionTargetRef,
-    schedule_id: i64,
-    days_mask: i64,
-) -> Vec<Vec<InlineKeyboardButton>> {
-    let labels = match lang {
-        Language::Ru => ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
-        Language::En => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-    };
-    labels
-        .chunks(3)
-        .enumerate()
-        .map(|(chunk_index, chunk)| {
-            chunk
-                .iter()
-                .enumerate()
-                .map(|(index, label)| {
-                    let day = (chunk_index * 3 + index) as u8;
-                    let checked = (days_mask & (1_i64 << day)) != 0;
-                    InlineKeyboardButton::callback(
-                        format!("{} {}", if checked { "☑" } else { "☐" }, label),
-                        Payload::Admin(AdminPayload::ToggleActionScheduleDay {
-                            target,
-                            schedule: schedule_id,
-                            day,
-                        })
-                        .to_string(),
-                    )
-                })
-                .collect()
-        })
-        .collect()
 }
 
 fn filter_button(
@@ -1218,4 +1316,80 @@ fn state_alias(lang: Language, state: &str) -> String {
         "unknown" => t(lang, "action_groups.state_unknown").to_string(),
         _ => state.to_string(),
     }
+}
+
+pub async fn render_group_devices(ctx: RenderContext, group: i64, requested: u16) -> Result<View> {
+    let Some(target) = db::action_groups::get_action_group(group, &ctx.config.db).await? else {
+        return render_user_list(ctx).await;
+    };
+    if !ctx.is_admin && (!target.is_enabled() || !target.is_visible_to_all_users()) {
+        return render_user_list(ctx).await;
+    }
+    ctx.track_group(target.id);
+    let mut items = Vec::new();
+    for item in db::action_groups::list_action_group_items(group, &ctx.config.db).await? {
+        if !item.is_archived()
+            && db::access::can_view_device(
+                ctx.user_id,
+                ctx.is_admin,
+                item.device_id,
+                &ctx.config.db,
+            )
+            .await?
+        {
+            items.push(item);
+        }
+    }
+    let pages = items.len().div_ceil(10).max(1);
+    for item in &items {
+        ctx.track_device(item.device_id, &item.entity_id);
+        ctx.track_room(item.room_id);
+    }
+    let page = usize::from(requested).min(pages - 1);
+    let mut rows = items
+        .iter()
+        .skip(page * 10)
+        .take(10)
+        .map(|item| {
+            vec![InlineKeyboardButton::callback(
+                format!(
+                    "{} · {} #{}",
+                    item.room_name, item.display_name, item.device_id
+                ),
+                Payload::Control(ControlPayload::DeviceControl {
+                    room: item.room_id,
+                    device: item.device_id,
+                })
+                .to_string(),
+            )]
+        })
+        .collect::<Vec<_>>();
+    rows.push(super::common::page_row(page, pages, |page| {
+        Payload::GroupDevices { group, page }
+    }));
+    rows.push(vec![
+        super::common::back_button_lang(
+            ctx.lang,
+            Payload::Control(ControlPayload::ActionGroupDetail { group }),
+        ),
+        super::common::main_menu_button_lang(ctx.lang),
+    ]);
+    Ok(View {
+        html_context: Some(target.name.clone()),
+        text: format!(
+            "{}\n{}: {}",
+            target.name,
+            crate::bot::personal::words(ctx.lang, "Доступные устройства", "Available devices"),
+            items.len()
+        ),
+        kb: InlineKeyboardMarkup::new(rows),
+        payload: Payload::GroupDevices {
+            group,
+            page: page as u16,
+        },
+        lang: ctx.lang,
+        notifications: ctx.notifications,
+        compact: true,
+        ..Default::default()
+    })
 }

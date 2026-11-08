@@ -1,0 +1,10 @@
+{
+  "designVersion": "1.0.0",
+  "screen": "panel",
+  "bytes": 9774,
+  "zlibBytes": 3560,
+  "limit": 4096,
+  "protocol": "p1",
+  "transport": "TelegramWidget",
+  "liveIntegrationVerified": false
+}

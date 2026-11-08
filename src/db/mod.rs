@@ -8,14 +8,24 @@ pub(crate) mod camera_recording_rules;
 pub(crate) mod camera_recording_segments;
 pub(crate) mod camera_recording_sessions;
 pub(crate) mod cameras;
+pub(crate) mod command_choices;
 pub(crate) mod device_event_log;
 pub(crate) mod devices;
+pub(crate) mod interface;
 mod models;
 pub(crate) mod pending_commands;
+pub(crate) mod personal;
 pub(crate) mod rooms;
+pub(crate) mod schedule_drafts;
 pub(crate) mod settings;
+pub(crate) mod state_alias_contexts;
 pub(crate) mod subscriptions;
-mod user;
+pub(crate) mod ui_confirmations;
+pub(crate) mod ui_drafts;
+pub(crate) mod ui_text_pages;
+pub(crate) mod user;
+pub(crate) mod user_display;
+pub(crate) mod user_notification_schedule;
 
 use anyhow::{anyhow, Context, Result};
 use log::info;
@@ -65,7 +75,11 @@ pub async fn init(db_url: &str, migration_path: &str) -> Result<SqlitePool> {
 pub(crate) fn sanitize_error(error: &str) -> String {
     let mut value = error.replace('\n', " ");
     if value.len() > 500 {
-        value.truncate(500);
+        let mut end = 500;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
     }
     value
 }
@@ -126,7 +140,7 @@ pub async fn get_system_stats(pool: &SqlitePool) -> Result<SystemStats> {
     })
 }
 
-async fn count_query(sql: &str, pool: &SqlitePool) -> Result<i64> {
+async fn count_query(sql: &'static str, pool: &SqlitePool) -> Result<i64> {
     Ok(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?)
 }
 
@@ -147,8 +161,8 @@ pub async fn create_timestamped_backup(pool: &SqlitePool) -> Result<PathBuf> {
 pub async fn create_backup(backup_path: &str, pool: &SqlitePool) -> Result<()> {
     let _ = std::fs::remove_file(backup_path);
 
-    let escaped_path = backup_path.replace('\'', "''");
-    sqlx::query(&format!("VACUUM INTO '{}'", escaped_path))
+    sqlx::query("VACUUM INTO ?")
+        .bind(backup_path)
         .execute(pool)
         .await
         .context("DB backup create error")?;
@@ -177,6 +191,99 @@ pub async fn get_state_aliases(pool: &SqlitePool) -> StateMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_messages_keep_valid_utf8_within_byte_limit() {
+        for input in [
+            "a".repeat(499),
+            "a".repeat(500),
+            "a".repeat(501),
+            format!("x{}", "я".repeat(300)),
+            format!("{}🙂", "a".repeat(499)),
+            "я🙂\n".repeat(100),
+        ] {
+            let clean = input.replace('\n', " ");
+            let actual = sanitize_error(&input);
+            assert!(actual.len() <= 500);
+            assert!(clean.starts_with(&actual));
+            assert!(!actual.contains('\n'));
+            assert!(
+                actual.len() == clean.len()
+                    || actual.len() + clean[actual.len()..].chars().next().unwrap().len_utf8()
+                        > 500
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_log_accepts_long_multibyte_error() -> Result<()> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        let message = format!("x{}\n🙂", "я".repeat(300));
+        activity_log::log(
+            activity_log::NewActivity {
+                user_id: None,
+                kind: "test",
+                entity_type: "test",
+                entity_id: None,
+                action: "test",
+                status: "error",
+                message: Some(&message),
+            },
+            &pool,
+        )
+        .await?;
+        let rows = activity_log::list_recent(None, true, 1, &pool).await?;
+        assert_eq!(
+            rows[0].message.as_deref(),
+            Some(sanitize_error(&message).as_str())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_binds_paths_with_quotes_and_preserves_data() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "ha-backup-{}-{}-'quote'.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let source_path = path.with_extension("source.db");
+        // Use a disk database as in production. SQLite OPEN_MEMORY also applies
+        // to attached databases used internally by VACUUM INTO.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&source_path)
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::query("CREATE TABLE backup_probe (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO backup_probe VALUES (?)")
+            .bind("Проверка резервной копии")
+            .execute(&pool)
+            .await?;
+        create_backup(path.to_str().unwrap(), &pool).await?;
+        anyhow::ensure!(path.is_file(), "Backup file missing: {}", path.display());
+        let backup = SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .read_only(true),
+        )
+        .await?;
+        let value: String = sqlx::query_scalar("SELECT value FROM backup_probe")
+            .fetch_one(&backup)
+            .await?;
+        assert_eq!(value, "Проверка резервной копии");
+        backup.close().await;
+        pool.close().await;
+        std::fs::remove_file(path)?;
+        std::fs::remove_file(source_path)?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn system_stats_counts_core_tables() -> Result<()> {

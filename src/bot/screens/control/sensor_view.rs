@@ -1,5 +1,5 @@
 use anyhow::Context;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 use crate::bot::models::View;
@@ -7,11 +7,12 @@ use crate::bot::router::{ControlPayload, DeviceCmd, Payload, RenderContext};
 use crate::bot::State;
 use crate::core::devices::{ChartParams, SmartDevice};
 use crate::core::types::Device;
-use crate::core::HeaderItem;
+use crate::i18n::{t, Language};
 
 // Константа глубины истории в HA (обычно 10 дней)
 const MAX_HISTORY_DAYS: i32 = 10;
 const MAX_BACK_HOURS: i32 = MAX_HISTORY_DAYS * 24;
+pub(crate) const MAX_PERIOD_HOURS: u32 = MAX_BACK_HOURS as u32;
 
 pub async fn render(
     ctx: RenderContext,
@@ -20,6 +21,14 @@ pub async fn render(
     entity: crate::ha::models::Entity,
     cmd: DeviceCmd,
 ) -> anyhow::Result<View> {
+    ctx.track_device(dev.id, &dev.entity_id);
+    let absolute = match cmd {
+        DeviceCmd::ShowChartRange { start, end } => {
+            crate::charts::range::validate(start, end, Utc::now()).map_err(anyhow::Error::msg)?;
+            Some([start, end])
+        }
+        _ => None,
+    };
     // 1. Извлекаем параметры из команды или ставим дефолт
     let params = match cmd {
         DeviceCmd::ShowChart { h, o } => ChartParams {
@@ -32,33 +41,32 @@ pub async fn render(
         },
     };
 
+    anyhow::ensure!(
+        (1..=MAX_PERIOD_HOURS).contains(&params.period_hours)
+            && (-MAX_BACK_HOURS..=0).contains(&params.offset_hours),
+        "Invalid graph interval"
+    );
+
     // 2. Получаем историю
-    let history = ctx
-        .config
-        .ha_client
-        .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
-        .await?;
+    let mut history = if let Some([start, end]) = absolute {
+        ctx.config
+            .ha_client
+            .fetch_history_range(
+                &entity.entity_id,
+                DateTime::from_timestamp(start, 0).context("Invalid history start")?,
+                DateTime::from_timestamp(end, 0).context("Invalid history end")?,
+            )
+            .await?
+    } else {
+        ctx.config
+            .ha_client
+            .fetch_history(&entity.entity_id, params.period_hours, params.offset_hours)
+            .await?
+    };
 
-    // 3. Формируем расширенную шапку (Status Bar)
-    let mut notifications = ctx.notifications.clone();
-
-    // Добавляем информацию о временном диапазоне в начало списка уведомлений
+    // Период относится к графику, а не к уведомлениям о состоянии системы.
     let start_local = history.start_time.with_timezone(&Local);
     let end_local = history.end_time.with_timezone(&Local);
-
-    notifications.insert(
-        0,
-        HeaderItem {
-            icon: "📅".into(),
-            label: "Период".into(),
-            value: crate::bot::utils::md::code(&format!(
-                "{} — {}",
-                start_local.format("%d.%m %H:%M"),
-                end_local.format("%H:%M")
-            )),
-            last_update: chrono::Utc::now(),
-        },
-    );
 
     // 4. Отрисовка графика
     let style = match SmartDevice::new(entity.clone()) {
@@ -67,15 +75,69 @@ pub async fn render(
         _ => return Err(anyhow::anyhow!("Тип устройства не поддерживает графики")),
     };
 
-    let device_name = dev.alias.as_deref().unwrap_or(&entity.entity_id);
-    let image = crate::charts::draw_ha_chart(
+    let device_name = super::labels::device_name(&dev, &entity, ctx.lang);
+    let metric_name = if entity.entity_id.starts_with("sensor.")
+        && entity.device_class.as_deref() == Some("battery")
+    {
+        format!("{} — {}", t(ctx.lang, "sensor.battery"), device_name)
+    } else {
+        device_name
+    };
+    let chart_title = match entity.attributes.unit_of_measurement.as_deref() {
+        Some(unit) if !unit.trim().is_empty() => format!("{} ({})", metric_name, unit),
+        _ => metric_name,
+    };
+    let inverted = crate::db::devices::is_state_inverted(&dev.entity_id, &ctx.config.db).await?;
+    let labels = history_labels(&entity, ctx.lang, inverted, |state| {
+        ctx.config
+            .state_alias_for_display(&entity.entity_id, state, inverted)
+    });
+    if matches!(style, crate::charts::ChartStyle::Binary) {
+        for (_, state) in &mut history.points {
+            *state = crate::core::presentation::StateFormatter::logical_state(state, inverted);
+        }
+    }
+    let no_data = !crate::charts::has_history_data(
         &history.points,
-        device_name,
         history.start_time,
         history.end_time,
         style,
-    )
-    .context("Drawing failed")?;
+    );
+    let legend = if matches!(style, crate::charts::ChartStyle::Binary) {
+        format!(
+            "↑ {} · ↓ {} · /// {}",
+            labels.on, labels.off, labels.unknown
+        )
+    } else {
+        format!("/// {}", labels.unknown)
+    };
+    let image_title = chart_title.clone();
+    let html_chart = crate::charts::widget::overview(
+        &history.points,
+        history.start_time,
+        history.end_time,
+        style,
+        &labels,
+    );
+    let image = if no_data {
+        None
+    } else {
+        Some(
+            tokio::task::spawn_blocking(move || {
+                crate::charts::draw_ha_chart(
+                    &history.points,
+                    &image_title,
+                    history.start_time,
+                    history.end_time,
+                    style,
+                    &labels,
+                )
+            })
+            .await
+            .context("Chart worker failed")?
+            .context("Drawing failed")?,
+        )
+    };
 
     // 5. Логика кнопок навигации
     let mut nav_row = vec![];
@@ -83,7 +145,7 @@ pub async fn render(
     // Кнопка НАЗАД (только если не превысили лимит хранения)
     if (params.offset_hours.abs() + 24) <= MAX_BACK_HOURS {
         nav_row.push(InlineKeyboardButton::callback(
-            "⏪ -24ч",
+            localized(ctx.lang, "⏪ -24ч", "⏪ -24h"),
             Payload::Control(ControlPayload::QuickAction {
                 room: room_id,
                 device: dev.id,
@@ -97,11 +159,14 @@ pub async fn render(
     }
 
     nav_row.push(InlineKeyboardButton::callback(
-        "🔄 Текущее",
+        localized(ctx.lang, "🔄 Текущее", "🔄 Current"),
         Payload::Control(ControlPayload::QuickAction {
             room: room_id,
             device: dev.id,
-            cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+            cmd: DeviceCmd::ShowChart {
+                h: params.period_hours,
+                o: 0,
+            },
         })
         .to_string(),
     ));
@@ -109,7 +174,7 @@ pub async fn render(
     // Кнопка ВПЕРЕД (только если мы в прошлом)
     if params.offset_hours < 0 {
         nav_row.push(InlineKeyboardButton::callback(
-            "⏩ +24ч",
+            localized(ctx.lang, "⏩ +24ч", "⏩ +24h"),
             Payload::Control(ControlPayload::QuickAction {
                 room: room_id,
                 device: dev.id,
@@ -126,17 +191,21 @@ pub async fn render(
 
     // 6. Интервалы (Пресеты)
     let intervals = [
-        ("🕒 12ч", 12),
-        ("🕒 24ч", 24),
-        ("📅 3д", 72),
-        ("📅 7д", 168),
+        (localized(ctx.lang, "🕒 12ч", "🕒 12h"), 12),
+        (localized(ctx.lang, "🕒 24ч", "🕒 24h"), 24),
+        (localized(ctx.lang, "📅 3д", "📅 3d"), 72),
+        (localized(ctx.lang, "📅 7д", "📅 7d"), 168),
     ];
     rows.push(
         intervals
             .iter()
             .map(|(label, h)| {
                 InlineKeyboardButton::callback(
-                    *label,
+                    if *h == params.period_hours {
+                        format!("✓ {}", label)
+                    } else {
+                        label.to_string()
+                    },
                     Payload::Control(ControlPayload::QuickAction {
                         room: room_id,
                         device: dev.id,
@@ -151,9 +220,14 @@ pub async fn render(
             .collect(),
     );
 
+    // An exact calendar interval has no implicit hour rounding in classic mode.
+    if absolute.is_some() {
+        rows.clear();
+    }
+
     // 7. Утилиты и Навигация
     rows.push(vec![InlineKeyboardButton::callback(
-        "⌨️ Свой интервал",
+        localized(ctx.lang, "⌨️ Свой интервал", "⌨️ Custom range"),
         Payload::Control(ControlPayload::QuickAction {
             room: room_id,
             device: dev.id,
@@ -162,50 +236,155 @@ pub async fn render(
         .to_string(),
     )]);
 
-    rows.push(vec![crate::bot::screens::common::back_button(
+    rows.push(vec![crate::bot::screens::common::back_button_lang(
+        ctx.lang,
         Payload::Control(ControlPayload::RoomDetail { room: room_id }),
     )]);
 
-    // 8. Текст описания
-    let time_desc = if params.offset_hours == 0 {
-        format!("за последние {}ч", params.period_hours)
-    } else {
-        let days_ago = params.offset_hours.abs() / 24;
-        if days_ago > 0 {
-            format!("за {}ч ({} дн. назад)", params.period_hours, days_ago)
-        } else {
-            format!(
-                "за {}ч (сдвиг {}ч)",
-                params.period_hours, params.offset_hours
-            )
-        }
-    };
-
-    let text = format!(
-        "📊 *{}*\nОтображение: {}\n\nВыберите масштаб или используйте навигацию:",
-        device_name, time_desc
+    let mut text = format!(
+        "📊 {}\n{}: {} — {}\n\n{}",
+        chart_title,
+        localized(ctx.lang, "Период", "Period"),
+        start_local.format("%d.%m.%Y %H:%M"),
+        end_local.format("%d.%m.%Y %H:%M"),
+        localized(
+            ctx.lang,
+            "Выберите масштаб или используйте навигацию.",
+            "Choose a range or use navigation."
+        ),
     );
+    if no_data {
+        text.push_str(&format!(
+            "\n\n{}",
+            localized(
+                ctx.lang,
+                "Нет данных за выбранный период",
+                "No data for the selected period"
+            )
+        ));
+    } else {
+        text.push_str(&format!("\n\n{legend}"));
+    }
+    let alias = ctx
+        .config
+        .state_alias_for_display(&dev.entity_id, &entity.state, inverted);
+    let summary = format!(
+        "{}: {}",
+        localized(ctx.lang, "Сейчас", "Now"),
+        super::labels::state(&entity, ctx.lang, inverted, alias.as_deref())
+    );
+    text.push_str(&format!("\n{summary}"));
 
     let current_state_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: dev.id,
-        cmd: DeviceCmd::ShowChart {
-            h: params.period_hours,
-            o: params.offset_hours,
+        cmd: match absolute {
+            Some([start, end]) => DeviceCmd::ShowChartRange { start, end },
+            None => DeviceCmd::ShowChart {
+                h: params.period_hours,
+                o: params.offset_hours,
+            },
         },
     });
 
+    // Persist only a successfully loaded selection, never a failed request/draft.
+    crate::db::settings::set_string(
+        &format!("ui:chart:{}:{}", ctx.user_id, dev.id),
+        &current_state_payload.to_string(),
+        &ctx.config.db,
+    )
+    .await?;
+
+    rows.insert(
+        rows.len() - 1,
+        vec![InlineKeyboardButton::callback(
+            t(ctx.lang, "control.refresh"),
+            current_state_payload.to_string(),
+        )],
+    );
     Ok(View {
-        image: Some(image),
-        notifications,
+        compact: true,
+        html_title: Some(chart_title),
+        html_summary: Some(summary),
+        html_chart: Some(html_chart),
+        html_range: Some([history.start_time.timestamp(), history.end_time.timestamp()]),
+        image,
+        notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: current_state_payload,
+        lang: ctx.lang,
         ..Default::default()
     })
 }
 
-pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
+fn localized<'a>(lang: Language, ru: &'a str, en: &'a str) -> &'a str {
+    match lang {
+        Language::Ru => ru,
+        Language::En => en,
+    }
+}
+
+fn history_labels(
+    entity: &crate::ha::models::Entity,
+    lang: Language,
+    inverted: bool,
+    alias_for_state: impl Fn(&str) -> Option<String>,
+) -> crate::charts::ChartLabels {
+    let label = |logical_on: bool| {
+        let mut state_entity = entity.clone();
+        state_entity.state = if logical_on != inverted { "on" } else { "off" }.into();
+        let alias = alias_for_state(&state_entity.state);
+        super::labels::state(&state_entity, lang, inverted, alias.as_deref())
+    };
+    crate::charts::ChartLabels {
+        on: label(true),
+        off: label(false),
+        unknown: localized(lang, "Нет данных", "No data").into(),
+    }
+}
+
+pub async fn saved_chart_payload(
+    user_id: u64,
+    room: i64,
+    device: i64,
+    config: &crate::models::AppConfig,
+) -> anyhow::Result<Payload> {
+    let saved =
+        crate::db::settings::get_string(&format!("ui:chart:{user_id}:{device}"), &config.db)
+            .await?
+            .and_then(|value| Payload::from_string(&value).ok());
+    if let Some(Payload::Control(ControlPayload::QuickAction {
+        device: saved_device,
+        cmd,
+        ..
+    })) = saved
+    {
+        let valid = match cmd {
+            DeviceCmd::ShowChart { h, o } => {
+                (1..=MAX_PERIOD_HOURS).contains(&h) && (-MAX_BACK_HOURS..=0).contains(&o)
+            }
+            DeviceCmd::ShowChartRange { start, end } => {
+                crate::charts::range::validate(start, end, Utc::now()).is_ok()
+            }
+            _ => false,
+        };
+        if saved_device == device && valid {
+            return Ok(Payload::Control(ControlPayload::QuickAction {
+                room,
+                device,
+                cmd,
+            }));
+        }
+    }
+    Ok(Payload::Control(ControlPayload::QuickAction {
+        room,
+        device,
+        cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+    }))
+}
+
+pub fn render_manual_input(room_id: i64, device_id: i64, state: State, lang: Language) -> View {
     let input_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: device_id,
@@ -218,14 +397,16 @@ pub fn render_manual_input(room_id: i64, device_id: i64, state: State) -> View {
     });
 
     View {
-        header: Some("⌨️ Ввод данных".into()),
-        text: "Введите количество часов для отображения на графике (целое число).\n\n\
-               Например: `48` для двух суток."
-            .into(),
+        compact: true,
+        header: Some(localized(lang, "⌨️ Ввод данных", "⌨️ Custom range").into()),
+        text: localized(lang,
+            "Введите количество часов для отображения на графике: целое число от 1 до 240.\n\nНапример: 48 для двух суток.",
+            "Enter a whole number of hours from 1 to 240.\n\nFor example: 48 for two days.").into(),
         kb: InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-            "❌ Отмена",
+            t(lang, "common.cancel"),
             cancel_payload.to_string(),
         )]]),
+        lang,
         payload: input_payload,
         next_state: Some(state),
         ..View::default()
@@ -237,6 +418,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn binary_legend_uses_the_current_label_semantics_with_inversion_and_aliases() {
+        let entity = crate::ha::models::Entity {
+            entity_id: "binary_sensor.door".into(),
+            name: "Door".into(),
+            state: "on".into(),
+            device_class: Some("door".into()),
+            attributes: Default::default(),
+        };
+        let plain = history_labels(&entity, Language::Ru, false, |_| None);
+        assert_eq!(plain.on, "Открыто");
+        assert_eq!(plain.off, "Закрыто");
+        let inverted = history_labels(&entity, Language::Ru, true, |raw| {
+            (raw == "on").then(|| "Надёжно закрыто".into())
+        });
+        assert_eq!(inverted.on, "Открыто");
+        assert_eq!(inverted.off, "Надёжно закрыто");
+        assert_eq!(
+            inverted.off,
+            super::super::labels::state(&entity, Language::Ru, true, Some("Надёжно закрыто"))
+        );
+        assert_eq!(inverted.unknown, "Нет данных");
+    }
+
+    #[test]
     fn manual_input_screen_keeps_stable_prompt_payload() {
         let view = render_manual_input(
             10,
@@ -245,6 +450,7 @@ mod tests {
                 device_id: 20,
                 room_id: 10,
             },
+            Language::Ru,
         );
 
         assert_eq!(

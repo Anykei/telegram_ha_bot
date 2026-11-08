@@ -73,59 +73,60 @@ pub(crate) fn parse_device_text_command(
     None
 }
 
-pub(crate) async fn find_camera_for_text(
+pub(crate) async fn camera_candidates(
     user_id: u64,
     query: &str,
     config: &Arc<AppConfig>,
-) -> Result<db::cameras::Camera> {
-    let query = query.trim().trim_start_matches("камера").trim();
+) -> Result<Vec<db::cameras::Camera>> {
+    let query = query
+        .trim()
+        .trim_start_matches("камера")
+        .trim_start_matches("camera")
+        .trim();
     let cameras =
         db::cameras::list_accessible_cameras(user_id, user_id == config.root_user, &config.db)
             .await?;
-
     if let Ok(id) = query.trim_start_matches('#').parse::<i64>() {
-        if let Some(camera) = cameras.into_iter().find(|camera| camera.id == id) {
-            return Ok(camera);
-        }
-        anyhow::bail!("камера #{} не найдена или недоступна", id);
+        return Ok(cameras
+            .into_iter()
+            .filter(|camera| camera.id == id)
+            .collect());
     }
-
     let query = normalize_command_text(query);
-    let matches = cameras
-        .into_iter()
-        .filter(|camera| normalize_command_text(&camera.name).contains(&query))
-        .collect::<Vec<_>>();
-
-    match matches.len() {
-        1 => Ok(matches.into_iter().next().expect("one camera match")),
-        0 => anyhow::bail!("камера не найдена"),
-        _ => anyhow::bail!("найдено несколько камер, уточните название или ID"),
+    if query.is_empty() {
+        return Ok(Vec::new());
     }
+    let mut matches = Vec::new();
+    for camera in cameras {
+        let room = if let Some(id) = camera.room_id {
+            db::rooms::get_room_by_id(id, &config.db)
+                .await?
+                .map(|r| r.display_name().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if device_text_matches(
+            &query,
+            &normalize_command_text(&format!("{} {}", camera.name, room)),
+        ) {
+            matches.push(camera);
+        }
+    }
+    Ok(matches)
 }
 
-pub(crate) async fn find_device_for_text(
+pub(crate) async fn device_candidates(
     user_id: u64,
     is_admin: bool,
     query: &str,
     config: &Arc<AppConfig>,
-) -> Result<crate::core::types::Device> {
+) -> Result<Vec<crate::core::types::Device>> {
     let query = normalize_command_text(query);
     if query.is_empty() {
-        anyhow::bail!("пустое имя устройства");
+        return Ok(Vec::new());
     }
-
-    let rows = sqlx::query(
-        r#"
-        SELECT d.id, d.entity_id, d.alias, r.area AS room_area, r.alias AS room_alias
-        FROM devices d
-        LEFT JOIN rooms r ON r.id = d.room_id
-        WHERE d.archived = 0
-        ORDER BY d.alias, d.entity_id
-        "#,
-    )
-    .fetch_all(&config.db)
-    .await?;
-
+    let rows = sqlx::query("SELECT d.id, d.entity_id, d.alias, r.area AS room_area, r.alias AS room_alias FROM devices d LEFT JOIN rooms r ON r.id = d.room_id WHERE d.archived = 0 ORDER BY d.alias, d.entity_id").fetch_all(&config.db).await?;
     let mut matches = Vec::new();
     for row in rows {
         let device = crate::core::types::Device {
@@ -133,15 +134,16 @@ pub(crate) async fn find_device_for_text(
             entity_id: row.get("entity_id"),
             alias: row.get("alias"),
         };
-        if !db::access::can_view_device(user_id, is_admin, device.id, &config.db).await? {
+        if !db::access::can_view_device(user_id, is_admin, device.id, &config.db).await?
+            || !db::access::can_control_device(user_id, is_admin, device.id, &config.db).await?
+        {
             continue;
         }
-        let alias = device.alias.as_deref().unwrap_or(&device.entity_id);
         let room_area: Option<String> = row.get("room_area");
         let room_alias: Option<String> = row.get("room_alias");
         let haystack = normalize_command_text(&format!(
             "{} {} {} {}",
-            alias,
+            device.alias.as_deref().unwrap_or(&device.entity_id),
             device.entity_id,
             room_area.as_deref().unwrap_or_default(),
             room_alias.as_deref().unwrap_or_default()
@@ -150,12 +152,7 @@ pub(crate) async fn find_device_for_text(
             matches.push(device);
         }
     }
-
-    match matches.len() {
-        1 => Ok(matches.into_iter().next().expect("one device match")),
-        0 => anyhow::bail!("устройство не найдено"),
-        _ => anyhow::bail!("найдено несколько устройств, уточните название"),
-    }
+    Ok(matches)
 }
 
 pub(crate) fn device_text_matches(query: &str, haystack: &str) -> bool {
