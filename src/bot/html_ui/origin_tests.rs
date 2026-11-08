@@ -1,0 +1,201 @@
+use super::*;
+use crate::bot::personal::FavoriteAction;
+
+fn back_target(config: &AppConfig) -> Payload {
+    let session = current(config);
+    let key = session.pages[0]
+        .back
+        .as_ref()
+        .expect("Back must remain pinned");
+    session
+        .actions
+        .get(key)
+        .expect("Back must resolve to a read route")
+        .clone()
+}
+
+async fn seed_origin_lists(config: &AppConfig) -> Result<()> {
+    for index in 0..11 {
+        let entity = format!("light.origin_{index}");
+        db::devices::sync_device(
+            &entity,
+            "living",
+            &format!("Origin {index}"),
+            "light",
+            &config.db,
+        )
+        .await?;
+        let (room, device) = device(config, &entity).await?;
+        db::personal::add_favorite(
+            1,
+            &serde_json::to_string(&FavoriteAction::Device { room, device })?,
+            &config.db,
+        )
+        .await?;
+    }
+    sqlx::query("DELETE FROM hidden_entities")
+        .execute(&config.db)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn origin_preserves_favorite_page_through_device_details_subscription_read_and_write(
+) -> Result<()> {
+    let (config, ha) = config().await?;
+    seed_origin_lists(&config).await?;
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    publish(&fake, &config, Payload::Home).await?;
+    let settings = Payload::Personal(PersonalPayload::Settings);
+    press(&fake, &config, &dialogue, action_query(&config, &settings)).await?;
+    let favorites = Payload::Personal(PersonalPayload::Favorites { page: 0 });
+    press(&fake, &config, &dialogue, action_query(&config, &favorites)).await?;
+    assert_eq!(back_target(&config), settings);
+    let second = Payload::Personal(PersonalPayload::Favorites { page: 1 });
+    press(&fake, &config, &dialogue, action_query(&config, &second)).await?;
+    assert_eq!(
+        back_target(&config),
+        settings,
+        "Paging is not a new parent level"
+    );
+    let target = current(&config)
+        .actions
+        .values()
+        .find(|p| matches!(p, Payload::Control(ControlPayload::DeviceControl { .. })))
+        .unwrap()
+        .clone();
+    let Payload::Control(ControlPayload::DeviceControl { room, device }) = target.clone() else {
+        unreachable!()
+    };
+    press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+    assert_eq!(back_target(&config), second);
+    let write = Payload::Control(ControlPayload::QuickAction {
+        room,
+        device,
+        cmd: DeviceCmd::TurnOn,
+    });
+    press(&fake, &config, &dialogue, action_query(&config, &write)).await?;
+    assert_eq!(back_target(&config), second);
+    press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
+    assert_eq!(back_target(&config), second);
+    let details = Payload::DeviceDetails { room, device };
+    press(&fake, &config, &dialogue, action_query(&config, &details)).await?;
+    assert_eq!(back_target(&config), target);
+    let subscribe = Payload::Personal(PersonalPayload::SetSubscription {
+        device,
+        enabled: true,
+    });
+    press(&fake, &config, &dialogue, action_query(&config, &subscribe)).await?;
+    assert_eq!(
+        back_target(&config),
+        details,
+        "Subscription opened by details returns to details"
+    );
+    press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
+    assert_eq!(back_target(&config), details);
+    press(&fake, &config, &dialogue, action_query(&config, &details)).await?;
+    press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+    assert_eq!(
+        back_target(&config),
+        second,
+        "Returning from details must retain the favorite origin"
+    );
+    press(&fake, &config, &dialogue, action_query(&config, &second)).await?;
+    assert_eq!(back_target(&config), settings);
+    assert_eq!(
+        ha.calls.lock().unwrap().len(),
+        1,
+        "Back/Read never repeat the device write"
+    );
+    config.html_ui.clear(1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn origin_subscription_returns_to_notification_page_and_home_clears_the_trail() -> Result<()>
+{
+    let (config, ha) = config().await?;
+    seed_origin_lists(&config).await?;
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    publish(&fake, &config, Payload::Personal(PersonalPayload::Settings)).await?;
+    let first = Payload::Personal(PersonalPayload::Notifications { page: 0 });
+    press(&fake, &config, &dialogue, action_query(&config, &first)).await?;
+    let second = Payload::Personal(PersonalPayload::Notifications { page: 1 });
+    press(&fake, &config, &dialogue, action_query(&config, &second)).await?;
+    let subscription = current(&config)
+        .actions
+        .values()
+        .find(|p| matches!(p, Payload::Personal(PersonalPayload::Subscription { .. })))
+        .unwrap()
+        .clone();
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &subscription),
+    )
+    .await?;
+    assert_eq!(back_target(&config), second);
+    press(&fake, &config, &dialogue, action_query(&config, &second)).await?;
+    assert_eq!(
+        back_target(&config),
+        Payload::Personal(PersonalPayload::Settings)
+    );
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        action_query(&config, &Payload::Home),
+    )
+    .await?;
+    let favorites = Payload::Personal(PersonalPayload::Favorites { page: 0 });
+    press(&fake, &config, &dialogue, action_query(&config, &favorites)).await?;
+    assert_eq!(
+        back_target(&config),
+        Payload::Home,
+        "Old settings origin was cleared by Home"
+    );
+    assert!(ha.calls.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn origin_does_not_survive_a_new_admission_generation() -> Result<()> {
+    let (config, _) = config().await?;
+    seed_origin_lists(&config).await?;
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    let favorites = Payload::Personal(PersonalPayload::Favorites { page: 1 });
+    publish(&fake, &config, favorites.clone()).await?;
+    let target = current(&config)
+        .actions
+        .values()
+        .find(|p| matches!(p, Payload::Control(ControlPayload::DeviceControl { .. })))
+        .unwrap()
+        .clone();
+    let Payload::Control(ControlPayload::DeviceControl { room, .. }) = target else {
+        unreachable!()
+    };
+    press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+    assert_eq!(back_target(&config), favorites);
+    sqlx::query("UPDATE users SET admission_generation='new-origin-admission' WHERE id=1")
+        .execute(&config.db)
+        .await?;
+    publish(&fake, &config, target).await?;
+    assert_eq!(
+        back_target(&config),
+        Payload::Control(ControlPayload::RoomDetail { room })
+    );
+    Ok(())
+}

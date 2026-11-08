@@ -20,6 +20,9 @@ mod camera_tests;
 #[path = "media_pending_tests.rs"]
 mod media_pending_tests;
 
+#[path = "origin_tests.rs"]
+mod origin_tests;
+
 #[path = "audit_tests.rs"]
 mod audit_tests;
 

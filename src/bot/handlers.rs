@@ -908,6 +908,7 @@ pub async fn handle_callback(
         )
     ) || matches!(&payload, Payload::Control(crate::bot::router::ControlPayload::QuickAction { cmd, .. }) if crate::bot::router::action_requires_control(cmd));
     if accepted_write {
+        let write_origin = super::html_ui::device_write_origin(&config, user_id, &payload);
         dialogue.exit().await?;
         let token = config.begin_view_update(user_id);
         let chat = msg.chat().id;
@@ -922,7 +923,24 @@ pub async fn handle_callback(
                     config.clone(),
                 )
                 .await?;
-                router(payload, user_id, config.clone()).await
+                let mut view = router(payload, user_id, config.clone()).await?;
+                if let Some(
+                    origin @ Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
+                        room,
+                        ..
+                    }),
+                ) = write_origin
+                {
+                    if view.payload
+                        == Payload::Control(crate::bot::router::ControlPayload::RoomDetail { room })
+                    {
+                        let mut restored = router(origin, user_id, config.clone()).await?;
+                        restored.notice = view.notice.take().or(restored.notice);
+                        restored.alert = view.alert.take().or(restored.alert);
+                        view = restored;
+                    }
+                }
+                Ok::<_, anyhow::Error>(view)
             }
             .await;
             match result {

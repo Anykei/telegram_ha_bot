@@ -1,6 +1,7 @@
 //! HTML is a presentation adapter for existing routes, not a second command engine.
 pub(crate) mod chart_export;
 pub(crate) mod media_pending;
+mod origin;
 pub(crate) mod pending;
 mod presentation;
 pub(crate) mod range;
@@ -48,6 +49,8 @@ struct WidgetSession {
     index: usize,
     claimed: bool,
     anchor: Option<Payload>,
+    origin: origin::Trail,
+    origin_request: Option<Payload>,
     /// One-shot source-list destination and direction (backwards opens its last part).
     list_navigation: Option<(Payload, bool)>,
 }
@@ -92,6 +95,40 @@ pub fn renderer_matches(config: &AppConfig, user: u64, view: &View) -> bool {
         .sessions
         .get(&user)
         .is_some_and(|session| renderer(&session.view) == renderer(view))
+}
+/// The shared command router historically returns the room after on/off. Keep
+/// an HTML command issued inside the device's own controls on that device.
+pub(crate) fn device_write_origin(
+    config: &AppConfig,
+    user: u64,
+    action: &Payload,
+) -> Option<Payload> {
+    if !config
+        .sessions
+        .get(&user)
+        .is_some_and(|s| s.ui_message_mode == UiMessageMode::Html)
+    {
+        return None;
+    }
+    let Payload::Control(super::router::ControlPayload::QuickAction { room, device, cmd }) = action
+    else {
+        return None;
+    };
+    if !super::router::action_requires_control(cmd) {
+        return None;
+    }
+    let session = config.html_ui.sessions.get(&user)?;
+    if session.view.html_chart.is_some()
+        || session.view.html_range.is_some()
+        || session.view.html_media_controls
+    {
+        return None;
+    }
+    let expected = Payload::Control(super::router::ControlPayload::DeviceControl {
+        room: *room,
+        device: *device,
+    });
+    (session.view.payload.for_refresh() == expected).then_some(expected)
 }
 fn renderer(view: &View) -> &'static str {
     if view.html_chart.is_some() {
@@ -148,6 +185,11 @@ pub async fn deliver(
         return Ok(None);
     };
     let mut decorated = view.clone();
+    let origin = origin::prepare(
+        config.html_ui.sessions.get(&user).as_deref(),
+        &generation,
+        &mut decorated,
+    );
     let media_receipt = config
         .html_ui
         .media
@@ -179,11 +221,14 @@ pub async fn deliver(
         .sessions
         .get(&user)
         .filter(|old| {
-            old.list_navigation.as_ref().is_some_and(|(target, _)| target == &presentation::list_identity(&view.payload.for_refresh()))
-                || old.view.payload.for_refresh() == view.payload.for_refresh()
+            old.list_navigation.as_ref().is_some_and(|(target, _)| {
+                target == &presentation::list_identity(&view.payload.for_refresh())
+            }) || old.view.payload.for_refresh() == view.payload.for_refresh()
         })
         .map(|old| {
-            if let Some((_, backwards)) = old.list_navigation.as_ref().filter(|(target, _)| target == &presentation::list_identity(&view.payload.for_refresh())) {
+            if let Some((_, backwards)) = old.list_navigation.as_ref().filter(|(target, _)| {
+                target == &presentation::list_identity(&view.payload.for_refresh())
+            }) {
                 return if *backwards { pages.len() - 1 } else { 0 };
             }
             old.anchor
@@ -273,6 +318,8 @@ pub async fn deliver(
             claimed: false,
             list_navigation: None,
             anchor: None,
+            origin,
+            origin_request: None,
         },
     );
     Ok(Some(id))
@@ -402,13 +449,20 @@ pub async fn resolve(
     }
     if let Some(mut session) = config.html_ui.sessions.get_mut(&user) {
         session.claimed = true;
-        session.list_navigation = snapshot.pages[snapshot.index].list.as_ref().and_then(|(_, previous, next)| {
-            if previous.as_deref() == Some(parts[2]) {
-                Some((presentation::list_identity(&action.for_refresh()), true))
-            } else if next.as_deref() == Some(parts[2]) {
-                Some((presentation::list_identity(&action.for_refresh()), false))
-            } else { None }
-        });
+        session.origin_request = origin::read_route(action);
+        session.list_navigation =
+            snapshot.pages[snapshot.index]
+                .list
+                .as_ref()
+                .and_then(|(_, previous, next)| {
+                    if previous.as_deref() == Some(parts[2]) {
+                        Some((presentation::list_identity(&action.for_refresh()), true))
+                    } else if next.as_deref() == Some(parts[2]) {
+                        Some((presentation::list_identity(&action.for_refresh()), false))
+                    } else {
+                        None
+                    }
+                });
         if let Payload::Control(super::router::ControlPayload::QuickAction { room, device, cmd }) =
             action
         {
