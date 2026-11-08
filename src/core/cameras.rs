@@ -1,6 +1,9 @@
+mod scaler;
+use scaler::FrameScaler;
+
 use crate::db::cameras::Camera;
 use anyhow::{anyhow, Context, Result};
-use ffmpeg::{codec, encoder, format, frame, media, picture, software, util, Dictionary, Rational};
+use ffmpeg::{codec, encoder, format, frame, media, picture, util, Dictionary, Rational};
 use ffmpeg_next as ffmpeg;
 use image::codecs::jpeg::JpegEncoder;
 use image::ColorType;
@@ -687,14 +690,13 @@ fn capture_snapshot_blocking(camera: &Camera) -> Result<Vec<u8>> {
         .video()
         .context("Не удалось открыть video decoder")?;
 
-    let mut scaler = software::scaling::context::Context::get(
+    let mut scaler = FrameScaler::new(
         decoder.format(),
         decoder.width(),
         decoder.height(),
         format::Pixel::RGB24,
         decoder.width(),
         decoder.height(),
-        software::scaling::flag::Flags::BILINEAR,
     )
     .context("Не удалось создать scaler")?;
 
@@ -742,14 +744,13 @@ fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
 
     let (target_width, target_height) =
         scaled_dimensions(decoder.width(), decoder.height(), 1280, 720);
-    let mut scaler = software::scaling::context::Context::get(
+    let mut scaler = FrameScaler::new(
         decoder.format(),
         decoder.width(),
         decoder.height(),
         format::Pixel::RGB24,
         target_width,
         target_height,
-        software::scaling::flag::Flags::BILINEAR,
     )
     .context("Не удалось создать preview scaler")?;
 
@@ -778,7 +779,7 @@ fn extract_video_preview_blocking(input_path: &Path) -> Result<Vec<u8>> {
 
 fn receive_first_jpeg_frame(
     decoder: &mut ffmpeg::decoder::Video,
-    scaler: &mut software::scaling::context::Context,
+    scaler: &mut FrameScaler,
 ) -> Result<Option<Vec<u8>>> {
     let mut decoded = util::frame::video::Video::empty();
 
@@ -1028,6 +1029,8 @@ fn transcode_h264(
         encoder.set_width(target_width);
         encoder.set_height(target_height);
         encoder.set_format(format::Pixel::YUV420P);
+        encoder.set_color_range(util::color::Range::MPEG);
+        encoder.set_colorspace(decoder.color_space());
         encoder.set_time_base(input_time_base);
         encoder.set_frame_rate(decoder.frame_rate());
         encoder.set_aspect_ratio(Rational::new(1, 1));
@@ -1063,14 +1066,13 @@ fn transcode_h264(
         .ok_or_else(|| anyhow!("Compressed output stream missing"))?
         .time_base();
 
-    let mut scaler = software::scaling::context::Context::get(
+    let mut scaler = FrameScaler::new(
         decoder.format(),
         decoder.width(),
         decoder.height(),
         format::Pixel::YUV420P,
         target_width,
         target_height,
-        software::scaling::flag::Flags::BILINEAR,
     )
     .context("Не удалось создать scaler для сжатия")?;
 
@@ -1177,6 +1179,8 @@ fn transcode_camera_clip(
         encoder.set_width(target_width);
         encoder.set_height(target_height);
         encoder.set_format(format::Pixel::YUV420P);
+        encoder.set_color_range(util::color::Range::MPEG);
+        encoder.set_colorspace(decoder.color_space());
         encoder.set_time_base(input_time_base);
         encoder.set_frame_rate(decoder.frame_rate());
         encoder.set_aspect_ratio(Rational::new(1, 1));
@@ -1212,14 +1216,13 @@ fn transcode_camera_clip(
         .ok_or_else(|| anyhow!("Fallback output stream missing"))?
         .time_base();
 
-    let mut scaler = software::scaling::context::Context::get(
+    let mut scaler = FrameScaler::new(
         decoder.format(),
         decoder.width(),
         decoder.height(),
         format::Pixel::YUV420P,
         target_width,
         target_height,
-        software::scaling::flag::Flags::BILINEAR,
     )
     .context("Не удалось создать scaler для fallback записи")?;
 
@@ -1304,7 +1307,7 @@ fn transcode_camera_clip(
 
 fn encode_available_frames(
     decoder: &mut ffmpeg::decoder::Video,
-    scaler: &mut software::scaling::context::Context,
+    scaler: &mut FrameScaler,
     encoder: &mut encoder::Video,
     output_ctx: &mut format::context::Output,
     output_stream_index: usize,
