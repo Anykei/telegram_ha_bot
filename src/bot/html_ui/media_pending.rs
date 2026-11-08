@@ -356,49 +356,64 @@ impl Operation {
             return;
         };
         self.release(outcome);
-        // A queued refresh may be skipped while a callback owns the UI. Keep
-        // requesting a coalesced read until this exact receipt was displayed.
-        for _ in 0..120 {
-            if self.config.html_ui.media.is_shown(self.user, id) {
-                return;
-            }
-            if self
-                .config
-                .runtime_status
-                .read()
-                .await
-                .shutdown_requested_at
-                .is_some()
-            {
-                return;
-            }
-            if !db::admission_is_current(self.user, &self.generation, &self.config.db)
-                .await
-                .unwrap_or(false)
-            {
-                return;
-            }
-            let compatible = self
-                .config
-                .sessions
-                .get(&self.user)
-                .and_then(|s| Payload::from_string(&s.current_context).ok())
-                .is_some_and(|p| self.target.matches_view(&p));
-            if !compatible {
-                return;
-            }
-            let _ = crate::core::enqueue_current_refresh(&self.config, self.user).await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
+        refresh_receipt(&self.config, self.user, id, &self.generation, &self.target).await;
     }
 }
 impl Drop for Operation {
     fn drop(&mut self) {
         // Cancellation is not proof that a Telegram upload failed. Never retry it.
+        let id = self.id;
         self.release(Outcome {
             uncertain: true,
             ..Outcome::failed()
         });
+        if let Some(id) = id.filter(|_| tokio::runtime::Handle::try_current().is_ok()) {
+            let (config, user, generation, target) = (
+                self.config.clone(),
+                self.user,
+                self.generation.clone(),
+                self.target.clone(),
+            );
+            db::user::spawn_with_admission(async move {
+                refresh_receipt(&config, user, id, &generation, &target).await;
+            });
+        }
+    }
+}
+
+async fn refresh_receipt(
+    config: &Arc<AppConfig>,
+    user: u64,
+    id: u64,
+    generation: &str,
+    target: &Target,
+) {
+    // A queued refresh may be skipped while a callback owns the UI. Keep
+    // requesting a coalesced read until this exact receipt was displayed.
+    for _ in 0..120 {
+        if config.html_ui.media.is_shown(user, id)
+            || config
+                .runtime_status
+                .read()
+                .await
+                .shutdown_requested_at
+                .is_some()
+            || !db::admission_is_current(user, generation, &config.db)
+                .await
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let compatible = config
+            .sessions
+            .get(&user)
+            .and_then(|s| Payload::from_string(&s.current_context).ok())
+            .is_some_and(|p| target.matches_view(&p));
+        if !compatible {
+            return;
+        }
+        let _ = crate::core::enqueue_current_refresh(config, user).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

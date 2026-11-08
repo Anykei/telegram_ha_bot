@@ -170,3 +170,78 @@ async fn archive_send_all_button_stays_visible_and_busy_until_worker_finishes() 
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_video_worker_queues_unknown_receipt_without_restoring_old_navigation(
+) -> Result<()> {
+    for leave in [false, true] {
+        let (config, _) = config().await?;
+        let camera = db::cameras::add_manual_camera(
+            db::cameras::NewCamera {
+                name: "Video test",
+                room_id: 1,
+                stream_url: "mock://unused",
+                snapshot_url: None,
+                clip_seconds: 10,
+            },
+            &config.db,
+        )
+        .await?;
+        config.camera_snapshot_cache.lock().await.insert(
+            camera,
+            crate::models::CameraSnapshotCache {
+                bytes: None,
+                captured_at: None,
+                failed_at: Some(chrono::Utc::now()),
+                last_warned_at: None,
+                last_error: None,
+                refreshing: false,
+            },
+        );
+        let fake = FakeTelegram::new().await?;
+        let route = Payload::Camera(CameraPayload::CameraDetail { id: camera });
+        let initial = publish(&fake, &config, route.clone()).await?;
+        let target = Target::Clip {
+            camera,
+            seconds: 10,
+        };
+        let operation = config
+            .html_ui
+            .media
+            .begin(&config, 1, &initial.generation, target.clone())
+            .unwrap();
+        publish(
+            &fake,
+            &config,
+            if leave { Payload::Home } else { route.clone() },
+        )
+        .await?;
+        let before = current(&config).message;
+        let task = tokio::spawn(async move {
+            let _operation = operation;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.is_err());
+        assert!(!config.html_ui.media.blocks(1, &initial.generation, &target));
+        if leave {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            assert_eq!(config.runtime_status.read().await.ui_refresh_queued, 0);
+            assert_eq!(current(&config).message, before);
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while config.runtime_status.read().await.ui_refresh_queued == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+            let receipt = publish(&fake, &config, route).await?;
+            assert!(receipt
+                .pages
+                .iter()
+                .any(|p| p.alert.contains("не подтверждена")));
+        }
+    }
+    Ok(())
+}
