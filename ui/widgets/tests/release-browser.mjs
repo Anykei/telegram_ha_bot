@@ -106,7 +106,8 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
       })`);
       text += content.text; actions.push(...content.actions); status.push(...content.status);
       if (text===expected && actions.length===visibleActions(page).length && status.length===(page.status||[]).length) break;
-      assert.notEqual(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')`),'true',`${label}: content remains reachable`);
+      assert.notEqual(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')`),'true',
+        `${label}: content remains reachable; ${JSON.stringify({text, expected, actions, expectedActions:visibleActions(page), status, part})}`);
       await evaluate(`${get('r-local-next')}.click()`);
     }
     for (let i = 1; i < part; i++) await evaluate(`${get('r-local-prev')}.click()`);
