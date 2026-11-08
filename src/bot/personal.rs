@@ -830,35 +830,6 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     Ok(view)
 }
 
-pub async fn help(ctx: RenderContext) -> Result<View> {
-    let voice = ctx.config.voice_enabled
-        && db::access::can_use_voice(ctx.user_id, ctx.is_admin, &ctx.config.db).await?;
-    let text = words(ctx.lang,
-        "Помощь\n\nКомнаты — устройства и графики. Сценарии — группы действий и сценарии HA.\nТекст: «включи свет в кухне», «снимок вход».\nГолос: «выключи свет в спальне».\n/help — помощь; /start — главное меню; /cancel — отменить ввод текущего поля. Сохранённые поля черновика сохраняются. Принятая команда не отменяется.",
-        "Help\n\nRooms — devices and charts. Scenarios — action groups and HA scripts/scenes.\nText: “turn on kitchen light”, “snapshot entrance”.\nVoice: “turn off bedroom light”.\n/help — help; /start — home; /cancel — cancel current input. Saved draft fields remain. Accepted commands cannot be cancelled.");
-    let text = if voice {
-        text.into()
-    } else {
-        format!(
-            "{text}\n\n{}",
-            words(
-                ctx.lang,
-                "Голосовой ввод отключён администратором.",
-                "Voice input is disabled by your administrator."
-            )
-        )
-    };
-    Ok(base(
-        &ctx,
-        text,
-        Payload::Help,
-        vec![vec![Button::callback(
-            t(ctx.lang, "home.control"),
-            Payload::Control(ControlPayload::ListRooms).to_string(),
-        )]],
-    ))
-}
-
 pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Result<View> {
     if !device_access_is_current(&ctx, device, true).await? {
         return Ok(unavailable_device(&ctx));

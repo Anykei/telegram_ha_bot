@@ -2,6 +2,7 @@ pub(crate) mod command_choices;
 pub(crate) mod confirmations;
 pub(crate) mod format;
 pub(crate) mod handlers;
+pub(crate) mod help;
 pub(crate) mod html_ui;
 pub(crate) mod models;
 pub(crate) mod notification;

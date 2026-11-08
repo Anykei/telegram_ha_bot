@@ -290,6 +290,8 @@ pub enum Payload {
         group: i64,
         page: u16,
     },
+    // Append only: preserve existing postcard callback indices.
+    HelpTopic(super::help::Topic),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -1506,7 +1508,8 @@ pub async fn router(
         Ok(None) => match payload {
             Payload::TextPage { .. } => unreachable!("handled before routing"),
             Payload::Home => super::screens::home::render(ctx).await?,
-            Payload::Help => super::personal::help(ctx).await?,
+            Payload::Help => super::help::render(ctx, None).await?,
+            Payload::HelpTopic(topic) => super::help::render(ctx, Some(topic)).await?,
             Payload::Schedule(p) => super::schedule_drafts::route(ctx, p).await?,
             Payload::GroupDevices { group, page } => {
                 super::screens::action_groups::render_group_devices(ctx, group, page).await?
@@ -5432,6 +5435,12 @@ mod tests {
             Payload::Command(CommandPayload::Result { id: 1 }),
         ];
 
+        payloads.push(Payload::Help);
+        payloads.extend(
+            super::super::help::Topic::ALL
+                .into_iter()
+                .map(Payload::HelpTopic),
+        );
         payloads.extend(control_payload_samples().into_iter().map(Payload::Control));
         payloads.extend(
             settings_payload_samples()
@@ -6039,6 +6048,7 @@ mod tests {
         match payload {
             Payload::TextPage { .. } => "Payload::TextPage",
             Payload::Help => "Payload::Help",
+            Payload::HelpTopic(_) => "Payload::HelpTopic",
             Payload::Schedule(_) => "Payload::Schedule",
             Payload::GroupDevices { .. } => "Payload::GroupDevices",
             Payload::Personal(_) => "Payload::Personal",

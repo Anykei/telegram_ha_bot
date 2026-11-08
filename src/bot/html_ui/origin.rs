@@ -27,6 +27,7 @@ pub(super) fn read_route(payload: &Payload) -> Option<Payload> {
         &route,
         Payload::Home
             | Payload::Help
+            | Payload::HelpTopic(_)
             | Payload::DeviceDetails { .. }
             | Payload::TemperatureInput { .. }
             | Payload::GroupDevices { .. }

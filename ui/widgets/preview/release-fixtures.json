@@ -3756,5 +3756,719 @@
       "l": true,
       "b": []
     }
+  },
+  {
+    "id": "help",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Управление",
+            "a0",
+            "nav"
+          ],
+          [
+            "Графики",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Камеры",
+            "a2",
+            "nav"
+          ],
+          [
+            "Избранное",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Уведомления",
+            "a4",
+            "nav"
+          ],
+          [
+            "Текст и голос",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Навигация",
+            "a6",
+            "nav"
+          ],
+          [
+            "Неполадки",
+            "a7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "Выберите тему, чтобы узнать, как пользоваться ботом.",
+      "context": "Мой дом",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "CQ",
+      "seq": 1,
+      "title": "Помощь",
+      "v": 1
+    },
+    "label": "Помощь · RU",
+    "links": {
+      "a8": "home",
+      "a0": "help_controls",
+      "a1": "help_charts",
+      "a2": "help_cameras",
+      "a3": "help_favorites",
+      "a4": "help_notifications",
+      "a5": "help_input",
+      "a6": "help_navigation",
+      "a7": "help_troubleshooting"
+    }
+  },
+  {
+    "id": "help_controls",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Открыть комнаты",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Комнаты → устройство: нажмите нужное действие. В HTML кнопка заблокирована, пока команда применяется. Не повторяйте её при ожидании.\n\n«Сценарии» запускают группы действий и сценарии HA. Если появилось подтверждение, проверьте действие перед запуском.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwA",
+      "seq": 1,
+      "title": "Управление",
+      "v": 1
+    },
+    "label": "Управление · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_charts",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Открыть комнаты",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Откройте датчик в комнате. В HTML «Период» позволяет выбрать даты и время начала и конца. Примените интервал, чтобы обновить график.\n\n«Отправить PNG» пришлёт отдельное изображение: его можно увеличить, сохранить или переслать.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwE",
+      "seq": 1,
+      "title": "Графики",
+      "v": 1
+    },
+    "label": "Графики · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_cameras",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Открыть камеры",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "«Снимок» отправит фото. Для видео выберите длительность и дождитесь завершения: кнопка временно заблокирована.\n\nФото и видео приходят отдельно. Видео по кнопке сохраняется в архив, если это включено в настройках камеры. Срок удаления сообщения задаёт администратор.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwI",
+      "seq": 1,
+      "title": "Камеры",
+      "v": 1
+    },
+    "label": "Камеры · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_favorites",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Открыть избранное",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "В карточке устройства, камеры или сценария выберите «В избранное». Можно сохранить переход к объекту или доступное действие.\n\nОткройте «Избранное», чтобы поставить пункт первым или удалить его. Избранное действие выполняется по нажатию.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwM",
+      "seq": 1,
+      "title": "Избранное",
+      "v": 1
+    },
+    "label": "Избранное · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_notifications",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Мои настройки",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "В карточке устройства включите уведомления. «Мои настройки» → «Мои уведомления» — ваши подписки.\n\nВ «Моих настройках» задайте интервал тихих часов и включите их отдельно. Критические уведомления приходят и в тихие часы.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwQ",
+      "seq": 1,
+      "title": "Уведомления",
+      "v": 1
+    },
+    "label": "Уведомления · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_input",
+    "page": {
+      "alert": "",
+      "b": [],
+      "back": "a0",
+      "body": "Напишите: «включи свет в кухне». Укажите комнату и устройство; если найдено несколько вариантов, выберите нужный.\n\n/cancel отменяет ввод текущего поля, сохраняя поля черновика. Уже принятую команду он не отменяет.\n\nГолосовой ввод вам недоступен.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwU",
+      "seq": 1,
+      "title": "Текст и голос",
+      "v": 1
+    },
+    "label": "Текст и голос · RU",
+    "links": {
+      "a0": "help"
+    }
+  },
+  {
+    "id": "help_navigation",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Вид интерфейса",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "«Назад» — предыдущий уровень; ↻ — обновить данные. Стрелки снизу листают содержимое.\n\n/start — главное меню\n/help — помощь\n/ui — выбор интерфейса\n/html — HTML-карточки\n/classic — кнопки Telegram\n/cancel — отмена ввода",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwY",
+      "seq": 1,
+      "title": "Навигация",
+      "v": 1
+    },
+    "label": "Навигация · RU",
+    "links": {
+      "a1": "help"
+    }
+  },
+  {
+    "id": "help_troubleshooting",
+    "page": {
+      "alert": "",
+      "b": [],
+      "back": "a0",
+      "body": "Нет ответа? Обновите карточку и проверьте состояние перед повторной командой. /start откроет главное меню заново.\n\nНет устройства или управления? Обратитесь к администратору: доступ может быть ограничен, а устройство — недоступно в HA.",
+      "context": "Помощь",
+      "kind": "list",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "Dwc",
+      "seq": 1,
+      "title": "Неполадки",
+      "v": 1
+    },
+    "label": "Неполадки · RU",
+    "links": {
+      "a0": "help"
+    }
+  },
+  {
+    "id": "help_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Controls",
+            "a0",
+            "nav"
+          ],
+          [
+            "Charts",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Cameras",
+            "a2",
+            "nav"
+          ],
+          [
+            "Favorites",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Notifications",
+            "a4",
+            "nav"
+          ],
+          [
+            "Text and voice",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Navigation",
+            "a6",
+            "nav"
+          ],
+          [
+            "Problems",
+            "a7",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a8",
+      "body": "Choose a topic to learn how to use the bot.",
+      "context": "My home",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "CQ",
+      "seq": 1,
+      "title": "Help",
+      "v": 1
+    },
+    "label": "Help · EN",
+    "links": {
+      "a8": "home_en",
+      "a0": "help_controls_en",
+      "a1": "help_charts_en",
+      "a2": "help_cameras_en",
+      "a3": "help_favorites_en",
+      "a4": "help_notifications_en",
+      "a5": "help_input_en",
+      "a6": "help_navigation_en",
+      "a7": "help_troubleshooting_en"
+    }
+  },
+  {
+    "id": "help_controls_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Open rooms",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Rooms → device: select an action. In HTML, its button is locked while the change is pending; do not repeat the command.\n\nScenarios runs action groups and HA scripts/scenes. If confirmation appears, review the action before running it.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwA",
+      "seq": 1,
+      "title": "Controls",
+      "v": 1
+    },
+    "label": "Controls · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_charts_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Open rooms",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Open a sensor in a room. In HTML, Period lets you choose start/end dates and times. Apply the range to update the chart.\n\nSend PNG delivers a separate image you can zoom, save or forward.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwE",
+      "seq": 1,
+      "title": "Charts",
+      "v": 1
+    },
+    "label": "Charts · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_cameras_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Open cameras",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Snapshot sends a photo. For video, choose a duration and wait; the button is temporarily locked.\n\nMedia arrives separately. Manual clips enter the archive if enabled in camera settings. The administrator sets the message deletion delay.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwI",
+      "seq": 1,
+      "title": "Cameras",
+      "v": 1
+    },
+    "label": "Cameras · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_favorites_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Open favorites",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Select Add to favorites on a device, camera or scenario. Save a link to the object or an available action.\n\nOpen Favorites to move an entry to the top or remove it. Tapping a favorite action executes it.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwM",
+      "seq": 1,
+      "title": "Favorites",
+      "v": 1
+    },
+    "label": "Favorites · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_notifications_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "My settings",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Enable notifications on a device card. My settings → My notifications lists your subscriptions.\n\nIn My settings, set the quiet hours interval and enable it separately. Critical notifications still arrive during quiet hours.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwQ",
+      "seq": 1,
+      "title": "Notifications",
+      "v": 1
+    },
+    "label": "Notifications · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_input_en",
+    "page": {
+      "alert": "",
+      "b": [],
+      "back": "a0",
+      "body": "Type “turn on kitchen light”. Include the room and device; choose a match if several are found.\n\n/cancel cancels the current input and keeps saved draft fields. It does not undo an accepted command.\n\nVoice input is unavailable to you.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwU",
+      "seq": 1,
+      "title": "Text and voice",
+      "v": 1
+    },
+    "label": "Text and voice · EN",
+    "links": {
+      "a0": "help_en"
+    }
+  },
+  {
+    "id": "help_navigation_en",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Interface",
+            "a0",
+            "nav"
+          ]
+        ]
+      ],
+      "back": "a1",
+      "body": "Back returns to the previous level; ↻ refreshes data. Bottom arrows page through content.\n\n/start — home\n/help — help\n/ui — choose interface\n/html — HTML cards\n/classic — Telegram buttons\n/cancel — cancel input",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "DwY",
+      "seq": 1,
+      "title": "Navigation",
+      "v": 1
+    },
+    "label": "Navigation · EN",
+    "links": {
+      "a1": "help_en"
+    }
+  },
+  {
+    "id": "help_troubleshooting_en",
+    "page": {
+      "alert": "",
+      "b": [],
+      "back": "a0",
+      "body": "No response? Refresh and check the state before repeating a command. /start reopens home.\n\nMissing a device or controls? Ask the administrator: access may be restricted or the device unavailable in HA.",
+      "context": "Help",
+      "kind": "list",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "Dwc",
+      "seq": 1,
+      "title": "Problems",
+      "v": 1
+    },
+    "label": "Problems · EN",
+    "links": {
+      "a0": "help_en"
+    }
   }
 ]

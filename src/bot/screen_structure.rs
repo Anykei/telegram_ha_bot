@@ -50,6 +50,7 @@ pub(crate) fn parent(view: &View) -> Option<P> {
     let parent = match &view.payload {
         P::Home => return None,
         P::Help | P::InDev => P::Home,
+        P::HelpTopic(_) => P::Help,
         P::TemperatureInput { room, device } | P::DeviceDetails { room, device } => {
             P::Control(C::DeviceControl {
                 room: *room,

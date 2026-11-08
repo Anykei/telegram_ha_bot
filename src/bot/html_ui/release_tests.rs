@@ -5,6 +5,9 @@ use crate::ha::HomeAssistantClient;
 #[path = "graph_tests.rs"]
 mod graph_tests;
 
+#[path = "help_tests.rs"]
+mod help_tests;
+
 #[path = "home_tests.rs"]
 mod home_tests;
 
