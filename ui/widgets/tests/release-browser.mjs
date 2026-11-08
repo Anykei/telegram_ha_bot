@@ -18,7 +18,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   const button = key => `${doc}.querySelector('[data-key="${key}"]')`;
   const state = `JSON.parse(${win}.TelegramWidget.chatData)`;
   const click = key => evaluate(`${button(key)}.click()`);
-  const disabled = key => `${button(key)}.getAttribute('aria-disabled')`;
+  const disabled = key => `${button(key)}.disabled.toString()`;
   async function capture(name) {
     await until(`document.getElementById('release-frame').clientHeight === Math.min(600,Math.ceil(${get('release')}.getBoundingClientRect().height))`);
     await screenshot(name);
@@ -107,7 +107,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       })`);
       text += content.text; actions.push(...content.actions); status.push(...content.status);
       if (text===expected && actions.length===visibleActions(page).length && status.length===(page.status||[]).length) break;
-      assert.notEqual(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')`),'true',
+      assert.notEqual(await evaluate(`${get('r-next')}.disabled.toString()`),'true',
         `${label}: content remains reachable; ${JSON.stringify({text, expected, actions, expectedActions:visibleActions(page), status, part})}`);
       await evaluate(`${get('r-local-next')}.click()`);
     }
@@ -117,8 +117,8 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   async function serverStep(direction='next') {
     for(let part=0;part<40;part++) {
       await evaluate(`${get('r-'+direction)}.click()`);
-      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) {
-        await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`); return;
+      if(await evaluate(`${get('r-read')}.disabled.toString()==='true'`)) {
+        await until(`${get('r-read')}.disabled.toString()==='false'`); return;
       }
     }
     assert.fail('Server page remains reachable through the unified pager');
@@ -197,19 +197,19 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       assert.equal(await evaluate(`${doc}.querySelectorAll('.r-footer.r-pager').length`),1);
       const part=await evaluate(`({keys:Array.from(${doc}.querySelectorAll('[data-key]'),b=>b.dataset.key),label:${get('r-count')}.textContent})`);
       assert.ok(part.label.startsWith(lang==='ru'?'Список ':'List '),'Source position is explicit');parts.push(part);
-      if(await evaluate(`${get('r-next')}.getAttribute('aria-disabled')==='true'`)) break;
+      if(await evaluate(`${get('r-next')}.disabled.toString()==='true'`)) break;
       await evaluate(`${get('r-next')}.click()`);
-      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+      if(await evaluate(`${get('r-read')}.disabled.toString()==='true'`)) await until(`${get('r-read')}.disabled.toString()==='false'`);
     }
     assert.deepEqual(parts.flatMap(p=>p.keys),Array.from({length:21},(_,i)=>'item'+(i+1)),'All 21 items appear exactly once');
     assert.equal(await evaluate(`${win}.__requests.length`),4,'Only wire/source boundaries request the server');
     for(const expected of parts.slice(0,-1).reverse()) {
       await evaluate(`${get('r-prev')}.click()`);
-      if(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')==='true'`)) await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+      if(await evaluate(`${get('r-read')}.disabled.toString()==='true'`)) await until(`${get('r-read')}.disabled.toString()==='false'`);
       assert.deepEqual(await evaluate(`({keys:Array.from(${doc}.querySelectorAll('[data-key]'),b=>b.dataset.key),label:${get('r-count')}.textContent})`),expected,'Backwards traversal returns the exact previous part');
     }
     assert.equal(await evaluate(`${win}.__requests.length`),8);
-    assert.equal(await evaluate(`${get('r-prev')}.getAttribute('aria-disabled')`),'true');
+    assert.equal(await evaluate(`${get('r-prev')}.disabled.toString()`),'true');
     if(lang==='ru' && theme==='light' && width===320) await capture('release-list-unified');
   }
   for(const order of ['ack-first','data-first']) {
@@ -226,7 +226,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     if(order==='ack-first')await reply({accepted:true});
     await evaluate(`${win}.previewSetData(${JSON.stringify({...target,seq:3,rev:'c'.repeat(32)})})`);
     if(order==='data-first')await reply({accepted:true});
-    await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+    await until(`${get('r-read')}.disabled.toString()==='false'`);
     assert.equal(await evaluate(`${get('r-content')}.textContent`),last,'Source Back opens the last local part despite refresh/ACK ordering');
   }
   await reload('bounded_names',{width:200});
@@ -318,7 +318,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       assert.equal(await evaluate(`${win}.__requests.length`),1,'Repeated snapshot tap is blocked while the request is pending');
       assert.equal(await evaluate(disabled('a0')),'true');
       await reply({page:{...fixture.page,seq:100,rev:'b'.repeat(32)}});
-      await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-read')}.disabled.toString() === 'false'`);
       assert.equal(await evaluate(disabled('a0')),'false');
       await dimensions(`${fixture.id}/after-snapshot/${width}`);
 
@@ -336,7 +336,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
         assert.equal(await evaluate(`${win}.__requests.length`),1,'Camera clip sends once while pending');
         assert.deepEqual(await geometry(),before,'Pending clip keeps the camera layout stable');
         await reply({page:{...fixture.page,seq:100,rev:'b'.repeat(32)}});
-        await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+        await until(`${get('r-read')}.disabled.toString()==='false'`);
         assert.deepEqual(await geometry(),before,'Completed clip keeps the camera layout stable');
         await dimensions(`${fixture.id}/${width}/clock ${left}/${right}`);
       }
@@ -421,12 +421,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await reload('home'); await capture('release-home-light');
   // Server chunks use the issued keys and update only after a new snapshot.
   await evaluate(`${get('r-next')}.click()`);
-  await until(`${state}.page === 2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${state}.page === 2 && ${get('r-read')}.disabled.toString() === 'false'`);
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'Избранное');
   assert.ok(await evaluate(`${button('device')} && ${button('climate')}`));
   await capture('release-home-favorites');
   await evaluate(`${get('r-prev')}.click()`);
-  await until(`${state}.page === 1 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+  await until(`${state}.page === 1 && ${get('r-read')}.disabled.toString() === 'false'`);
   assert.ok(await evaluate(`${button('rooms')}`));
   // Role and favorites never move the six primary sections off the first page.
   const primaryKeys=['rooms','scenes','cameras','favorites','settings','help'];
@@ -437,16 +437,16 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),primaryKeys.concat(owner?['admin']:[]));
     assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('div.r-status')).map(s=>Array.from(s.children,n=>n.textContent))`),fixture.page.status,'Status is visible with the main sections');
     await click('favorites');
-    await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    await until(`${get('r-read')}.disabled.toString() === 'false'`);
     assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':favorites')`),'Full favorites retains its own callback');
     await reload(fixture.id,{width:320});
     if(filled) {
       await evaluate(`${get('r-next')}.click()`);
-      await until(`${state}.page === 2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${state}.page === 2 && ${get('r-read')}.disabled.toString() === 'false'`);
       assert.equal(await evaluate(`${get('r-title')}.textContent`),ru?'Избранное':'Favorites');
       assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>b.dataset.key)`),['device','climate','sensor','cameras']);
       await evaluate(`${get('r-back')}.click()`);
-      await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.disabled.toString() === 'false'`);
       assert.ok(await evaluate(`document.getElementById('log').textContent.endsWith(':p0')`));
     } else {
       assert.equal(await evaluate(`${get('r-server')}.hidden`),true,'No separate page for a short status');
@@ -464,10 +464,10 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       if (id==='home_statuses') {
         await click('all_statuses');
         const target=fixtures.find(f=>f.id==='all_statuses'+suffix);
-        await until(`${get('r-title')}.textContent === ${JSON.stringify(target.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+        await until(`${get('r-title')}.textContent === ${JSON.stringify(target.page.title)} && ${get('r-read')}.disabled.toString() === 'false'`);
         await assertPreserved(target.page,'all statuses/'+width);
         await evaluate(`${get('r-back')}.click()`);
-        await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+        await until(`${get('r-title')}.textContent === ${JSON.stringify(fixture.page.title)} && ${get('r-read')}.disabled.toString() === 'false'`);
       }
     }
   }
@@ -505,7 +505,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'My settings');
   await click('ru'); await until(`${get('r-read')}.getAttribute('aria-label') === 'Обновить'`);
   await reload('room', {theme:'dark'}); await capture('release-room-dark');
-  const navigationPaint=await watchPaintBudget({evaluate,doc,win});
+  const navigationPaint=await watchPaintBudget({evaluate,doc,win,stable:true});
   // The name/state opens a device card, while its adjacent command keeps a distinct key.
   assert.equal(await evaluate(`${button('device')}.classList.contains('r-nav')`), true);
   assert.equal(await evaluate(`${button('lamp_on')}.classList.contains('r-action')`), true);
@@ -526,13 +526,20 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   const climatePaint=await watchPaintBudget({evaluate,doc,win});
   const geometry = () => evaluate(`Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().toJSON())`);
   const beforePress = await geometry();
-  await climatePaint(()=>click('temp_up'),'Start device command');
+  await evaluate(`${win}.__pressedButton=${button('temp_up')};${win}.__pressedRing=${button('temp_up')}.querySelector('i')`);
+  const press=await climatePaint(()=>click('temp_up'),'Start device command');
+  assert.equal(press.samples.length,0,'Press performs no synchronous layout queries');
+  assert.equal(await evaluate(`${win}.__pressedButton===${button('temp_up')} && ${win}.__pressedRing===${button('temp_up')}.querySelector('i')`),true,'Press preserves button and spinner nodes');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
   assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), 'Обновить');
   assert.deepEqual(await geometry(), beforePress, 'Press does not move or resize controls');
   await dimensions('climate/request');
-  await climatePaint(()=>reply({accepted:true}),'Wait for device state');
+  const ack=await climatePaint(()=>reply({accepted:true}),'Wait for device state');
+  assert.equal(ack.samples.length,0,'ACK performs no synchronous layout queries');
+  assert.equal(await evaluate(`${win}.__pressedButton===${button('temp_up')} && ${win}.__pressedRing===${button('temp_up')}.querySelector('i')`),true,'ACK preserves button and spinner nodes');
+  const angle=await evaluate(`${win}.__pressedRing.style.transform`);
+  await until(`${win}.__pressedRing.style.transform!==${JSON.stringify(angle)}`);
   assert.deepEqual(await geometry(), beforePress, 'Waiting for state does not move controls');
   await climatePaint(()=>push({seq:100,rev:'a'.repeat(32)}),'Confirm device state');
   await until(`${disabled('temp_up')} === 'false'`);
@@ -546,18 +553,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await cameraPaint(()=>reply({accepted:true}),'Camera ACK');
   await cameraPaint(()=>push({seq:100,rev:'a'.repeat(32)}),'Camera refreshed');
   await cameraPaint(()=>evaluate(`${get('r-read')}.click()`),'Second camera refresh');
-  await assert.rejects(()=>cameraPaint(async()=>{
-    // Replay the removed cover around a real pending → ACK redraw. Its opacity
-    // layers count even though they occupy exactly the same screen area.
-    await evaluate(`(() => {
-      const card=${get('release')},cover=card.cloneNode(true);
-      cover.style.cssText+=';position:absolute;inset:0';card.after(cover);${win}.__oldCover=cover;
-    })()`);
-    try {await reply({accepted:true});}
-    finally {await evaluate(`${win}.__oldCover.remove()`);}
-  },'Previous copy-based redraw'),/Telegram paint limit exceeded/);
-  const peak=await evaluate(`Math.max(...${win}.__paintCheck.samples.map(s=>s.heavy))`);
-  console.log(`Reproduced removed cover's Telegram paint overflow: ${peak}/16 opacity layers.`);
+  await cameraPaint(()=>reply({accepted:true}),'Second camera ACK');
+  await assert.rejects(()=>cameraPaint(()=>evaluate(`(() => {
+    const nodes=Array.from({length:17},()=>{const n=${doc}.createElement('span');n.textContent='x';n.style.opacity='.5';return n;});
+    ${get('r-content')}.append(...nodes);${get('release')}.scrollHeight;nodes.forEach(n=>n.remove());
+  })()`),'Intentional paint overload'),/Telegram paint limit exceeded/);
   await cameraPaint(()=>push({seq:101,rev:'b'.repeat(32)}),'Camera recovers after test');
   // Receipt is not physical state confirmation: the issued wait kind survives
   // new revisions and blocks only that device after the transport has completed.
@@ -618,12 +618,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await push({seq:102,rev:'d'.repeat(32),rows:unknown});
     assert.equal(await evaluate(disabled('lamp_on')), 'true');
     assert.equal(await evaluate(`${button('lamp_on')}.getAttribute('aria-busy')`), 'false');
-    assert.equal(await evaluate(ring), null, 'Timeout removes the spinner');
+    assert.equal(await evaluate(`${ring}.hidden`), true, 'Timeout hides the spinner');
     await until(`${win}.__frames.pending === 0`);
     assert.equal(await evaluate(`${win}.__frames.max`), 1, 'New revisions never create overlapping animation loops');
     assert.equal(await evaluate(`${win}.getComputedStyle(${button('lamp_on')}.firstChild).opacity`), '1');
     assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('Нет ответа')`));
-    assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-disabled')`), 'false');
+    assert.equal(await evaluate(`${get('r-read')}.disabled.toString()`), 'false');
     await click('lamp_on');
     assert.equal(await evaluate(`${win}.__requests.length`), 1, 'Timeout never retries control');
     await push({seq:103,rev:'e'.repeat(32),rows:waiting.map(row=>row.map(b=>b.key==='lamp_on'?{text:'Выключить',key:'lamp_off',kind:'action'}:b))});
@@ -685,12 +685,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
     if (serverPage === 2) {
       await serverStep();
-      await until(`${state}.page===2 && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${state}.page===2 && ${get('r-read')}.disabled.toString() === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');
-    assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'false');
+    assert.equal(await evaluate(`${get('r-back')}.disabled.toString()`), 'false');
     await evaluate(`${get('r-back')}.click()`);
-    await until(`${get('r-title')}.textContent === ${JSON.stringify(lang === 'ru' ? 'Гостиная' : 'Living room')} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    await until(`${get('r-title')}.textContent === ${JSON.stringify(lang === 'ru' ? 'Гостиная' : 'Living room')} && ${get('r-read')}.disabled.toString() === 'false'`);
   }
   // Returning from each local part dispatches exactly one canonical action, not pagination.
   for (const id of ['confirmation','confirmation_en','long']) for (const theme of ['light','dark']) {
@@ -705,11 +705,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       assert.equal(await evaluate(`${win}.__requests.length`), 1);
       assert.equal(await evaluate(`${win}.__requests[0].value`), `r1:${fixture.page.rev}:${fixture.page.back}`);
       assert.equal(await evaluate(`${get('r-title')}.textContent`), fixture.page.title);
-      assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'true');
+      assert.equal(await evaluate(`${get('r-back')}.disabled.toString()`), 'true');
       await reply({accepted:true});
       const destination = fixtures.find(f=>f.id === fixture.page.back + (fixture.page.lang==='en' && fixture.page.back==='scenes' ? '_en' : ''));
       await evaluate(`${win}.previewSetData(${JSON.stringify({...destination.page,seq:100,rev:'a'.repeat(32)})})`);
-      await until(`${get('r-title')}.textContent === ${JSON.stringify(destination.page.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${get('r-title')}.textContent === ${JSON.stringify(destination.page.title)} && ${get('r-read')}.disabled.toString() === 'false'`);
     }
   }
   // Malformed keys fail before request; unknown well-formed keys are rejected by the server map.
@@ -724,19 +724,19 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   // A failed Back follows ordinary recovery and never retries or bypasses the lock.
   await reload('climate', {scenario:'error'}); await evaluate(`${get('r-back')}.click()`);
   await until(`${get('r-feedback')}.textContent.includes('Нет ответа')`);
-  assert.equal(await evaluate(`${get('r-back')}.getAttribute('aria-disabled')`), 'true');
+  assert.equal(await evaluate(`${get('r-back')}.disabled.toString()`), 'true');
   await evaluate(`${get('r-read')}.click()`);
-  await until(`${get('r-back')}.getAttribute('aria-disabled') === 'false' && ${get('r-feedback')}.textContent === ''`);
+  await until(`${get('r-back')}.disabled.toString() === 'false' && ${get('r-feedback')}.textContent === ''`);
   // Existing callback menus keep their entire continuation and both directions.
   for (const lang of ['ru','en']) {
     await reload(lang === 'ru' ? 'admin' : 'admin_en');
     for (const page of [2,3]) {
       await serverStep();
-      await until(`${state}.page===${page} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${state}.page===${page} && ${get('r-read')}.disabled.toString() === 'false'`);
     }
     for (const page of [2,1]) {
       await serverStep('prev');
-      await until(`${state}.page===${page} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+      await until(`${state}.page===${page} && ${get('r-read')}.disabled.toString() === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-read')}.getAttribute('aria-label')`), lang === 'ru' ? 'Обновить' : 'Refresh');
   }
@@ -752,13 +752,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await until(`${get('r-feedback')}.textContent.includes(${JSON.stringify(lang === 'ru' ? 'Нет ответа' : 'No response')})`);
     assert.equal(await evaluate(disabled('run_scene')), 'true');
     await evaluate(`${get('r-read')}.click()`);
-    await until(`${get('r-back')}.getAttribute('aria-disabled') === 'false' && ${get('r-feedback')}.textContent === ''`);
+    await until(`${get('r-back')}.disabled.toString() === 'false' && ${get('r-feedback')}.textContent === ''`);
     await evaluate(`${win}.TelegramWidget.request=async key=>{${win}.__lastRequest=key;return {result:JSON.stringify({accepted:true})}}`);
     await evaluate(`${get('r-back')}.click()`);
     assert.ok((await evaluate(`${win}.__lastRequest`)).endsWith(':scenes'));
     const next = {...fixtures.find(f=>f.id === (lang==='ru'?'scenes':'scenes_en')).page,seq:100,rev:'a'.repeat(32)};
     await evaluate(`${win}.previewSetData(${JSON.stringify(next)})`);
-    await until(`${get('r-title')}.textContent === ${JSON.stringify(next.title)} && ${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    await until(`${get('r-title')}.textContent === ${JSON.stringify(next.title)} && ${get('r-read')}.disabled.toString() === 'false'`);
   }
   // A command timeout blocks every action; read recovers through accepted + push.
   await reload('home', {scenario:'error'}); await click('rooms');
@@ -803,7 +803,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await reload('home'); await failAction();
     await evaluate(`${get('r-read')}.click()`);
     await reply({page:{...fixtures[0].page,seq}});
-    await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
+    await until(`${get('r-read')}.disabled.toString() === 'false'`);
     assert.equal(await evaluate(disabled('rooms')), 'true');
     assert.ok(await evaluate(`${get('r-feedback')}.textContent.includes('Нет ответа')`));
   }

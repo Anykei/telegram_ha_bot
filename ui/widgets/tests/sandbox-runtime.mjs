@@ -42,5 +42,20 @@ for(const [asset,fixtures] of [
   assert.deepEqual(result.probes,expected,`${asset}: every transition finished`);
   console.log(`${asset}: 30 transitions in Telegram QuickJS, strict policy, 8 MiB heap, 500 ms task limit; max ${result.nodes} nodes / ${result.maxTaskQueries} queries per task`);
 }
+// Server-confirmed pending state: no command or timeout is fabricated. Exercise
+// the real frame callback. The harness fires frames back to back, so leave its
+// per-second quotas at defaults; wall-clock client pacing is not emulated here.
+const pending=page(menus.find(f=>f.id==='room'));
+pending.b=pending.b.map(row=>row.map(b=>b[1]==='lamp_on'?[b[0],b[1],'wait']:b));
+const progress=await runWidget(await readFile(new URL('dist/release.html',root),'utf8'),{
+  policy:'strict',cpuLimitMs:500,memoryLimitBytes:8*1024*1024,
+  timerRounds:0,frames:2000,theme:'dark',width:360,context:{canQuery:true,chatType:'private'},
+  data:{chatData:JSON.stringify(pending)}
+});
+assert.equal(progress.stopped,undefined,'Pending widget remains alive');
+assert.deepEqual(progress.diags,[],'Pending widget has no sandbox diagnostics');
+const rotations=new Set(JSON.stringify(progress.ops).match(/rotate\(-?[\d.]+deg\)/g)||[]);
+assert.ok(rotations.size>=2,'Spinner advances through multiple angles in Telegram QuickJS');
+console.log(`pending: spinner advanced through ${rotations.size} angles in Telegram QuickJS`);
 // The SDK harness uses stub geometry here. Browser paint-budget checks and the
 // optional native layout runner cover rendering; this is not a live-client test.

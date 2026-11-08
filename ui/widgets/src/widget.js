@@ -12,7 +12,7 @@ import {validGraph, renderGraph} from './graph-render.js';
   let data, lang=navigator.language.startsWith('ru')?'ru':'en', lastKind=MENU?'menu':CHART?'chart':'range';
   let busy=false, waiting=false, uncertain=false, denied=!api||api.isForward;
   let local=0, deck=[], count=0, picker=-1, motion, frame, painted=0;
-  let timer, requested=-1, reading=false, activeKey='', note='', tail=false, ticket=0, closedSeq=-1;
+  let timer, requested, reading, activeKey, note, tail, ticket=0, closedSeq=-1;
   const media=v=>MEDIA&&(!MENU||mediaKinds.includes(v?v.kind:lastKind));
   const chart=v=>CHART&&(!MENU&&!RANGE||(v?v.kind:lastKind)==='chart');
   const w=i=>words[lang][i], text=(id,value)=>el(id).textContent=value;
@@ -68,28 +68,25 @@ import {validGraph, renderGraph} from './graph-render.js';
     }
     data=v;lang=v.lang;if(UNIFIED)lastKind=v.kind||'menu';return true;
   }
-  function disable(button,value) {
-    if(MEDIA&&media(data))button.disabled=value;
-    else button.setAttribute('aria-disabled',value);
-    if(UNIFIED) {
-      if(media(data))button.removeAttribute('aria-disabled');
-      else button.disabled=false;
-    }
-  }
   function action(b,off=false) {
-    const awaiting=MENU&&!media(data)&&(b[2]==='wait'||b[1]===activeKey&&(busy||waiting));
-    const unavailable=RANGE&&off||MENU&&!media(data)&&(awaiting||b[2]==='uncertain');
-    const button=node('button','r-button'+(media(data)?'':' r-'+b[2]+(awaiting?' r-wait':'')));
+    const button=node('button','r-button'+(media(data)?'':' r-'+b[2]));
     button.dataset.key=b[1];
     if(b[2]==='selected')button.setAttribute('aria-pressed','true');
+    let ring;
     if(MEDIA&&media(data))button.textContent=b[0];
-    else {
-      button.setAttribute('aria-busy',awaiting);
-      button.append(node('span','',b[0]));
-      if(awaiting)button.append(node('i'));
-    }
-    disable(button,unavailable||blocked(b[1]));
-    button.onclick=()=>!unavailable&&send(b[1]);return button;
+    else {ring=node('i');button.append(node('span','',b[0]),ring);}
+    // Keep the control and its indicator alive while only request state changes.
+    button.p=()=>{
+      const awaiting=MENU&&!media(data)&&(b[2]==='wait'||b[1]===activeKey&&(busy||waiting));
+      if(MENU&&!media(data)) {
+        button.classList.toggle('r-wait',awaiting);
+        button.setAttribute('aria-busy',awaiting);
+        ring.hidden=!awaiting;
+      }
+      button.disabled=RANGE&&off||blocked(b[1])||MENU&&!media(data)&&(awaiting||b[2]==='uncertain');
+    };
+    button.onclick=()=>send(b[1]);
+    button.p();return button;
   }
   const choice=(label,k,selected=false,off=false)=>action([label,k,selected?'selected':'nav'],off);
   function mount(nodes) {
@@ -110,8 +107,6 @@ import {validGraph, renderGraph} from './graph-render.js';
       hide('r-server',!data.q&&!reserve&&count<=1&&data.pages<=1);
       text('r-count',(data.q?data.q[0]+'\n':'')+data.page+'.'+(local+1));
     }
-    ['prev','next'].forEach((key,i)=>disable(el('r-'+key),
-      (i?local===count-1:!local)&&(media(data)||!external(i))||!media(data)&&blocked('')));
   }
   function layout(reserve=false) {
     const blocks=[];
@@ -186,8 +181,16 @@ import {validGraph, renderGraph} from './graph-render.js';
     card.classList.toggle('r-corner',corner);
     card.style.paddingBottom=(corner?16:Math.max(16,api?.contentSafeAreaInset?.bottom||0))+'px';
   }
-  function render() {
-    card.style.height='';
+  // Mode 1 updates controls without layout queries; events call with no mode.
+  function render(quick) {
+    // Layout queries flush intermediate DOM changes in Telegram. Keep a visual
+    // snapshot above them. All controls use native disabled state, whose static
+    // dimming is exempt from Telegram's heavy-box budget, including this copy.
+    let cover;
+    if(MENU&&!media(data)&&quick!==1) {
+      cover=card.cloneNode(true);
+      card.after(cover);
+    }
     const locked=denied||!data,a=api?.contentSafeAreaInset,corners=a&&a.cornerLeft+a.cornerRight;
     if(UNIFIED)document.documentElement.dataset.mode=media(data)?'media':'menu';
     card.dataset.kind=locked?media(data)?'chart':'menu':data.kind||'menu';
@@ -197,28 +200,35 @@ import {validGraph, renderGraph} from './graph-render.js';
     text('r-back','‹ '+w((RANGE&&data?.kind==='range'||MENU&&['form','confirmation'].includes(data?.kind))?6:0));
     ['read','back'].forEach(k=>{
       const id='r-'+k,button=el(id),missing=locked||!data[k];
-      hide(id,missing);disable(button,missing||blocked(data[k]));
+      hide(id,missing);button.disabled=missing||blocked(data[k]);
       button.onclick=()=>data&&send(data[k]);
     });
     const feedback=locked?w(5):note||(!media(data)&&data.rows.flat().some(b=>b[2]==='uncertain')?w(3):'');
     text('r-feedback',feedback);hide('r-feedback',!feedback);
-    const corner=!feedback&&corners>0&&card.clientWidth-corners>=200;
-    const png=CHART&&chart(data)&&!locked&&data.rows.at(-1)?.length===1&&corners>0&&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
-    if(CHART)card.classList.toggle('r-left',png&&a.cornerLeft>0);
-    inset(png);
-    if(CHART)renderGraph(locked||!chart(data)?null:data.graph,lang,el,hide);
-    if(MENU&&!media(data))['r-prev','r-next'].forEach((id,i)=>el(id).setAttribute('aria-label',w(i)));
-    hide('r-server',true);mount([]);
-    if(!locked) {
-      const position=local;let overflow=layout();
-      if(!el('r-server').hidden&&(media(data)||corner)) {
-        inset(corner);if(CHART&&media(data)&&!corner)card.classList.remove('r-left');
-        local=position;overflow=layout(!media(data));
+    if(MENU&&!media(data)&&quick===1)card.querySelectorAll('[data-key]').forEach(b=>b.p());
+    else {
+      card.style.height='';
+      const corner=!feedback&&corners>0&&card.clientWidth-corners>=200;
+      const png=CHART&&chart(data)&&!locked&&data.rows.at(-1)?.length===1&&corners>0&&!(a.cornerLeft&&a.cornerRight)&&corners<=card.clientWidth/2&&card.clientWidth-corners>=200;
+      if(CHART)card.classList.toggle('r-left',png&&a.cornerLeft>0);
+      inset(png);
+      if(CHART)renderGraph(locked||!chart(data)?null:data.graph,lang,el,hide);
+      if(MENU&&!media(data))['r-prev','r-next'].forEach((id,i)=>el(id).setAttribute('aria-label',w(i)));
+      hide('r-server',true);mount([]);
+      if(!locked) {
+        const position=local;let overflow=layout();
+        if(!el('r-server').hidden&&(media(data)||corner)) {
+          inset(corner);if(CHART&&media(data)&&!corner)card.classList.remove('r-left');
+          local=position;overflow=layout(!media(data));
+        }
+        if(MENU&&!media(data)&&overflow){mount([]);hide('r-server',true);text('r-feedback',w(5));hide('r-feedback',false);}
       }
-      if(MENU&&!media(data)&&overflow){mount([]);hide('r-server',true);text('r-feedback',w(5));hide('r-feedback',false);}
+      // Keep the menu's intrinsic denied layout and media's fixed-height contract.
+      if(!locked||media(data))card.style.height='600px';
     }
-    // Keep the menu's intrinsic denied layout and media's fixed-height contract.
-    if(!locked||media(data))card.style.height='600px';
+    if(!locked)['prev','next'].forEach((key,i)=>el('r-'+key).disabled=
+      (i?local===count-1:!local)&&(media(data)||!external(i))||!media(data)&&blocked(''));
+    if(cover)cover.remove();
     if(RANGE&&media(data)){cancelAnimationFrame(frame);frame=0;}
     if(RANGE&&!locked&&media(data)&&data.t&&motion)animate(0);
     else if(MENU&&!media(data)&&!frame)frame=requestAnimationFrame(animate);
@@ -254,7 +264,8 @@ import {validGraph, renderGraph} from './graph-render.js';
   async function send(k,last=false) {
     if(!key(k)||blocked(k))return;
     const rev=data.rev,seq=data.seq,id=UNIFIED?++ticket:0;
-    requested=seq;reading=k==='read';if(MENU){activeKey=k;tail=last;}busy=true;note='';render();
+    requested=seq;reading=k==='read';if(MENU){activeKey=k;tail=last;}busy=true;note='';
+    render(1);
     try {
       const answer=JSON.parse((await api.request('r1:'+rev+':'+k)).result);
       if(UNIFIED&&id!==ticket)return;
@@ -266,7 +277,7 @@ import {validGraph, renderGraph} from './graph-render.js';
         if(data&&data.seq>seq)complete();else{waiting=true;timer=setTimeout(()=>{fail();render();},12000);}
       } else throw Error();
     } catch {if(UNIFIED&&id!==ticket)return;fail();}
-    busy=false;render();
+    busy=false;if(!waiting)render();
   }
   function update() {
     if(denied){if(UNIFIED)try{recover(JSON.parse(api.chatData));}catch{}return;}
