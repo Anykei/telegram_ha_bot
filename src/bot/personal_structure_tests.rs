@@ -39,7 +39,21 @@ async fn favorite_management_labels_identify_their_action_after_page_breaks() ->
                 let action = &view.kb.inline_keyboard[index * 2][0];
                 let controls = &view.kb.inline_keyboard[index * 2 + 1];
                 let context = format!("{}. {}", usize::from(page) * 10 + index + 1, action.text);
-                assert_eq!(view.html_button_labels[callback(action)], context);
+                let primary = &view.html_button_labels[callback(action)];
+                // The verb belongs on the first line even for group callbacks.
+                assert_eq!(
+                    primary.lines().next(),
+                    Some(
+                        format!(
+                            "{} · {}",
+                            words(lang, "Включить", "Turn on"),
+                            usize::from(page) * 10 + index + 1
+                        )
+                        .as_str()
+                    )
+                );
+                assert!(primary.lines().nth(1).unwrap().len() <= 200);
+                assert!(view.text.contains(&context));
                 for control in controls {
                     let html = &view.html_button_labels[callback(control)];
                     assert_eq!(
@@ -70,6 +84,187 @@ async fn favorite_management_labels_identify_their_action_after_page_breaks() ->
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn long_on_off_favorites_keep_the_command_on_the_first_line() -> Result<()> {
+    let config = mock_config().await?;
+    let (room, device): (i64, i64) =
+        sqlx::query_as("SELECT room_id, id FROM devices WHERE entity_id = 'light.floor_lamp'")
+            .fetch_one(&config.db)
+            .await?;
+    let name = "Очень длинное имя светильника 🛋️ ".repeat(8);
+    sqlx::query("UPDATE devices SET alias = ? WHERE id = ?")
+        .bind(&name)
+        .bind(device)
+        .execute(&config.db)
+        .await?;
+    // Respect the 80-character group-name limit while exceeding the wire byte
+    // budget, which is a separate limit for multibyte labels.
+    let group_name = format!("Кухня {}", "💡".repeat(65));
+    let group = db::action_groups::create_action_group(&group_name, &config.db).await?;
+    db::action_groups::toggle_action_group_item(group, device, &config.db).await?;
+    for action in [
+        FavoriteAction::DeviceOn { room, device },
+        FavoriteAction::DeviceOff { room, device },
+        FavoriteAction::GroupOn { id: group },
+        FavoriteAction::GroupOff { id: group },
+    ] {
+        db::personal::add_favorite(1, &serde_json::to_string(&action)?, &config.db).await?;
+    }
+    for critical in [false, true] {
+        if critical {
+            db::devices::toggle_device_critical(device, &config.db).await?;
+        }
+        for lang in [Language::Ru, Language::En] {
+            db::set_user_language(1, lang, &config.db).await?;
+            let view = router(
+                Payload::Personal(PersonalPayload::Favorites { page: 0 }),
+                1,
+                config.clone(),
+            )
+            .await?;
+            assert!(view.html_summary.is_some());
+            assert_eq!(
+                view.html_details_title.as_deref(),
+                Some(words(
+                    lang,
+                    "Полные названия избранного",
+                    "Full favorite descriptions"
+                ))
+            );
+            for (index, (ru, en)) in [
+                ("Включить", "Turn on"),
+                ("Выключить", "Turn off"),
+                ("Включить", "Turn on"),
+                ("Выключить", "Turn off"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let action = &view.kb.inline_keyboard[index * 2][0];
+                let label = &view.html_button_labels[callback(action)];
+                assert_eq!(label.lines().count(), 2);
+                assert_eq!(
+                    label.lines().next(),
+                    Some(format!("{} · {}", words(lang, ru, en), index + 1).as_str())
+                );
+                assert!(label.lines().nth(1).unwrap().ends_with('…'));
+                assert!(label.lines().nth(1).unwrap().len() <= 200);
+                assert!(
+                    action
+                        .text
+                        .contains(if index < 2 { &name } else { &group_name }),
+                    "Classic label must remain complete"
+                );
+                assert!(
+                    view.text
+                        .contains(&format!("{}. {}", index + 1, action.text)),
+                    "The continuation keeps the complete identity and command"
+                );
+                let payload = Payload::from_string(callback(action))?;
+                if index < 2 {
+                    assert!(matches!(
+                        payload,
+                        Payload::Control(ControlPayload::QuickAction { .. })
+                    ));
+                } else if critical {
+                    assert!(matches!(
+                        payload,
+                        Payload::Control(ControlPayload::ReviewAction { .. })
+                    ));
+                } else {
+                    assert!(matches!(
+                        payload,
+                        Payload::Control(ControlPayload::ConfirmAction { .. })
+                    ));
+                }
+                for control in &view.kb.inline_keyboard[index * 2 + 1] {
+                    assert!(view.html_button_labels[callback(control)]
+                        .lines()
+                        .nth(1)
+                        .unwrap()
+                        .starts_with(&format!("{}. ", index + 1)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_and_favorite_options_use_the_same_visible_action_verbs() -> Result<()> {
+    let config = mock_config().await?;
+    let (room, device): (i64, i64) =
+        sqlx::query_as("SELECT room_id, id FROM devices WHERE entity_id = 'light.floor_lamp'")
+            .fetch_one(&config.db)
+            .await?;
+    let name = "Длинное имя для проверки главного экрана ".repeat(7);
+    sqlx::query("UPDATE devices SET alias = ? WHERE id = ?")
+        .bind(&name)
+        .bind(device)
+        .execute(&config.db)
+        .await?;
+    for action in [
+        FavoriteAction::DeviceOn { room, device },
+        FavoriteAction::DeviceOff { room, device },
+    ] {
+        db::personal::add_favorite(1, &serde_json::to_string(&action)?, &config.db).await?;
+    }
+    for lang in [Language::Ru, Language::En] {
+        db::set_user_language(1, lang, &config.db).await?;
+        for (route, verbs) in [
+            (
+                Payload::Home,
+                vec![
+                    words(lang, "Включить", "Turn on"),
+                    words(lang, "Выключить", "Turn off"),
+                ],
+            ),
+            (
+                Payload::Personal(PersonalPayload::FavoriteOptions {
+                    target: FavoriteAction::Device { room, device },
+                }),
+                vec![
+                    words(lang, "Открыть", "Open"),
+                    words(lang, "Включить", "Turn on"),
+                    words(lang, "Выключить", "Turn off"),
+                ],
+            ),
+        ] {
+            let view = router(route.clone(), 1, config.clone()).await?;
+            let labels = view
+                .kb
+                .inline_keyboard
+                .iter()
+                .flatten()
+                .filter_map(|button| view.html_button_labels.get(callback(button)))
+                .collect::<Vec<_>>();
+            assert_eq!(labels.len(), verbs.len());
+            for (index, label) in labels.into_iter().enumerate() {
+                assert_eq!(
+                    label.lines().next(),
+                    Some(format!("{} · {}", verbs[index], index + 1).as_str())
+                );
+                assert_eq!(label.lines().count(), 2);
+                assert!(label.lines().nth(1).unwrap().len() <= 200);
+            }
+            if !matches!(route, Payload::Home) {
+                assert!(view.text.contains(&name));
+                assert!(view.html_details_title.is_some());
+            }
+        }
+    }
+    assert_eq!(db::personal::favorites(1, &config.db).await?.len(), 2);
+    let state = config
+        .ha_client
+        .fetch_states_by_ids(&["light.floor_lamp".into()])
+        .await?;
+    assert_eq!(
+        state[0].state, "off",
+        "Rendering or adding choices must not execute them"
+    );
     Ok(())
 }
 

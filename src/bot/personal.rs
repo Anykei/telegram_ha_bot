@@ -231,19 +231,59 @@ fn html_label(
 }
 fn favorite_management_context(context: &str) -> String {
     // Two controls share one wire row. Reserve room for both localized verbs,
-    // the page header and callback keys; the action keeps the complete label.
-    if context.len() <= 100 {
+    // the page header and callback keys; full labels remain in the continuation.
+    short_favorite_context(context, 100)
+}
+fn short_favorite_context(context: &str, bytes: usize) -> String {
+    if context.len() <= bytes {
         return context.into();
     }
     let mut short = String::new();
     for ch in context.chars() {
-        if short.len() + ch.len_utf8() > 97 {
+        if short.len() + ch.len_utf8() > bytes.saturating_sub('…'.len_utf8()) {
             break;
         }
         short.push(ch);
     }
     short.push('…');
     short
+}
+fn favorite_verb(action: &FavoriteAction, button: &Button, lang: Language) -> &'static str {
+    // An unavailable command is deliberately replaced with a safe detail link.
+    // Confirmation callbacks, however, keep the original typed action's verb.
+    if matches!(&button.kind,
+        teloxide::types::InlineKeyboardButtonKind::CallbackData(data)
+        if matches!(Payload::from_string(data), Ok(Payload::Control(
+            ControlPayload::DeviceControl { .. } | ControlPayload::ActionGroupDetail { .. }
+            | ControlPayload::HaNativeActionDetail { .. }
+        ) | Payload::Camera(CameraPayload::CameraDetail { .. }))))
+    {
+        return words(lang, "Открыть", "Open");
+    }
+    match action {
+        FavoriteAction::DeviceOn { .. } | FavoriteAction::GroupOn { .. } => {
+            words(lang, "Включить", "Turn on")
+        }
+        FavoriteAction::DeviceOff { .. } | FavoriteAction::GroupOff { .. } => {
+            words(lang, "Выключить", "Turn off")
+        }
+        FavoriteAction::Snapshot { .. } => words(lang, "Снимок", "Snapshot"),
+        FavoriteAction::Native { .. } => words(lang, "Запустить", "Run"),
+        _ => words(lang, "Открыть", "Open"),
+    }
+}
+pub(crate) fn favorite_html_label(
+    action: &FavoriteAction,
+    button: &Button,
+    lang: Language,
+    number: usize,
+) -> String {
+    let object = button.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "{} · {number}\n{}",
+        favorite_verb(action, button, lang),
+        short_favorite_context(&object, 200)
+    )
 }
 fn base(ctx: &RenderContext, text: String, payload: Payload, mut rows: Vec<Vec<Button>>) -> View {
     rows.push(vec![super::screens::common::main_menu_button_lang(
@@ -265,7 +305,7 @@ pub async fn favorite_buttons(
     ctx: &RenderContext,
     requested_page: usize,
     page_size: usize,
-) -> Result<(Vec<(i64, Button)>, usize, usize)> {
+) -> Result<(Vec<(i64, FavoriteAction, Button)>, usize, usize)> {
     let mut entries = Vec::new();
     for favorite in db::personal::favorites(ctx.user_id, &ctx.config.db).await? {
         let Ok(action) = serde_json::from_str::<FavoriteAction>(&favorite.action) else {
@@ -324,7 +364,8 @@ pub async fn favorite_buttons(
                 .is_none_or(|entity| !available.contains(entity)),
             _ => false,
         };
-        let action = action.canonical(ctx).await?.payload();
+        let favorite = action.canonical(ctx).await?;
+        let action = favorite.payload();
         let payload = if unavailable {
             label.push_str(words(ctx.lang, " · HA недоступен", " · HA unavailable"));
             action.for_refresh()
@@ -337,7 +378,7 @@ pub async fn favorite_buttons(
                 }
             }
         };
-        buttons.push((id, Button::callback(label, payload.to_string())));
+        buttons.push((id, favorite, Button::callback(label, payload.to_string())));
     }
     Ok((buttons, page, pages))
 }
@@ -388,6 +429,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     let w = |ru, en| words(ctx.lang, ru, en);
     let mut rows = Vec::new();
     let mut html_button_labels = std::collections::HashMap::new();
+    let mut favorite_descriptions = Vec::new();
     let mut next_state = None;
     let text = match &request {
         PersonalPayload::Interface => {
@@ -643,16 +685,19 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         }
         PersonalPayload::Favorites { page } => {
             let (items, page, pages) = favorite_buttons(&ctx, usize::from(*page), 10).await?;
-            for (index, (id, action)) in items.into_iter().enumerate() {
+            for (index, (id, favorite, action)) in items.into_iter().enumerate() {
                 // A byte/height page break can separate the management row from
                 // its action. Repeat the identity with the same visible
                 // position, keeping that position first when a label is clipped.
-                let context = format!(
-                    "{}. {}",
-                    page * 10 + index + 1,
-                    action.text.split_whitespace().collect::<Vec<_>>().join(" ")
+                let number = page * 10 + index + 1;
+                let object = action.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                let context = format!("{number}. {object}");
+                html_label(
+                    &mut html_button_labels,
+                    &action,
+                    favorite_html_label(&favorite, &action, ctx.lang, number),
                 );
-                html_label(&mut html_button_labels, &action, context.clone());
+                favorite_descriptions.push(format!("{number}. {}", action.text));
                 let management_context = favorite_management_context(&context);
                 rows.push(vec![action]);
                 let controls = vec![
@@ -714,7 +759,20 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
             };
             for action in choices {
                 if let Some(label) = action.label(&ctx).await? {
-                    rows.push(vec![button(label, PersonalPayload::AddFavorite { action })]);
+                    let number = favorite_descriptions.len() + 1;
+                    favorite_descriptions.push(format!("{number}. {label}"));
+                    let choice = button(
+                        label,
+                        PersonalPayload::AddFavorite {
+                            action: action.clone(),
+                        },
+                    );
+                    html_label(
+                        &mut html_button_labels,
+                        &choice,
+                        favorite_html_label(&action, &choice, ctx.lang, number),
+                    );
+                    rows.push(vec![choice]);
                 }
             }
             w(
@@ -727,6 +785,22 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     };
     let quiet_input = matches!(request, PersonalPayload::QuietInput);
     let mut view = base(&ctx, text, Payload::Personal(request), rows);
+    if !favorite_descriptions.is_empty() {
+        view.html_summary = Some(view.text.clone());
+        view.html_details_title = Some(
+            if matches!(
+                view.payload,
+                Payload::Personal(PersonalPayload::FavoriteOptions { .. })
+            ) {
+                w("Полные названия действий", "Full action descriptions")
+            } else {
+                w("Полные названия избранного", "Full favorite descriptions")
+            }
+            .into(),
+        );
+        view.text
+            .push_str(&format!("\n\n{}", favorite_descriptions.join("\n\n")));
+    }
     if quiet_input {
         let title = w("Интервал тихих часов", "Quiet hours interval").to_owned();
         view.header = Some(title.clone());

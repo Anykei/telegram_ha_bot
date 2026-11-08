@@ -10,14 +10,28 @@ pub async fn render(ctx: RenderContext) -> Result<View> {
     let title = words(ctx.lang, "Мой дом", "My home").to_string();
     let mut kb = make_keyboard(ctx.is_admin, ctx.lang);
     let mut html_sections = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
     let (favorites, _, _) = crate::bot::personal::favorite_buttons(&ctx, 0, 4).await?;
     if !favorites.is_empty() {
         html_sections.push(HtmlSection {
             start_row: kb.inline_keyboard.len(),
             title: words(ctx.lang, "Избранное", "Favorites").into(),
         });
-        kb.inline_keyboard
-            .extend(favorites.into_iter().map(|(_, button)| vec![button]));
+        for (index, (_, action, button)) in favorites.into_iter().enumerate() {
+            if let teloxide::types::InlineKeyboardButtonKind::CallbackData(callback) = &button.kind
+            {
+                html_button_labels.insert(
+                    callback.clone(),
+                    crate::bot::personal::favorite_html_label(
+                        &action,
+                        &button,
+                        ctx.lang,
+                        index + 1,
+                    ),
+                );
+            }
+            kb.inline_keyboard.push(vec![button]);
+        }
     }
 
     Ok(View {
@@ -26,6 +40,7 @@ pub async fn render(ctx: RenderContext) -> Result<View> {
         html_title: Some(title),
         html_summary: Some(String::new()),
         html_sections,
+        html_button_labels,
         html_details_title: Some(words(ctx.lang, "Сводка дома", "Home overview").into()),
         notifications: ctx.notifications.clone(),
         kb,
