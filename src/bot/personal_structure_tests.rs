@@ -239,6 +239,14 @@ async fn home_and_favorite_options_use_the_same_visible_action_verbs() -> Result
                 .inline_keyboard
                 .iter()
                 .flatten()
+                // Other Home entries also have compact labels. Check the
+                // favorite actions themselves, not the entire label map.
+                .filter(|button| matches!(Payload::from_string(callback(button)),
+                    Ok(Payload::Control(ControlPayload::QuickAction { .. }
+                        | ControlPayload::DeviceControl { .. }
+                        | ControlPayload::ReviewAction { .. }
+                        | ControlPayload::ConfirmAction { .. }))
+                    | Ok(Payload::Personal(PersonalPayload::AddFavorite { .. }))))
                 .filter_map(|button| view.html_button_labels.get(callback(button)))
                 .collect::<Vec<_>>();
             assert_eq!(labels.len(), verbs.len());

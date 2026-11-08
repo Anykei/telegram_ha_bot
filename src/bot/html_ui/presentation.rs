@@ -255,6 +255,7 @@ fn source_pager(view: &View) -> Option<SourcePager> {
     None
 }
 
+#[cfg(test)]
 pub(super) fn is_source_pager_button(view: &View, index: usize) -> bool {
     source_pager(view).is_some_and(|pager| {
         let start: usize = view.kb.inline_keyboard[..pager.row]

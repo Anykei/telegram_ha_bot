@@ -247,8 +247,20 @@ async fn live_readonly_html_screens() -> Result<()> {
             let result: Result<()> = async {
                 let view = router(payload.clone(), user, config.clone()).await?;
                 let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
-                assert_buttons_preserved(&view, &prepared)?;
-                ensure!(prepared.pages.iter().map(|p| p.body.as_str()).collect::<String>().contains(&view.text), "Body text lost");
+                if view.html_chart.is_some() {
+                    // The approved graph contract replaces classic time presets
+                    // with the calendar and PNG export. Check that contract, not
+                    // parity with the deliberately superseded inline keyboard.
+                    ensure!(prepared.pages.len() == 1 && prepared.pages[0].kind == "chart", "Graph must remain one screen");
+                    ensure!(serde_json::to_value(&prepared.pages[0].graph)? == serde_json::to_value(&view.html_chart)?, "Displayed graph changed");
+                    ensure!(prepared.actions.values().any(|p| matches!(p, Payload::Control(ControlPayload::QuickAction { cmd: DeviceCmd::OpenChartRange, .. }))), "Calendar missing");
+                    ensure!(prepared.actions.values().any(|p| matches!(p, Payload::Control(ControlPayload::QuickAction { cmd: DeviceCmd::ExportChart, .. }))), "PNG export missing");
+                    ensure!(prepared.actions.values().any(|p| matches!(p, Payload::DeviceDetails { .. })), "Device details missing");
+                    ensure!(prepared.pages[0].back.as_ref().is_some_and(|key| prepared.actions.contains_key(key)), "Graph parent missing");
+                } else {
+                    assert_buttons_preserved(&view, &prepared)?;
+                    ensure!(prepared.pages.iter().map(|p| p.body.as_str()).collect::<String>().contains(&view.text), "Body text lost");
+                }
                 ensure!(view.alert.is_none(), "Screen has an error alert");
                 for (index, page) in prepared.pages.iter().enumerate() {
                     ensure!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024, "Query reply exceeds budget");

@@ -166,6 +166,63 @@ async fn screen_family_actions_and_text_survive_html_adaptation() -> Result<()> 
             let prepared = presentation::prepare(&view, "a".repeat(32), 1)
                 .with_context(|| format!("HTML audit: {lang:?} {route:?}"))?;
             assert_complete(&view, &prepared)?;
+            if !matches!(route, Payload::Home) {
+                assert!(prepared.pages[0].back.is_some(), "Missing exit: {route:?}");
+                assert!(
+                    !matches!(prepared.pages[0].title.as_str(), "Дом" | "Home"),
+                    "Wrong title: {route:?}"
+                );
+            }
+            if view.next_state.is_some() {
+                assert_eq!(prepared.pages[0].kind, "form", "{route:?}");
+            }
+            if matches!(route, Payload::Personal(PersonalPayload::Settings)) {
+                let selected = prepared
+                    .pages
+                    .iter()
+                    .flat_map(|p| p.rows.iter().flatten())
+                    .filter(|b| b.kind == "selected")
+                    .filter_map(|b| match prepared.actions.get(&b.key) {
+                        Some(Payload::Personal(PersonalPayload::Language { english })) => {
+                            Some(*english)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    selected,
+                    vec![lang == Language::En],
+                    "Selected language must match the real settings view"
+                );
+            }
+            if matches!(route, Payload::Camera(_)) || view.html_media_controls {
+                assert!(
+                    prepared
+                        .pages
+                        .iter()
+                        .all(|p| !p.bounded && p.list.is_none()),
+                    "Media layout changed: {route:?}"
+                );
+                let old_back = view
+                    .kb
+                    .inline_keyboard
+                    .iter()
+                    .flatten()
+                    .rev()
+                    .find(|b| b.text == crate::i18n::t(lang, "common.back"));
+                if let Some(teloxide::types::InlineKeyboardButton {
+                    kind: teloxide::types::InlineKeyboardButtonKind::CallbackData(data),
+                    ..
+                }) = old_back
+                {
+                    let key = prepared.pages[0].back.as_deref().context("Media parent")?;
+                    assert_eq!(
+                        prepared.actions.get(key),
+                        Some(&Payload::from_string(data)?),
+                        "Media parent changed: {route:?}"
+                    );
+                }
+            }
             // Export optional review evidence using only this isolated mock DB.
             // Passing these parity checks does not imply that hierarchy/title UX is correct.
             inventory.push(json!({
