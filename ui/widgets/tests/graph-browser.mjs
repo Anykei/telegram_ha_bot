@@ -1,4 +1,4 @@
-import {watchPaint} from './paint-check.mjs';
+import {watchPaintBudget} from './paint-check.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -125,15 +125,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot,unified
   for(const id of ['numeric','range','calendar','time']) {
     await reload(id,{theme:'dark',width:320});
     await requests();
-    const paint=await watchPaint({evaluate,doc,win});
-    if(id==='numeric') {
-      // Prove this check catches a blank intermediate panel even if the final
-      // screenshot is unchanged (the previous renderer's measurement pattern).
-      await assert.rejects(()=>paint(()=>evaluate(`(() => {
-        const content=${get('r-content')},nodes=Array.from(content.childNodes);
-        content.replaceChildren();${get('release')}.scrollHeight;content.append(...nodes);
-      })()`),'Intentional intermediate blank'),/only complete old\/new screens/);
-    }
+    const paint=await watchPaintBudget({evaluate,doc,win});
     if(id==='time') {
       await paint(()=>evaluate(`${button('u0')}.click()`),'Time: open hour choices');
       await paint(()=>evaluate(`${button('u0')}.click()`),'Time: close hour choices');

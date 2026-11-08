@@ -73,6 +73,8 @@ try {
     await checkLive({root, command, evaluate, until, file:process.env.HA_WIDGET_LIVE_FIXTURES});
   } else if (process.env.HA_WIDGET_GRAPH_ONLY) {
     await checkGraph({root,command,evaluate,until,screenshot:async()=>{}});
+  } else if (process.env.HA_WIDGET_RELEASE_ONLY) {
+    await checkRelease({root,command,evaluate,until,screenshot:async()=>{}});
   } else if (process.env.HA_WIDGET_UNIFIED) {
     await mkdir(root+'screenshots', {recursive:true});
     const screenshot=async name=>{

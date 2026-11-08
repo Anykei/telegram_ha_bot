@@ -187,12 +187,6 @@ import {validGraph, renderGraph} from './graph-render.js';
     card.style.paddingBottom=(corner?16:Math.max(16,api?.contentSafeAreaInset?.bottom||0))+'px';
   }
   function render() {
-    // Telegram flushes DOM mutations before every synchronous geometry query.
-    // Keep the last complete card visible while pagination measures partial rows.
-    // An opaque copy covers intermediate states without affecting measurements.
-    const cover=card.cloneNode(true);
-    cover.style.cssText+=';position:absolute;inset:0';
-    card.after(cover);
     card.style.height='';
     const locked=denied||!data,a=api?.contentSafeAreaInset,corners=a&&a.cornerLeft+a.cornerRight;
     if(UNIFIED)document.documentElement.dataset.mode=media(data)?'media':'menu';
@@ -225,7 +219,6 @@ import {validGraph, renderGraph} from './graph-render.js';
     }
     // Keep the menu's intrinsic denied layout and media's fixed-height contract.
     if(!locked||media(data))card.style.height='600px';
-    cover.remove();
     if(RANGE&&media(data)){cancelAnimationFrame(frame);frame=0;}
     if(RANGE&&!locked&&media(data)&&data.t&&motion)animate(0);
     else if(MENU&&!media(data)&&!frame)frame=requestAnimationFrame(animate);

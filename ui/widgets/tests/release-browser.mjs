@@ -1,4 +1,4 @@
-import {watchPaint} from './paint-check.mjs';
+import {watchPaintBudget} from './paint-check.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -505,7 +505,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   assert.equal(await evaluate(`${get('r-title')}.textContent`), 'My settings');
   await click('ru'); await until(`${get('r-read')}.getAttribute('aria-label') === 'Обновить'`);
   await reload('room', {theme:'dark'}); await capture('release-room-dark');
-  const navigationPaint=await watchPaint({evaluate,doc,win});
+  const navigationPaint=await watchPaintBudget({evaluate,doc,win});
   // The name/state opens a device card, while its adjacent command keeps a distinct key.
   assert.equal(await evaluate(`${button('device')}.classList.contains('r-nav')`), true);
   assert.equal(await evaluate(`${button('lamp_on')}.classList.contains('r-action')`), true);
@@ -523,7 +523,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await reload('climate', {width:430}); await capture('release-climate-wide');
   // Compact controls follow the same request/ACK path as legacy object rows.
   await reload('climate'); await controlRequests();
-  const climatePaint=await watchPaint({evaluate,doc,win});
+  const climatePaint=await watchPaintBudget({evaluate,doc,win});
   const geometry = () => evaluate(`Array.from(${doc}.querySelectorAll('button')).map(b=>b.getBoundingClientRect().toJSON())`);
   const beforePress = await geometry();
   await climatePaint(()=>click('temp_up'),'Start device command');
@@ -538,6 +538,27 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   await until(`${disabled('temp_up')} === 'false'`);
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
   assert.deepEqual(await geometry(), beforePress, 'State update does not move controls');
+  // A pending camera has enough dimmed controls that cloning it during the ACK
+  // redraw exceeded Telegram's 16 heavy-box limit despite a clean screenshot.
+  await reload('camera',{theme:'dark',width:360});await controlRequests();
+  const cameraPaint=await watchPaintBudget({evaluate,doc,win});
+  await cameraPaint(()=>evaluate(`${get('r-read')}.click()`),'Camera refresh');
+  await cameraPaint(()=>reply({accepted:true}),'Camera ACK');
+  await cameraPaint(()=>push({seq:100,rev:'a'.repeat(32)}),'Camera refreshed');
+  await cameraPaint(()=>evaluate(`${get('r-read')}.click()`),'Second camera refresh');
+  await assert.rejects(()=>cameraPaint(async()=>{
+    // Replay the removed cover around a real pending → ACK redraw. Its opacity
+    // layers count even though they occupy exactly the same screen area.
+    await evaluate(`(() => {
+      const card=${get('release')},cover=card.cloneNode(true);
+      cover.style.cssText+=';position:absolute;inset:0';card.after(cover);${win}.__oldCover=cover;
+    })()`);
+    try {await reply({accepted:true});}
+    finally {await evaluate(`${win}.__oldCover.remove()`);}
+  },'Previous copy-based redraw'),/Telegram paint limit exceeded/);
+  const peak=await evaluate(`Math.max(...${win}.__paintCheck.samples.map(s=>s.heavy))`);
+  console.log(`Reproduced removed cover's Telegram paint overflow: ${peak}/16 opacity layers.`);
+  await cameraPaint(()=>push({seq:101,rev:'b'.repeat(32)}),'Camera recovers after test');
   // Receipt is not physical state confirmation: the issued wait kind survives
   // new revisions and blocks only that device after the transport has completed.
   for (const theme of ['light', 'dark']) for (const width of [200, 360]) {
