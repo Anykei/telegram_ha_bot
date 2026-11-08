@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { checkNativeLayout } from './native-layout.mjs';
 
-export async function checkGraph({root,command,evaluate,until,screenshot}) {
+export async function checkGraph({root,command,evaluate,until,screenshot,unified=false}) {
   const fixtures=JSON.parse(await readFile(root+'preview/graph-fixtures.json','utf8'));
   const doc=`document.getElementById('release-frame').contentDocument`;
   const win=`document.getElementById('release-frame').contentWindow`;
@@ -14,7 +14,7 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   async function reload(id,{theme='light',width=360,scenario='ok'}={}) {
     const next=fixtures.find(f=>f.id===id).page.graph?'graph':'range';
     if(asset!==next) {
-      await command('Page.navigate',{url:pathToFileURL(root+'dist/'+next+'-preview.html').href});
+      await command('Page.navigate',{url:pathToFileURL(root+(unified?'prototype/dist/unified-preview.html':'dist/'+next+'-preview.html')).href});
       await until(`document.querySelector('#fixture option[value="${id}"]')`);asset=next;
     }
     await evaluate(`new Promise(resolve=>{

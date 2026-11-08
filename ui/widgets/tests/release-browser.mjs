@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { releaseExpression } from '../private-names.mjs';
 import { checkNativeLayout } from './native-layout.mjs';
 
-export async function checkRelease({root, command, evaluate, until, screenshot}) {
+export async function checkRelease({root, command, evaluate, until, screenshot, unified=false}) {
   const rawEvaluate = evaluate, rawUntil = until;
   evaluate = source => rawEvaluate(releaseExpression(source));
   until = source => rawUntil(releaseExpression(source));
@@ -148,7 +148,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   }
   await command('Emulation.setDeviceMetricsOverride', {width:1280,height:1080,deviceScaleFactor:1,mobile:false});
   await command('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
-  await command('Page.navigate', {url:pathToFileURL(root+'dist/release-preview.html').href});
+  await command('Page.navigate', {url:pathToFileURL(root+(unified?'prototype/dist/unified-preview.html':'dist/release-preview.html')).href});
   await until(`${get('r-title')} && ${get('r-title')}.textContent === 'Мой дом'`);
   let localPaginationSeen = false;
   for (const theme of ['light', 'dark']) {

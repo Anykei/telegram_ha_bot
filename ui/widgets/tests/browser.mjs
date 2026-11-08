@@ -10,6 +10,7 @@ import { checkRelease } from './release-browser.mjs';
 import { checkGraph } from './graph-browser.mjs';
 import { checkAudit } from './audit-browser.mjs';
 import { checkLive } from './live-browser.mjs';
+import { checkUnified } from './unified-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 let executable = process.env.HA_WIDGET_CHROME;
@@ -70,6 +71,16 @@ try {
   await command('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   if (process.env.HA_WIDGET_LIVE_FIXTURES) {
     await checkLive({root, command, evaluate, until, file:process.env.HA_WIDGET_LIVE_FIXTURES});
+  } else if (process.env.HA_WIDGET_UNIFIED) {
+    await mkdir(root+'screenshots', {recursive:true});
+    const screenshot=async name=>{
+      const {data}=await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      await writeFile(root+'screenshots/unified-'+name+'.png',Buffer.from(data,'base64'));
+    };
+    const context={root,command,evaluate,until,screenshot,unified:true};
+    await checkRelease(context);
+    await checkGraph(context);
+    await checkUnified(context);
   } else {
   await command('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1080, deviceScaleFactor: 1, mobile: false });
   await command('Page.navigate', { url: pathToFileURL(root + 'dist/preview.html').href });

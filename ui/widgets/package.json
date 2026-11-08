@@ -7,7 +7,9 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check:browser": "node tests/browser.mjs"
+    "check:browser": "node tests/browser.mjs",
+    "build:prototype": "node build.mjs && node prototype/build.mjs",
+    "check:prototype": "npm run build:prototype && HA_WIDGET_UNIFIED=1 node tests/browser.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.12",
