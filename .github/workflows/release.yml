@@ -13,7 +13,7 @@ env:
   REGISTRY: ghcr.io
   STORE_REPO: "Anykei/ha_addons"
   CONFIG_PATH: "telegram_bot_addon/config.yaml"
-  RUST_TOOLCHAIN: 1.95.0
+  RUST_TOOLCHAIN: 1.99.1
 
 jobs:
   validate:

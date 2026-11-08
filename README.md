@@ -61,7 +61,8 @@ Telegram HA Bot - это Telegram-бот для управления Home Assist
 
 ## Требования
 
-- Rust 1.95.0 (единая версия для локальной проверки, CI и Docker).
+- Rust 1.99 или новее; проверенная версия для релизов и Docker — 1.99.1.
+  CI проверяет актуальный stable Rust, включая предупреждения о будущей несовместимости.
 - SQLite.
 - Home Assistant с long-lived access token или Supervisor token.
 - Telegram bot token от BotFather.

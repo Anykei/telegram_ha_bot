@@ -1217,7 +1217,9 @@ async fn explicit_bulk_grammar_overrides_literal_names_and_preserves_complete_ro
     Ok(())
 }
 
-async fn assert_bulk_snapshot_change_during_read_is_rejected(mutation: &str) -> anyhow::Result<()> {
+async fn assert_bulk_snapshot_change_during_read_is_rejected(
+    mutation: &'static str,
+) -> anyhow::Result<()> {
     for command in ["выключи весь свет в спальне", "выключи весь свет"]
     {
         let (config, ha) = setup().await?;

@@ -507,7 +507,8 @@ pub async fn archive_missing_devices(
         placeholders
     );
 
-    let mut query = sqlx::query(&query_str);
+    // Only placeholder count is interpolated; entity IDs are bound below.
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(query_str));
     for entity_id in synced_entity_ids {
         query = query.bind(entity_id);
     }

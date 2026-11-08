@@ -303,7 +303,8 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
                 .max(0);
             format!(
                 "\n\nREC · {} · {} {} · {}",
-                session.rule_id
+                session
+                    .rule_id
                     .map(|id| format!("{} #{}", t(ctx.lang, "camera.recording.rule"), id))
                     .unwrap_or_else(|| {
                         localized(ctx.lang, "Ручная запись", "Manual recording").into()

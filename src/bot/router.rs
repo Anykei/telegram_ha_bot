@@ -2945,8 +2945,12 @@ async fn router_admin(ctx: RenderContext, payload: AdminPayload) -> anyhow::Resu
             // current route with its read-only resume route.
             if let Some(Payload::Admin(action)) = &view.html_back {
                 if is_recording_wizard_payload(action)
-                    && !matches!(action, AdminPayload::WizardResume { .. }
-                        | AdminPayload::WizardNew { .. } | AdminPayload::WizardDraft { .. })
+                    && !matches!(
+                        action,
+                        AdminPayload::WizardResume { .. }
+                            | AdminPayload::WizardNew { .. }
+                            | AdminPayload::WizardDraft { .. }
+                    )
                 {
                     view.html_back = Some(Payload::Admin(AdminPayload::WizardDraft {
                         id,
@@ -5636,7 +5640,11 @@ mod tests {
             AdminPayload::CameraRooms,
             AdminPayload::RoomCameras { room: 1 },
             AdminPayload::RoomCameraDetail { room: 1, camera: 2 },
-            AdminPayload::SetCameraManualArchive { room: 1, camera: 2, enabled: true },
+            AdminPayload::SetCameraManualArchive {
+                room: 1,
+                camera: 2,
+                enabled: true,
+            },
             AdminPayload::RoomCameraSnapshot { room: 1, camera: 2 },
             AdminPayload::RoomCameraClip {
                 room: 1,

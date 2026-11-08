@@ -277,7 +277,7 @@ pub async fn get_action_group(group_id: i64, pool: &SqlitePool) -> Result<Option
     .await?)
 }
 
-async fn action_group_query(sql: &str, pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
+async fn action_group_query(sql: &'static str, pool: &SqlitePool) -> Result<Vec<ActionGroup>> {
     Ok(sqlx::query_as::<_, ActionGroup>(sql)
         .fetch_all(pool)
         .await?)
@@ -534,7 +534,8 @@ pub async fn sync_ha_native_targets(
                 "UPDATE ha_native_targets SET archived = 1, updated_at = CURRENT_TIMESTAMP WHERE entity_id NOT IN ({})",
                 placeholders
             );
-            let mut query = sqlx::query(&query);
+            // Only placeholder count is interpolated; entity IDs are bound below.
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(query));
             for entity_id in entity_ids {
                 query = query.bind(entity_id);
             }

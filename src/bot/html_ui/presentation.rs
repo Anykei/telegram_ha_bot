@@ -177,16 +177,36 @@ fn list_target(payload: &Payload) -> Option<(Payload, u16)> {
 
 pub(crate) fn list_identity(payload: &Payload) -> Payload {
     match payload {
-        Payload::Control(ControlPayload::RoomsPage { .. }) => Payload::Control(ControlPayload::ListRooms),
-        Payload::Control(ControlPayload::RoomPage { room, .. }) => Payload::Control(ControlPayload::RoomDetail { room: *room }),
-        Payload::Control(ControlPayload::ActionGroupsPage { .. }) => Payload::Control(ControlPayload::ActionGroups),
-        Payload::Settings(SettingsPayload::RoomsPage { .. }) => Payload::Settings(SettingsPayload::ListRooms),
-        Payload::AdminSettings(SettingsPayload::RoomsPage { .. }) => Payload::AdminSettings(SettingsPayload::ListRooms),
-        Payload::Settings(SettingsPayload::RoomPage { room, .. }) => Payload::Settings(SettingsPayload::RoomDetail { room: *room }),
-        Payload::AdminSettings(SettingsPayload::RoomPage { room, .. }) => Payload::AdminSettings(SettingsPayload::RoomDetail { room: *room }),
-        Payload::Admin(AdminPayload::ListUsersPage { .. }) => Payload::Admin(AdminPayload::ListUsers),
-        Payload::Admin(AdminPayload::ActionGroupsPage { .. }) => Payload::Admin(AdminPayload::ActionGroups),
-        _ => list_target(payload).map(|(base, _)| base).unwrap_or_else(|| payload.clone()),
+        Payload::Control(ControlPayload::RoomsPage { .. }) => {
+            Payload::Control(ControlPayload::ListRooms)
+        }
+        Payload::Control(ControlPayload::RoomPage { room, .. }) => {
+            Payload::Control(ControlPayload::RoomDetail { room: *room })
+        }
+        Payload::Control(ControlPayload::ActionGroupsPage { .. }) => {
+            Payload::Control(ControlPayload::ActionGroups)
+        }
+        Payload::Settings(SettingsPayload::RoomsPage { .. }) => {
+            Payload::Settings(SettingsPayload::ListRooms)
+        }
+        Payload::AdminSettings(SettingsPayload::RoomsPage { .. }) => {
+            Payload::AdminSettings(SettingsPayload::ListRooms)
+        }
+        Payload::Settings(SettingsPayload::RoomPage { room, .. }) => {
+            Payload::Settings(SettingsPayload::RoomDetail { room: *room })
+        }
+        Payload::AdminSettings(SettingsPayload::RoomPage { room, .. }) => {
+            Payload::AdminSettings(SettingsPayload::RoomDetail { room: *room })
+        }
+        Payload::Admin(AdminPayload::ListUsersPage { .. }) => {
+            Payload::Admin(AdminPayload::ListUsers)
+        }
+        Payload::Admin(AdminPayload::ActionGroupsPage { .. }) => {
+            Payload::Admin(AdminPayload::ActionGroups)
+        }
+        _ => list_target(payload)
+            .map(|(base, _)| base)
+            .unwrap_or_else(|| payload.clone()),
     }
 }
 
@@ -668,7 +688,8 @@ pub fn prepare_with_pending(
                         key: key.clone(),
                         kind: if let Some(status) = pending_kind {
                             status
-                        } else if button.text.starts_with("✓ ") || button.text.starts_with("☑ ") {
+                        } else if button.text.starts_with("✓ ") || button.text.starts_with("☑ ")
+                        {
                             "selected"
                         } else {
                             kind(&payload)

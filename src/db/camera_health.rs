@@ -533,7 +533,8 @@ async fn upsert_health(upsert: HealthUpsert, connection: &mut SqliteConnection) 
         "#
     );
 
-    let mut query = sqlx::query(&sql).bind(upsert.camera_id);
+    // The optional column is an internal static name; all data stays bound.
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(upsert.camera_id);
     if upsert.ok_column.is_some() {
         query = query.bind(upsert.updated_at);
     }

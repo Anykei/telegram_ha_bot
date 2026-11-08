@@ -190,7 +190,8 @@ async fn manual_archive_preserves_original_after_chat_expiry_and_obeys_retention
     assert!(calls[1]["method"]
         .as_str()
         .unwrap()
-        .to_lowercase().contains("deletemessage"));
+        .to_lowercase()
+        .contains("deletemessage"));
     let sessions = db::camera_recording_sessions::list_camera_sessions(1, 20, &config.db).await?;
     assert_eq!(sessions.len(), 1);
     let session = &sessions[0];

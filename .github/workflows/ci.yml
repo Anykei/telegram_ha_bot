@@ -10,7 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_TOOLCHAIN: 1.95.0
+  # Track new stable compilers; release builds keep a reproducible pinned version.
+  RUST_TOOLCHAIN: stable
 
 jobs:
   rust:
@@ -61,7 +62,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Check project
-        run: cargo check --locked
+        run: cargo check --locked --future-incompat-report
 
       - name: Run tests
         run: cargo test --locked

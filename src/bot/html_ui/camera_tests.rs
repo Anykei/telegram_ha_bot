@@ -225,8 +225,14 @@ async fn camera_snapshot_action_sends_one_attachment_and_keeps_html_controls() -
         .await?;
     let snapshot_server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = vec![0; 4096];
-        stream.read(&mut request).await.unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 1024];
+        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert!(count > 0, "snapshot request ended before HTTP headers");
+            request.extend_from_slice(&chunk[..count]);
+            assert!(request.len() <= 16384, "snapshot request headers too large");
+        }
         let bytes = crate::bot::utils::UI_PLACEHOLDER_BYTES;
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).as_bytes()).await.unwrap();
         stream.write_all(bytes).await.unwrap();

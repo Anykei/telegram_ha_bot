@@ -1,6 +1,6 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.87-slim-bookworm AS chef
-# Match the validated CI toolchain; locked home/time dependencies require Rust >= 1.88.
-RUN rustup toolchain install 1.95.0 --profile minimal && rustup default 1.95.0
+# Pin the validated release toolchain; CI also follows the latest stable Rust.
+RUN rustup toolchain install 1.99.1 --profile minimal && rustup default 1.99.1
 WORKDIR /app
 
 FROM chef AS planner
@@ -10,6 +10,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # --- ЭТАП 2: Builder (Сборка) ---
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor vendor
 
 # Устанавливаем зависимости для компиляции (включая шрифты и ssl)
 RUN apt-get update && apt-get install -y \

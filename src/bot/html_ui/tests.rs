@@ -112,10 +112,12 @@ async fn config() -> Result<(Arc<AppConfig>, Arc<FakeHa>)> {
     Ok((config, ha))
 }
 
+type UploadedFile = (String, Vec<u8>);
+
 struct FakeTelegram {
     bot: Bot,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
-    uploads: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    uploads: Arc<Mutex<Vec<UploadedFile>>>,
     fail: Arc<Mutex<Option<String>>>,
     update_batches: Arc<Mutex<std::collections::VecDeque<Vec<Value>>>>,
     task: tokio::task::JoinHandle<()>,
@@ -377,9 +379,15 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         .into_iter()
         .filter(|b| prepared.actions.contains_key(&b.key))
         .collect::<Vec<_>>();
-    assert_eq!(prepared.actions.len(), original.len() + usize::from(prepared.actions.contains_key("back")));
+    assert_eq!(
+        prepared.actions.len(),
+        original.len() + usize::from(prepared.actions.contains_key("back"))
+    );
     if let Some(back) = prepared.actions.get("back") {
-        assert_eq!(Some(back), crate::bot::screen_structure::parent(view).as_ref());
+        assert_eq!(
+            Some(back),
+            crate::bot::screen_structure::parent(view).as_ref()
+        );
     }
     let mut order = Vec::new();
     for (index, button) in original.iter().enumerate() {
@@ -392,9 +400,14 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
             assert_eq!(
                 visible.text,
                 if prepared.pages[0].bounded {
-                    presentation::bounded_label(view.html_button_labels.get(data).unwrap_or(&button.text))
+                    presentation::bounded_label(
+                        view.html_button_labels.get(data).unwrap_or(&button.text),
+                    )
                 } else {
-                    view.html_button_labels.get(data).unwrap_or(&button.text).clone()
+                    view.html_button_labels
+                        .get(data)
+                        .unwrap_or(&button.text)
+                        .clone()
                 }
             );
             order.push(key);
@@ -408,7 +421,8 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
                     || (button.text == crate::i18n::t(view.lang, "control.refresh")
                         && prepared.actions[&key] == view.payload.for_refresh()),
                 "Missing action: {} on {:?}",
-                button.text, view.payload
+                button.text,
+                view.payload
             );
         }
     }

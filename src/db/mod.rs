@@ -140,7 +140,7 @@ pub async fn get_system_stats(pool: &SqlitePool) -> Result<SystemStats> {
     })
 }
 
-async fn count_query(sql: &str, pool: &SqlitePool) -> Result<i64> {
+async fn count_query(sql: &'static str, pool: &SqlitePool) -> Result<i64> {
     Ok(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?)
 }
 
@@ -161,8 +161,8 @@ pub async fn create_timestamped_backup(pool: &SqlitePool) -> Result<PathBuf> {
 pub async fn create_backup(backup_path: &str, pool: &SqlitePool) -> Result<()> {
     let _ = std::fs::remove_file(backup_path);
 
-    let escaped_path = backup_path.replace('\'', "''");
-    sqlx::query(&format!("VACUUM INTO '{}'", escaped_path))
+    sqlx::query("VACUUM INTO ?")
+        .bind(backup_path)
         .execute(pool)
         .await
         .context("DB backup create error")?;
@@ -238,6 +238,50 @@ mod tests {
             rows[0].message.as_deref(),
             Some(sanitize_error(&message).as_str())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_binds_paths_with_quotes_and_preserves_data() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "ha-backup-{}-{}-'quote'.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let source_path = path.with_extension("source.db");
+        // Use a disk database as in production. SQLite OPEN_MEMORY also applies
+        // to attached databases used internally by VACUUM INTO.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&source_path)
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::query("CREATE TABLE backup_probe (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO backup_probe VALUES (?)")
+            .bind("Проверка резервной копии")
+            .execute(&pool)
+            .await?;
+        create_backup(path.to_str().unwrap(), &pool).await?;
+        anyhow::ensure!(path.is_file(), "Backup file missing: {}", path.display());
+        let backup = SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .read_only(true),
+        )
+        .await?;
+        let value: String = sqlx::query_scalar("SELECT value FROM backup_probe")
+            .fetch_one(&backup)
+            .await?;
+        assert_eq!(value, "Проверка резервной копии");
+        backup.close().await;
+        pool.close().await;
+        std::fs::remove_file(path)?;
+        std::fs::remove_file(source_path)?;
         Ok(())
     }
 

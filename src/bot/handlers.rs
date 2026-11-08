@@ -1237,15 +1237,8 @@ async fn spawn_video_delivery(
                 send_camera_clip(&bot, chat_id, user_id, camera, seconds, &config, &access).await
             }
             VideoTarget::Segment {
-                camera,
-                session,
-                segment,
-            } => {
-                send_recording_segment(
-                    &bot, chat_id, user_id, camera, session, segment, &config, &access,
-                )
-                .await
-            }
+                session, segment, ..
+            } => send_recording_segment(&bot, chat_id, session, segment, &access).await,
             VideoTarget::All { camera, session } => {
                 send_recording_all(&bot, chat_id, user_id, camera, session, &config, &access).await
             }
@@ -1589,7 +1582,7 @@ async fn send_camera_clip(
         bytes,
         &format!("🎞 {} · {}с", camera.name, seconds),
         seconds,
-        &access,
+        access,
     )
     .await;
     let _ = bot.delete_message(chat_id, status.id).await;
@@ -1786,13 +1779,13 @@ async fn log_activity(
 async fn send_recording_segment(
     bot: &Bot,
     chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
     session_id: i64,
     segment_id: i64,
-    config: &Arc<AppConfig>,
     access: &CameraDeliveryAccess,
 ) -> Result<VideoOutcome> {
+    let user_id = access.user_id;
+    let camera_id = access.camera_id;
+    let config = &access.config;
     access.check().await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
@@ -1846,7 +1839,7 @@ async fn send_recording_segment(
         &full_path,
         &format!("🎞 Часть {}", segment.segment_index),
         thumbnail,
-        &access,
+        access,
         None,
     )
     .await?;
@@ -1950,7 +1943,7 @@ async fn send_recording_all(
             &full_path,
             &format!("🎞 Часть {}", segment_index),
             thumbnail,
-            &access,
+            access,
             None,
         )
         .await;
@@ -5548,7 +5541,8 @@ mod tests {
         ])
         .await?;
         assert!(
-            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", 10, &access).await?
+            send_manual_camera_video(&bot, ChatId(42), vec![1; 1024], "Manual", 10, &access)
+                .await?
         );
         // Invalid oversized input must enter compression and produce a readable
         // error instead of sending a video that Telegram would reject.

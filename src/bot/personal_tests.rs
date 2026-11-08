@@ -527,11 +527,11 @@ async fn deleting_user_clears_owned_ui_state_without_affecting_another_user() ->
     for (table, owner_column) in owned_tables {
         // Identifiers are fixed test constants; only owner values are supplied dynamically.
         let query = format!("SELECT COUNT(*) FROM {table} WHERE {owner_column} = ?");
-        let deleted: i64 = sqlx::query_scalar(&query)
+        let deleted: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
             .bind(42)
             .fetch_one(&config.db)
             .await?;
-        let retained: i64 = sqlx::query_scalar(&query)
+        let retained: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
             .bind(77)
             .fetch_one(&config.db)
             .await?;

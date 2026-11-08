@@ -1920,7 +1920,9 @@ pub async fn render_recording_rule_wizard_start(ctx: RenderContext, room_id: i64
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: room_id }),
-        html_back: Some(Payload::Admin(AdminPayload::RecordingRules { room: room_id })),
+        html_back: Some(Payload::Admin(AdminPayload::RecordingRules {
+            room: room_id,
+        })),
         ..Default::default()
     })
 }
@@ -2016,7 +2018,9 @@ pub async fn render_recording_rule_wizard_source_page(
         text,
         kb: InlineKeyboardMarkup::new(rows),
         payload: Payload::Admin(AdminPayload::WizardSourcePage { page }),
-        html_back: Some(Payload::Admin(AdminPayload::StartRecordingRuleWizard { room: wizard.room_id })),
+        html_back: Some(Payload::Admin(AdminPayload::StartRecordingRuleWizard {
+            room: wizard.room_id,
+        })),
         ..Default::default()
     })
 }
@@ -5219,17 +5223,43 @@ pub fn render_confirm_action(
     let review = match &confirm_payload {
         Payload::Admin(action) => Payload::Admin(match action {
             AdminPayload::CreateBackup => AdminPayload::ConfirmBackup,
-            AdminPayload::DeleteCamera { room, camera } => AdminPayload::ConfirmDeleteCamera { room: *room, camera: *camera },
+            AdminPayload::DeleteCamera { room, camera } => AdminPayload::ConfirmDeleteCamera {
+                room: *room,
+                camera: *camera,
+            },
             AdminPayload::DeleteUser { id } => AdminPayload::ConfirmDeleteUser { id: *id },
-            AdminPayload::DeleteRecordingRule { room, rule } => AdminPayload::ConfirmDeleteRecordingRule { room: *room, rule: *rule },
-            AdminPayload::DeleteRecordingRuleGroup { group } => AdminPayload::ConfirmDeleteRecordingRuleGroup { group: *group },
-            AdminPayload::DeleteRecordingRuleGroupForRoom { room, group } => AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom { room: *room, group: *group },
-            AdminPayload::DeleteActionGroup { group } => AdminPayload::ConfirmDeleteActionGroup { group: *group },
-            AdminPayload::DeleteActionSchedule { target, schedule } => AdminPayload::ConfirmDeleteActionSchedule { target: *target, schedule: *schedule },
+            AdminPayload::DeleteRecordingRule { room, rule } => {
+                AdminPayload::ConfirmDeleteRecordingRule {
+                    room: *room,
+                    rule: *rule,
+                }
+            }
+            AdminPayload::DeleteRecordingRuleGroup { group } => {
+                AdminPayload::ConfirmDeleteRecordingRuleGroup { group: *group }
+            }
+            AdminPayload::DeleteRecordingRuleGroupForRoom { room, group } => {
+                AdminPayload::ConfirmDeleteRecordingRuleGroupForRoom {
+                    room: *room,
+                    group: *group,
+                }
+            }
+            AdminPayload::DeleteActionGroup { group } => {
+                AdminPayload::ConfirmDeleteActionGroup { group: *group }
+            }
+            AdminPayload::DeleteActionSchedule { target, schedule } => {
+                AdminPayload::ConfirmDeleteActionSchedule {
+                    target: *target,
+                    schedule: *schedule,
+                }
+            }
             _ => unreachable!("confirmation requires an explicit read-only review route"),
         }),
-        Payload::Camera(crate::bot::router::CameraPayload::DeleteRecording { camera, session }) =>
-            Payload::Camera(crate::bot::router::CameraPayload::ConfirmDeleteRecording { camera: *camera, session: *session }),
+        Payload::Camera(crate::bot::router::CameraPayload::DeleteRecording { camera, session }) => {
+            Payload::Camera(crate::bot::router::CameraPayload::ConfirmDeleteRecording {
+                camera: *camera,
+                session: *session,
+            })
+        }
         _ => unreachable!("confirmation requires an explicit read-only review route"),
     };
     let kb = InlineKeyboardMarkup::new(vec![vec![

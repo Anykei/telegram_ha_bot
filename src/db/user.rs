@@ -158,10 +158,13 @@ pub async fn delete_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
         ("user_display_metadata", "user_id"),
         ("ui_text_pages", "user_id"),
     ] {
-        sqlx::query(&format!("DELETE FROM {table} WHERE {owner_column} = ?"))
-            .bind(user_id as i64)
-            .execute(&mut *tx)
-            .await?;
+        // Identifiers come only from the fixed table/column pairs above.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE {owner_column} = ?"
+        )))
+        .bind(user_id as i64)
+        .execute(&mut *tx)
+        .await?;
     }
     for namespace in ["list", "chart", "archive", "group-items"] {
         sqlx::query("DELETE FROM app_settings WHERE key LIKE ?")
