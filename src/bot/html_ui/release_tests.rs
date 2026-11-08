@@ -17,6 +17,9 @@ mod pending_tests;
 #[path = "camera_tests.rs"]
 mod camera_tests;
 
+#[path = "media_pending_tests.rs"]
+mod media_pending_tests;
+
 #[path = "audit_tests.rs"]
 mod audit_tests;
 

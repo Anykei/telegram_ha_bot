@@ -14,6 +14,9 @@ use teloxide::types::{
 };
 use teloxide::{Bot, RequestError};
 
+use super::html_ui::media_pending::{
+    Outcome as VideoOutcome, Target as VideoTarget, UploadUncertain,
+};
 use super::models::View;
 use crate::bot::router::{
     router, AdminPayload, CameraPayload, CommandPayload, Payload, RecordingRuleEditField,
@@ -652,7 +655,17 @@ async fn apply_command_execution_cancellable(
             spawn_camera_snapshot(bot.clone(), chat_id, user_id, camera_id, config);
         }
         CommandExecution::SendCameraClip { camera_id, seconds } => {
-            spawn_camera_clip(bot.clone(), chat_id, user_id, camera_id, seconds, config);
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::Clip {
+                    camera: camera_id,
+                    seconds,
+                },
+                config,
+            )
+            .await?;
         }
         CommandExecution::NeedsChoice { choice_id } => {
             let view = router(
@@ -941,7 +954,8 @@ pub async fn handle_callback(
         });
         return Ok(());
     }
-    let payload = handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config)?;
+    let payload =
+        handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config).await?;
     let token = config.begin_view_update(user_id);
     let chat_id = msg.chat().id;
     let message_id = msg.id();
@@ -1068,7 +1082,7 @@ async fn handle_command_callback(
     Ok(())
 }
 
-fn handle_camera_media_action(
+async fn handle_camera_media_action(
     bot: &Bot,
     chat_id: ChatId,
     user_id: u64,
@@ -1081,7 +1095,17 @@ fn handle_camera_media_action(
             Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
         }
         Payload::Camera(CameraPayload::Clip { id, seconds }) => {
-            spawn_camera_clip(bot.clone(), chat_id, user_id, id, seconds, config.clone());
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::Clip {
+                    camera: id,
+                    seconds,
+                },
+                config.clone(),
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
         }
         Payload::Camera(CameraPayload::SendRecordingSegment {
@@ -1089,31 +1113,32 @@ fn handle_camera_media_action(
             session,
             segment,
         }) => {
-            spawn_recording_segment(
+            spawn_video_delivery(
                 bot.clone(),
                 chat_id,
                 user_id,
-                camera,
-                session,
-                segment,
+                VideoTarget::Segment {
+                    camera,
+                    session,
+                    segment,
+                },
                 config.clone(),
-            );
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::RecordingSession {
                 camera,
                 session,
             }))
         }
         Payload::Camera(CameraPayload::SendRecordingAll { camera, session }) => {
-            if config.start_recording_send(user_id, session) {
-                spawn_recording_all(
-                    bot.clone(),
-                    chat_id,
-                    user_id,
-                    camera,
-                    session,
-                    config.clone(),
-                );
-            }
+            spawn_video_delivery(
+                bot.clone(),
+                chat_id,
+                user_id,
+                VideoTarget::All { camera, session },
+                config.clone(),
+            )
+            .await?;
             Ok(Payload::Camera(CameraPayload::RecordingSession {
                 camera,
                 session,
@@ -1134,14 +1159,14 @@ fn handle_camera_media_action(
             seconds,
         }) => {
             if user_id == config.root_user {
-                spawn_camera_clip(
+                spawn_video_delivery(
                     bot.clone(),
                     chat_id,
                     user_id,
-                    camera,
-                    seconds,
+                    VideoTarget::Clip { camera, seconds },
                     config.clone(),
-                );
+                )
+                .await?;
             }
             Ok(Payload::Admin(AdminPayload::RoomCameraDetail {
                 room,
@@ -1171,26 +1196,53 @@ fn spawn_camera_snapshot(
     });
 }
 
-fn spawn_camera_clip(
+async fn spawn_video_delivery(
     bot: Bot,
     chat_id: ChatId,
     user_id: u64,
-    camera_id: i64,
-    seconds: u32,
+    target: VideoTarget,
     config: Arc<AppConfig>,
-) {
+) -> Result<()> {
+    // Acquire admission and the overlap guard before the callback renders its receipt.
+    let access = CameraDeliveryAccess::new(chat_id, user_id, target.camera(), &config).await?;
+    let Some(operation) =
+        config
+            .html_ui
+            .media
+            .begin(&config, user_id, &access.generation, target.clone())
+    else {
+        return Ok(());
+    };
     crate::db::user::spawn_with_admission(async move {
-        if let Err(error) =
-            send_camera_clip(&bot, chat_id, user_id, camera_id, seconds, &config).await
-        {
-            log::warn!(
-                "Failed to send camera clip for user {} camera {}: {}",
-                user_id,
-                camera_id,
-                error
-            );
-        }
+        let result = match target {
+            VideoTarget::Clip { camera, seconds } => {
+                send_camera_clip(&bot, chat_id, user_id, camera, seconds, &config, &access).await
+            }
+            VideoTarget::Segment {
+                camera,
+                session,
+                segment,
+            } => {
+                send_recording_segment(
+                    &bot, chat_id, user_id, camera, session, segment, &config, &access,
+                )
+                .await
+            }
+            VideoTarget::All { camera, session } => {
+                send_recording_all(&bot, chat_id, user_id, camera, session, &config, &access).await
+            }
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // Do not print a transport error: it may contain the bot token.
+                log::warn!("operation=video_delivery user={} result=failed", user_id);
+                VideoOutcome::from_error(&error)
+            }
+        };
+        operation.complete(outcome).await;
     });
+    Ok(())
 }
 
 pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppConfig>) {
@@ -1247,93 +1299,6 @@ pub fn spawn_camera_health_check(user_id: u64, camera_id: i64, config: Arc<AppCo
             }
         }
     });
-}
-
-fn spawn_recording_segment(
-    bot: Bot,
-    chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
-    session_id: i64,
-    segment_id: i64,
-    config: Arc<AppConfig>,
-) {
-    crate::db::user::spawn_with_admission(async move {
-        if let Err(error) = send_recording_segment(
-            &bot, chat_id, user_id, camera_id, session_id, segment_id, &config,
-        )
-        .await
-        {
-            log::warn!(
-                "Failed to send recording segment {} for user {}: {}",
-                segment_id,
-                user_id,
-                error
-            );
-        }
-    });
-}
-
-fn spawn_recording_all(
-    bot: Bot,
-    chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
-    session_id: i64,
-    config: Arc<AppConfig>,
-) {
-    crate::db::user::spawn_with_admission(async move {
-        let result =
-            send_recording_all(&bot, chat_id, user_id, camera_id, session_id, &config).await;
-        config.finish_recording_send(user_id, session_id);
-
-        if let Err(error) = result {
-            log::warn!(
-                "Failed to send recording session {} for user {}: {}",
-                session_id,
-                user_id,
-                error
-            );
-        }
-
-        refresh_recording_session_view(&bot, chat_id, user_id, camera_id, session_id, &config)
-            .await;
-    });
-}
-
-async fn refresh_recording_session_view(
-    bot: &Bot,
-    chat_id: ChatId,
-    user_id: u64,
-    camera_id: i64,
-    session_id: i64,
-    config: &Arc<AppConfig>,
-) {
-    let context = Payload::Camera(CameraPayload::RecordingSession {
-        camera: camera_id,
-        session: session_id,
-    })
-    .to_string();
-    let message_id = config
-        .sessions
-        .get(&user_id)
-        .filter(|session| session.current_context == context)
-        .map(|session| MessageId(session.last_menu_id));
-
-    let Some(message_id) = message_id else {
-        return;
-    };
-
-    if let Err(error) =
-        refresh_current_view(bot, config, user_id, chat_id, message_id, &context).await
-    {
-        log::warn!(
-            "Failed to refresh recording session {} after send for user {}: {}",
-            session_id,
-            user_id,
-            error
-        );
-    }
 }
 
 struct CameraDeliveryAccess {
@@ -1505,8 +1470,9 @@ async fn send_camera_clip(
     camera_id: i64,
     seconds: u32,
     config: &Arc<AppConfig>,
-) -> Result<()> {
-    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    access.check().await?;
     let Some(camera) = db::cameras::get_accessible_camera(
         user_id,
         config.root_user == user_id,
@@ -1517,7 +1483,7 @@ async fn send_camera_clip(
     else {
         bot.send_message(chat_id, "Недостаточно прав для просмотра камеры.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     let seconds = seconds.clamp(1, 120);
@@ -1594,7 +1560,7 @@ async fn send_camera_clip(
                 format!("Не удалось записать видео: {}", error),
             )
             .await?;
-            return Ok(());
+            return Ok(VideoOutcome::failed());
         }
     };
 
@@ -1609,7 +1575,7 @@ async fn send_camera_clip(
     .await;
     let _ = bot.delete_message(chat_id, status.id).await;
 
-    match send_result {
+    let outcome = match send_result {
         Ok(true) => {
             let camera_id = camera.id.to_string();
             let message = format!("{}с · {}", seconds, camera.name);
@@ -1624,6 +1590,7 @@ async fn send_camera_clip(
                 Some(&message),
             )
             .await;
+            VideoOutcome::sent()
         }
         Ok(false) => {
             let camera_id = camera.id.to_string();
@@ -1638,6 +1605,7 @@ async fn send_camera_clip(
                 Some("Video could not fit the Telegram upload limit"),
             )
             .await;
+            VideoOutcome::failed()
         }
         Err(error) => {
             let camera_id = camera.id.to_string();
@@ -1655,9 +1623,9 @@ async fn send_camera_clip(
             .await;
             return Err(error);
         }
-    }
+    };
 
-    Ok(())
+    Ok(outcome)
 }
 
 async fn send_manual_camera_video(
@@ -1763,14 +1731,15 @@ async fn send_recording_segment(
     session_id: i64,
     segment_id: i64,
     config: &Arc<AppConfig>,
-) -> Result<()> {
-    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    access.check().await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(segment) = db::camera_recording_segments::get_segment(segment_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Файл записи не найден.").await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     if segment.session_id != session_id
@@ -1779,13 +1748,13 @@ async fn send_recording_segment(
     {
         bot.send_message(chat_id, "Эта часть записи еще не готова.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let Some(path) = segment.file_path else {
         bot.send_message(chat_id, "Файл записи отсутствует.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
 
     let (full_path, _) = match crate::core::camera_recording::recording_file_info(config, &path)
@@ -1807,11 +1776,11 @@ async fn send_recording_segment(
                 "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
             )
             .await?;
-            return Ok(());
+            return Ok(VideoOutcome::failed());
         }
     };
     let thumbnail = recording_video_thumbnail(config, &path).await;
-    send_camera_video_file(
+    let sent = send_camera_video_file(
         bot,
         chat_id,
         &full_path,
@@ -1822,7 +1791,11 @@ async fn send_recording_segment(
     )
     .await?;
 
-    Ok(())
+    Ok(if sent {
+        VideoOutcome::sent()
+    } else {
+        VideoOutcome::failed()
+    })
 }
 
 async fn send_recording_all(
@@ -1832,19 +1805,20 @@ async fn send_recording_all(
     camera_id: i64,
     session_id: i64,
     config: &Arc<AppConfig>,
-) -> Result<()> {
-    let access = CameraDeliveryAccess::new(chat_id, user_id, camera_id, config).await?;
+    access: &CameraDeliveryAccess,
+) -> Result<VideoOutcome> {
+    access.check().await?;
     ensure_recording_access(bot, chat_id, user_id, camera_id, config).await?;
 
     let Some(session) = db::camera_recording_sessions::get_session(session_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Запись не найдена.").await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     };
     if session.camera_id != camera_id {
         bot.send_message(chat_id, "Недостаточно прав для просмотра записи.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let segments =
@@ -1852,7 +1826,7 @@ async fn send_recording_all(
     if segments.is_empty() {
         bot.send_message(chat_id, "Готовых частей записи нет.")
             .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     let mut files = Vec::new();
@@ -1874,6 +1848,8 @@ async fn send_recording_all(
                     );
                 }
             }
+        } else {
+            missing_files += 1;
         }
     }
 
@@ -1883,7 +1859,7 @@ async fn send_recording_all(
             "Файлы записи недоступны на диске. Проверьте папку хранения записей и логи сервиса.",
         )
         .await?;
-        return Ok(());
+        return Ok(VideoOutcome::failed());
     }
 
     if missing_files > 0 {
@@ -1897,10 +1873,18 @@ async fn send_recording_all(
         .await?;
     }
 
-    for (segment_index, full_path, relative_path) in files {
-        access.check().await?;
+    let mut outcome = VideoOutcome {
+        failed: missing_files,
+        ..Default::default()
+    };
+    let file_count = files.len();
+    for (index, (segment_index, full_path, relative_path)) in files.into_iter().enumerate() {
+        if access.check().await.is_err() {
+            outcome.failed += file_count - index;
+            return Ok(outcome);
+        }
         let thumbnail = recording_video_thumbnail(config, &relative_path).await;
-        send_camera_video_file(
+        let result = send_camera_video_file(
             bot,
             chat_id,
             &full_path,
@@ -1909,10 +1893,19 @@ async fn send_recording_all(
             &access,
             None,
         )
-        .await?;
+        .await;
+        match result {
+            Ok(true) => outcome.sent += 1,
+            Ok(false) => outcome.failed += 1,
+            Err(error) => {
+                outcome.failed += file_count - index;
+                outcome.uncertain = error.is::<UploadUncertain>();
+                return Ok(outcome);
+            }
+        }
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
 async fn send_camera_video_file(
@@ -2031,7 +2024,12 @@ async fn send_camera_video_file(
         request
     };
     access.check().await?;
-    request.await?;
+    request.await.map_err(|error| match error {
+        RequestError::Network(_) | RequestError::InvalidJson { .. } | RequestError::Io(_) => {
+            anyhow::Error::new(UploadUncertain)
+        }
+        other => anyhow::Error::new(other),
+    })?;
     drop(media_owner);
 
     Ok(true)

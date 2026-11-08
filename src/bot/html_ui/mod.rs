@@ -1,5 +1,6 @@
 //! HTML is a presentation adapter for existing routes, not a second command engine.
 pub(crate) mod chart_export;
+pub(crate) mod media_pending;
 pub(crate) mod pending;
 mod presentation;
 pub(crate) mod range;
@@ -54,6 +55,7 @@ pub struct HtmlUi {
     sessions: DashMap<u64, WidgetSession>,
     ranges: DashMap<u64, range::Draft>,
     pub(crate) pending: pending::PendingCommands,
+    pub(crate) media: media_pending::Registry,
 }
 impl HtmlUi {
     pub fn new(enabled: bool) -> Self {
@@ -143,11 +145,17 @@ pub async fn deliver(
     let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
         return Ok(None);
     };
+    let mut decorated = view.clone();
+    config
+        .html_ui
+        .media
+        .decorate(user, &generation, &mut decorated);
+    let view = &decorated;
     let rev: String = sqlx::query_scalar("SELECT lower(hex(randomblob(16)))")
         .fetch_one(&config.db)
         .await?;
     let pending = config.html_ui.pending.kinds(user, &generation);
-    let Prepared { pages, actions } =
+    let Prepared { mut pages, actions } =
         match presentation::prepare_with_pending(view, rev, sequence(), &pending) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -155,6 +163,15 @@ pub async fn deliver(
                 return Ok(None);
             }
         };
+    for button in pages.iter_mut().flat_map(|p| p.rows.iter_mut().flatten()) {
+        if actions
+            .get(&button.key)
+            .and_then(media_pending::Target::from_payload)
+            .is_some_and(|target| config.html_ui.media.blocks(user, &generation, &target))
+        {
+            button.kind = "wait".into();
+        }
+    }
     let index = config
         .html_ui
         .sessions
@@ -351,6 +368,15 @@ pub async fn resolve(
         answer(bot, query, "denied").await?;
         return Ok(None);
     };
+    if media_pending::Target::from_payload(action).is_some_and(|target| {
+        config
+            .html_ui
+            .media
+            .blocks(user, &snapshot.generation, &target)
+    }) {
+        answer(bot, query, "").await?;
+        return Ok(Some(snapshot.view.payload.for_refresh().to_string()));
+    }
     if let Payload::Control(super::router::ControlPayload::QuickAction { device, cmd, .. }) = action
     {
         if super::router::action_requires_control(cmd)

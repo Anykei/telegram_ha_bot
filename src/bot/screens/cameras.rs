@@ -957,7 +957,9 @@ pub async fn render_recording_session(
                 .to_string(),
             )]);
         }
-    } else if ready_segments > 1 && !sending_all {
+    } else if ready_segments > 1
+        && (!sending_all || crate::bot::html_ui::preferred(&ctx.config, ctx.user_id).await)
+    {
         rows.push(vec![InlineKeyboardButton::callback(
             t(ctx.lang, "camera.recording.send_all"),
             Payload::Camera(CameraPayload::SendRecordingAll {
