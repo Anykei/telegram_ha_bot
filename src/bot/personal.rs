@@ -412,7 +412,36 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
             )]);
             w("Вид интерфейса\n\nВыбор сохраняется для вашего аккаунта. Разделы, ещё не перенесённые в HTML, открываются обычным видом. /classic — вернуться к кнопкам Telegram.", "Interface\n\nYour preference is saved. Sections without HTML support open in the classic view. /classic returns to Telegram buttons.").into()
         }
-        PersonalPayload::Settings | PersonalPayload::QuietInput => {
+        PersonalPayload::QuietInput => {
+            let schedule =
+                db::user_notification_schedule::get(ctx.user_id as i64, &ctx.config.db).await?;
+            let from = schedule
+                .as_ref()
+                .and_then(|s| s.quiet_from.as_deref())
+                .unwrap_or("23:00");
+            let to = schedule
+                .as_ref()
+                .and_then(|s| s.quiet_to.as_deref())
+                .unwrap_or("07:00");
+            let zone = schedule
+                .as_ref()
+                .and_then(|s| s.timezone.as_deref())
+                .unwrap_or(w("Время сервера", "Server time"));
+            rows.push(vec![button(
+                t(ctx.lang, "common.cancel"),
+                PersonalPayload::Settings,
+            )]);
+            next_state = Some(State::PersonalQuietHours);
+            format!(
+                "{}: {from}–{to}\n{zone}\n\n{}",
+                w("Текущий интервал", "Current interval"),
+                w(
+                    "Отправьте в чат HH:MM–HH:MM, например 23:00–07:00.\nСохранение интервала не включает тихие часы.",
+                    "Send HH:MM–HH:MM in chat, e.g. 23:00–07:00.\nSaving an interval does not enable quiet hours."
+                )
+            )
+        }
+        PersonalPayload::Settings => {
             let schedule =
                 db::user_notification_schedule::get(ctx.user_id as i64, &ctx.config.db).await?;
             let enabled = schedule.as_ref().is_some_and(|s| s.quiet_enabled != 0);
@@ -459,7 +488,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 w("Всё избранное", "All favorites"),
                 PersonalPayload::Favorites { page: 0 },
             )]);
-            let mut text = format!(
+            format!(
                 "{}\n\n{}: {}\n{from}–{to}\n{zone}\n{}",
                 w("Мои настройки", "My settings"),
                 w("Тихие часы", "Quiet hours"),
@@ -472,12 +501,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                     "Критические уведомления приходят и в тихие часы.",
                     "Critical notifications are delivered during quiet hours."
                 )
-            );
-            if matches!(request, PersonalPayload::QuietInput) {
-                text.push_str(w("\n\nВведите HH:MM–HH:MM, например 23:00–07:00. /cancel — отмена. Сохранение интервала не включает тихие часы.", "\n\nEnter HH:MM–HH:MM, e.g. 23:00–07:00. /cancel to cancel. Saving an interval does not enable quiet hours."));
-                next_state = Some(State::PersonalQuietHours);
-            }
-            text
+            )
         }
         PersonalPayload::Notifications { page } => {
             let rooms =
@@ -701,7 +725,16 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         }
         _ => unreachable!("mutations normalize to read routes"),
     };
+    let quiet_input = matches!(request, PersonalPayload::QuietInput);
     let mut view = base(&ctx, text, Payload::Personal(request), rows);
+    if quiet_input {
+        let title = w("Интервал тихих часов", "Quiet hours interval").to_owned();
+        view.header = Some(title.clone());
+        view.html_title = Some(title);
+        view.html_context = Some(w("Мои настройки", "My settings").into());
+        view.html_kind = Some("form".into());
+        view.html_back = Some(Payload::Personal(PersonalPayload::Settings));
+    }
     view.next_state = next_state;
     view.html_button_labels = html_button_labels;
     view.notice = notice;
@@ -768,8 +801,7 @@ pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Re
                 .is_some_and(|value| entity.temperature_target_is_valid(value)),
         "Temperature control unavailable"
     );
-    let mut view =
-        super::screens::control::climate_view::render(ctx.clone(), room, dev, entity).await?;
+    let device_name = super::screens::control::labels::device_name(&dev, &entity, ctx.lang);
     let room_name = db::rooms::get_room_by_id(room, &ctx.config.db)
         .await?
         .map(|r| {
@@ -777,25 +809,52 @@ pub async fn temperature_input(ctx: RenderContext, room: i64, device: i64) -> Re
             r.display_name().to_owned()
         })
         .unwrap_or_default();
-    view.text = format!(
-        "{room_name}\n{}\n\n{}",
-        view.text,
+    let unit = entity
+        .attributes
+        .unit_of_measurement
+        .as_deref()
+        .unwrap_or("°");
+    let temperature = |value: Option<f32>| {
+        value
+            .map(|value| format!("{value}{unit}"))
+            .unwrap_or_default()
+    };
+    let title = words(ctx.lang, "Задать температуру", "Set temperature").to_owned();
+    let parent = Payload::Control(ControlPayload::DeviceControl { room, device });
+    let text = format!(
+        "{device_name}\n{}: {}\n{}: {} – {}\n\n{}",
+        t(ctx.lang, "climate.target"),
+        temperature(entity.attributes.temperature),
+        t(ctx.lang, "climate.limits"),
+        temperature(entity.attributes.min_temp),
+        temperature(entity.attributes.max_temp),
         words(
             ctx.lang,
-            "Введите температуру (18,5 или 18.5). /cancel — отмена.",
-            "Enter temperature (18.5 or 18,5). /cancel to cancel."
+            "Отправьте температуру в чат: 18,5 или 18.5.",
+            "Send the temperature in chat: 18.5 or 18,5."
         )
     );
-    view.payload = Payload::TemperatureInput { room, device };
-    view.kb = InlineKeyboardMarkup::new(vec![vec![Button::callback(
-        t(ctx.lang, "common.cancel"),
-        Payload::Control(ControlPayload::DeviceControl { room, device }).to_string(),
-    )]]);
-    view.next_state = Some(State::ExactTemperature {
-        room_id: room,
-        device_id: device,
-    });
-    Ok(view)
+    Ok(View {
+        header: Some(title.clone()),
+        html_title: Some(title),
+        html_context: Some(format!("{room_name} · {device_name}")),
+        html_kind: Some("form".into()),
+        html_back: Some(parent.clone()),
+        text,
+        payload: Payload::TemperatureInput { room, device },
+        kb: InlineKeyboardMarkup::new(vec![vec![Button::callback(
+            t(ctx.lang, "common.cancel"),
+            parent.to_string(),
+        )]]),
+        next_state: Some(State::ExactTemperature {
+            room_id: room,
+            device_id: device,
+        }),
+        lang: ctx.lang,
+        compact: true,
+        notifications: ctx.notifications,
+        ..Default::default()
+    })
 }
 
 pub async fn device_details(ctx: RenderContext, room: i64, device: i64) -> Result<View> {
@@ -819,25 +878,73 @@ pub async fn device_details(ctx: RenderContext, room: i64, device: i64) -> Resul
     if !device_access_is_current(&ctx, device, false).await? {
         return Ok(unavailable_device(&ctx));
     }
+    let name = state
+        .as_ref()
+        .map(|entity| super::screens::control::labels::device_name(&dev, entity, ctx.lang))
+        .unwrap_or_else(|| {
+            dev.alias
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(&dev.entity_id)
+                .to_owned()
+        });
+    let room_name = db::rooms::get_room_by_id(room, &ctx.config.db)
+        .await?
+        .map(|room| {
+            ctx.track_room(room.id);
+            room.display_name().to_owned()
+        })
+        .unwrap_or_default();
+    let summary = match state.as_ref() {
+        Some(entity) => {
+            let inverted = db::devices::is_state_inverted(&dev.entity_id, &ctx.config.db).await?;
+            let alias = ctx
+                .config
+                .state_alias_for_display(&dev.entity_id, &entity.state, inverted);
+            format!(
+                "{name}\n{}: {}",
+                words(ctx.lang, "Состояние", "State"),
+                super::screens::control::labels::state(
+                    entity,
+                    ctx.lang,
+                    inverted,
+                    alias.as_deref()
+                )
+            )
+        }
+        None => format!(
+            "{name}\n{}",
+            words(ctx.lang, "Состояние HA недоступно", "HA state unavailable")
+        ),
+    };
     let text = format!(
         "{}\nEntity ID: {}\n{}",
         dev.alias.as_deref().unwrap_or(&dev.entity_id),
         dev.entity_id,
         state
+            .as_ref()
             .map(|s| format!("HA: {}\n{:?}", s.state, s.attributes))
             .unwrap_or_else(
                 || words(ctx.lang, "Состояние HA недоступно", "HA state unavailable").into()
             )
     );
-    Ok(base(
+    let parent = Payload::Control(ControlPayload::DeviceControl { room, device });
+    let mut view = base(
         &ctx,
         text,
         Payload::DeviceDetails { room, device },
         vec![vec![Button::callback(
             t(ctx.lang, "common.back"),
-            Payload::Control(ControlPayload::DeviceControl { room, device }).to_string(),
+            parent.to_string(),
         )]],
-    ))
+    );
+    view.html_title = Some(words(ctx.lang, "Сведения об устройстве", "Device details").into());
+    view.html_context = Some(room_name);
+    view.html_summary = Some(summary);
+    view.html_details_title =
+        Some(words(ctx.lang, "Технические сведения", "Technical details").into());
+    view.html_back = Some(parent);
+    Ok(view)
 }
 
 async fn device_access_is_current(ctx: &RenderContext, device: i64, control: bool) -> Result<bool> {
