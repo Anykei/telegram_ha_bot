@@ -1,5 +1,7 @@
 * { box-sizing: border-box; }
-body { margin: 0; padding:0; overflow-wrap:anywhere; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
+/* Pagination measures temporary oversized content. Native widgets do not scroll;
+   browser scrollbars must not change the available width during measurement. */
+body { margin: 0; padding:0; overflow:hidden; overflow-wrap:anywhere; background: var(--ha-surface); color: var(--ha-text); font: 15px/1.45 var(--ha-font); }
 /* Telegram's UA layer supplies the pointer cursor. */
 button { font: inherit; }
 /* Measure with auto height; JS fixes the completed layout at 600px for native flex. */
