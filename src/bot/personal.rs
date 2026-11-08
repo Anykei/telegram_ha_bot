@@ -229,6 +229,22 @@ fn html_label(
         labels.insert(callback.clone(), label);
     }
 }
+fn favorite_management_context(context: &str) -> String {
+    // Two controls share one wire row. Reserve room for both localized verbs,
+    // the page header and callback keys; the action keeps the complete label.
+    if context.len() <= 100 {
+        return context.into();
+    }
+    let mut short = String::new();
+    for ch in context.chars() {
+        if short.len() + ch.len_utf8() > 97 {
+            break;
+        }
+        short.push(ch);
+    }
+    short.push('…');
+    short
+}
 fn base(ctx: &RenderContext, text: String, payload: Payload, mut rows: Vec<Vec<Button>>) -> View {
     rows.push(vec![super::screens::common::main_menu_button_lang(
         ctx.lang,
@@ -605,10 +621,15 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
             let (items, page, pages) = favorite_buttons(&ctx, usize::from(*page), 10).await?;
             for (index, (id, action)) in items.into_iter().enumerate() {
                 // A byte/height page break can separate the management row from
-                // its action. Repeat the full identity with the same visible
+                // its action. Repeat the identity with the same visible
                 // position, keeping that position first when a label is clipped.
-                let context = format!("{}. {}", page * 10 + index + 1, action.text);
+                let context = format!(
+                    "{}. {}",
+                    page * 10 + index + 1,
+                    action.text.split_whitespace().collect::<Vec<_>>().join(" ")
+                );
                 html_label(&mut html_button_labels, &action, context.clone());
+                let management_context = favorite_management_context(&context);
                 rows.push(vec![action]);
                 let controls = vec![
                     button(
@@ -630,7 +651,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                     html_label(
                         &mut html_button_labels,
                         control,
-                        format!("{}\n{context}", control.text),
+                        format!("{}\n{management_context}", control.text),
                     );
                 }
                 rows.push(controls);

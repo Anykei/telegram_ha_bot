@@ -42,7 +42,11 @@ async fn favorite_management_labels_identify_their_action_after_page_breaks() ->
                 assert_eq!(view.html_button_labels[callback(action)], context);
                 for control in controls {
                     let html = &view.html_button_labels[callback(control)];
-                    assert_eq!(html, &format!("{}\n{context}", control.text));
+                    assert_eq!(
+                        html,
+                        &format!("{}\n{}", control.text, favorite_management_context(&context))
+                    );
+                    assert!(html.lines().nth(1).unwrap().len() <= 100);
                     assert!(html.lines().nth(1).unwrap().starts_with(&format!(
                         "{}. ",
                         usize::from(page) * 10 + index + 1
@@ -62,4 +66,14 @@ async fn favorite_management_labels_identify_their_action_after_page_breaks() ->
         }
     }
     Ok(())
+}
+
+#[test]
+fn long_favorite_context_keeps_its_number_within_wire_budget() {
+    let label = format!("12. {}", "Люстра 🛋️ ".repeat(40));
+    let short = favorite_management_context(&label);
+    assert!(short.starts_with("12. Люстра"));
+    assert!(short.ends_with('…'));
+    assert!(short.len() <= 100);
+    assert_eq!(favorite_management_context("1. Свет"), "1. Свет");
 }
