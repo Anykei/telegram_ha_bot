@@ -342,6 +342,7 @@ pub async fn render_detail(ctx: RenderContext, camera_id: i64) -> Result<View> {
     Ok(View {
         header: Some(t(ctx.lang, "camera.detail.header").to_string()),
         html_title: Some(camera.name.clone()),
+        html_kind: Some("camera".into()),
         html_context: Some(room_context),
         html_summary: Some(format!(
             "{}{}",

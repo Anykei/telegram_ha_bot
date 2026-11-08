@@ -14,7 +14,8 @@
 .r-wait { position:relative; opacity:1; }
 .r-wait span { opacity:0; }
 .r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
-[data-kind=home] .r-row { flex:1; }
+[data-kind=home] .r-row,[data-kind=camera] .r-row { flex:1; }
+[data-kind=camera] .r-button { min-height:48px; }
 [data-kind=home] h1 { margin:-44px 56px 8px 0; line-height:44px; }
 .r-status { display:block; padding:10px; font-size:15px; }
 .r-status>* { display:block; }

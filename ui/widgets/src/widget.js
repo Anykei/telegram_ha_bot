@@ -11,7 +11,7 @@ import {validGraph, renderGraph} from './graph-render.js';
   const mediaKinds=['chart','range','calendar','time'];
   let data, lang=navigator.language.startsWith('ru')?'ru':'en', lastKind=MENU?'menu':CHART?'chart':'range';
   let busy=false, waiting=false, uncertain=false, denied=!api||api.isForward;
-  let local=0, deck=[], count=1, picker=-1, motion, frame, painted=0;
+  let local=0, deck=[], count=0, picker=-1, motion, frame, painted=0;
   let timer, requested=-1, reading=false, activeKey='', note='', tail=false, ticket=0, closedSeq=-1;
   const media=v=>MEDIA&&(!MENU||mediaKinds.includes(v?v.kind:lastKind));
   const chart=v=>CHART&&(!MENU&&!RANGE||(v?v.kind:lastKind)==='chart');
@@ -108,7 +108,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     } else {
       count=deck.length;
       hide('r-server',!data.q&&!reserve&&count<=1&&data.pages<=1);
-      text('r-count',(data.q?data.q[0]+'\n':'')+data.page+'.'+(local%9999+1));
+      text('r-count',(data.q?data.q[0]+'\n':'')+data.page+'.'+(local+1));
     }
     ['prev','next'].forEach((key,i)=>disable(el('r-'+key),
       (i?local===count-1:!local)&&(media(data)||!external(i))||!media(data)&&blocked('')));
@@ -198,7 +198,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     ['read','back'].forEach(k=>{
       const id='r-'+k,button=el(id),missing=locked||!data[k];
       hide(id,missing);disable(button,missing||blocked(data[k]));
-      button.onclick=()=>data&&data[k]&&send(data[k]);
+      button.onclick=()=>data&&send(data[k]);
     });
     const feedback=locked?(media(data)?lang==='ru'?'Откройте /start.':'Open /start.':w(6)):note||(!media(data)&&data.rows.flat().some(b=>b[2]==='uncertain')?w(4):'');
     text('r-feedback',feedback);hide('r-feedback',!feedback);

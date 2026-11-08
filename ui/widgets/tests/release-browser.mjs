@@ -304,6 +304,25 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
       await until(`${get('r-read')}.getAttribute('aria-disabled') === 'false'`);
       assert.equal(await evaluate(disabled('a0')),'false');
       await dimensions(`${fixture.id}/after-snapshot/${width}`);
+
+      for(const [left,right] of [[0,72],[72,0]]) {
+        await reload(fixture.id,{width,theme:'dark'});
+        await evaluate(`${win}.previewSetSafeArea(64,${left},${right})`);
+        assert.deepEqual(await evaluate(`Array.from(${doc}.querySelectorAll('[data-key]')).map(b=>[b.dataset.key,b.textContent])`),visibleActions(fixture.page),`${fixture.id}/${width}: all camera actions fit beside the clock`);
+        const geometry=()=>evaluate(`(() => {
+          const rows=Array.from(${doc}.querySelectorAll('.r-row'),n=>n.getBoundingClientRect().toJSON());
+          return {rows,gap:${get('r-server')}.getBoundingClientRect().top-rows.at(-1).bottom};
+        })()`);
+        const before=await geometry();
+        assert.ok(Math.abs(before.gap-8)<1,`${fixture.id}/${width}: camera rows fill the space above navigation, gap=${before.gap}`);
+        await controlRequests();await click('a1');await click('a1');
+        assert.equal(await evaluate(`${win}.__requests.length`),1,'Camera clip sends once while pending');
+        assert.deepEqual(await geometry(),before,'Pending clip keeps the camera layout stable');
+        await reply({page:{...fixture.page,seq:100,rev:'b'.repeat(32)}});
+        await until(`${get('r-read')}.getAttribute('aria-disabled')==='false'`);
+        assert.deepEqual(await geometry(),before,'Completed clip keeps the camera layout stable');
+        await dimensions(`${fixture.id}/${width}/clock ${left}/${right}`);
+      }
       if (fixture.id==='camera' && width===360) await capture('release-camera-dark-360');
     }
   }

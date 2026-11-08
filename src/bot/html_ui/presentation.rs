@@ -338,8 +338,9 @@ fn screen_kind(view: &View) -> &str {
     }) {
         return "confirmation";
     }
-    if let Some(kind @ ("menu" | "device" | "climate" | "confirmation" | "list" | "room")) =
-        view.html_kind.as_deref()
+    if let Some(
+        kind @ ("menu" | "device" | "climate" | "confirmation" | "list" | "room" | "camera"),
+    ) = view.html_kind.as_deref()
     {
         return kind;
     }

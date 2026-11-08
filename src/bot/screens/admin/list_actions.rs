@@ -584,6 +584,7 @@ pub async fn render_room_camera_detail(
     Ok(View {
         header: Some("📹 Камера".to_string()),
         html_title: Some(camera.name.clone()),
+        html_kind: Some("camera".into()),
         html_context: Some(room.display_name()),
         html_summary: Some(crate::bot::screens::cameras::media_delivery_hint(ctx.lang).into()),
         html_button_labels,
