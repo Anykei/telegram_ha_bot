@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { checkPanel } from './panel-browser.mjs';
 import { checkRelease } from './release-browser.mjs';
 import { checkGraph } from './graph-browser.mjs';
+import { checkAudit } from './audit-browser.mjs';
 import { checkLive } from './live-browser.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -124,6 +125,7 @@ try {
   await checkPanel({root, command, evaluate, until, screenshot});
   await checkRelease({root, command, evaluate, until, screenshot});
   await checkGraph({root, command, evaluate, until, screenshot});
+  await checkAudit({root, command, evaluate, until});
   }
 } finally {
   await command('Browser.close', {}, null).catch(() => {});
