@@ -1,4 +1,10 @@
-# HTML-интерфейс: первый этап переноса
+# Архив: HTML-интерфейс на первом этапе переноса
+
+> Этот документ описывает изолированное демо от 6 ноября, а не текущую полноту
+> основного бота. Рабочий интерфейс и запуск описаны в [RELEASE.md](RELEASE.md),
+> обязательная структура — в [SCREENS.md](SCREENS.md), обнаруженные расхождения —
+> в [аудите от 8 ноября](AUDIT-2026-11-08.md). Утверждения ниже о ещё не перенесённых
+> разделах относятся только к историческому этапу демо.
 
 Дата: 6 ноября 2026 года. Ветка: `feat/html-interface-migration`.
 Правила оформления: [«Дом» 1.1](DESIGN.md), токены `1.0.0`.
@@ -184,3 +190,35 @@ JavaScript: 9 тестов switch и сценарная браузерная п�
 Источники: [SDK и запросы](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/sdk-v1.md),
 [Bot API для виджетов](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/tgw-format.md#the-bot-api-104),
 [профиль HTML/CSS/JS](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/widget-runtime-profile.md).
+
+## Архив контракта panel p1
+
+Состав: `panel.html` + `panel.css` + `panel.js`. Источник данных — `TelegramWidget.chatData`; в локальном preview его заменяет симулятор. Файлы не подключаются к HA самостоятельно и не содержат внешних ресурсов.
+
+| Поле модели | Содержание |
+|---|---|
+| `v`, `rev` | Версия 1 и неотрицательная ревизия состояния |
+| `screen` | `home`, `rooms`, `room`, `device` или `settings` |
+| `eyebrow`, `title`, `description` | Контекст, заголовок и короткое пояснение |
+| `hero` | `null` или `{label, value}` для основного значения |
+| `items` | До четырёх `{label, detail, action, selected, primary}` |
+| `nav` | До трёх `{label, action}` для возврата и разделов |
+
+Допустимые действия: `home`, `rooms`, `room`, `device`, `settings`, `classic`, `html`, `on`, `off`, `read`. Запрос — `p1:<rev>:<action>`. ID комнаты и прибора определяются демонстрационным сервером; эта короткая схема не является универсальным протоколом для произвольного дома.
+
+Ответ содержит `page` с новой моделью, `transition: true` при смене сообщения или `denied: true` при отказе. Страницы со старой ревизией не заменяют новые. Пересланный виджет скрывает исходные данные. После неопределённого результата изменения запрещены до успешного `read`; автоматического повторного включения/выключения нет.
+
+### Соответствие существующим действиям
+
+Это семантическое соответствие для будущего адаптера; перечисленные Rust-маршруты не вызываются самим демонстрационным panel.
+
+| Действие panel | Существующий маршрут основного бота |
+|---|---|
+| `home` | `Payload::Home` |
+| `rooms` | `ControlPayload::ListRooms` |
+| `room` | `ControlPayload::RoomDetail { room }` |
+| `device` | `ControlPayload::DeviceControl { room, device }` |
+| `settings` | `PersonalPayload::Settings` |
+| `on`, `off` | `ControlPayload::QuickAction` с `DeviceCmd::TurnOn` / `TurnOff`, через существующие проверки и подтверждения |
+| `read` | Текущий безопасный маршрут просмотра; не повтор последнего изменения |
+| `classic`, `html` | Новое предпочтение отображения; отдельная операция без физического действия |
