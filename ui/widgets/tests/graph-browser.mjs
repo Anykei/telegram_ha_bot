@@ -46,6 +46,18 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
     assert.equal(refresh.top,12,`${label}: refresh always 12px from the top, including the calendar`);
     assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the right`);
+    const pager=await evaluate(`(() => {
+      const rect=id=>${doc}.getElementById(id).getBoundingClientRect().toJSON();
+      return {prev:rect('r-local-prev'),next:rect('r-local-next'),count:rect('r-local-count'),bottom:${win}.TelegramWidget.contentSafeAreaInset?.bottom||0};
+    })()`);
+    if(pager.prev.width) {
+      assert.deepEqual([pager.prev.width,pager.prev.height,pager.next.width,pager.next.height],[44,44,44,44],`${label}: identical compact arrows`);
+      assert.equal(pager.prev.left,12,`${label}: previous at the left card edge`);
+      assert.equal(pager.next.right,result.available-12,`${label}: next at the right card edge`);
+      assert.equal(pager.prev.top,pager.next.top,`${label}: arrows share a row`);
+      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-result.available/2)<1,`${label}: counter centered in card`);
+      assert.ok(pager.next.bottom<=600-Math.max(16,pager.bottom)+.1,`${label}: arrows above the timestamp band`);
+    }
     if(await evaluate(`${get('release')}.dataset.kind==='chart'`)) {
       assert.equal(await evaluate(`(() => {
         const content=${get('r-content')}.getBoundingClientRect(),column=(content.width-8)/2;
@@ -125,6 +137,22 @@ export async function checkGraph({root,command,evaluate,until,screenshot}) {
   await evaluate(`${win}.previewSetSafeArea(64)`);
   assert.ok(await evaluate(`${doc}.querySelector('svg').getBoundingClientRect().height`)<height);
   await dimensions('unknown clock reserves full band');
+  // Long descriptions require paging even beside a clock. Both arrows keep
+  // their card-edge anchors, and re-measuring must not reset the selected part.
+  for(const [left,right] of [[0,80],[80,0],[80,80],[0,200]]) {
+    await reload('numeric',{width:360,theme:'dark'});
+    await evaluate(`${win}.previewSetSafeArea(64,${right},${left})`);
+    const body='Дополнительные сведения о температуре и измерениях. '.repeat(12);
+    await push({body});
+    const all=await collect(`long graph/clock ${left}/${right}`);
+    assert.ok(all.count>1,'long graph has local parts');
+    assert.equal(all.text,body,'paging preserves the complete description');
+    fixtures.find(f=>f.id==='numeric').page.b.flat().forEach(b=>assert.ok(all.keys.has(b[1])));
+    const last=await evaluate(`${get('r-local-count')}.textContent`);
+    await push({notice:''});
+    assert.equal(await evaluate(`${get('r-local-count')}.textContent`),last,'refresh preserves the local part');
+    await dimensions('long graph refreshed');
+  }
   // PNG export uses the current snapshot and leaves the complete chart controls in place.
   for(const width of [200,320,360,430]) for(const id of ['numeric','numeric_en']) {
     await reload(id,{width,theme:'dark'});

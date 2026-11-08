@@ -65,7 +65,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     }
     data.b.forEach(row=>{const r=node('div','r-row');row.forEach(b=>r.appendChild(button(b[0],b[1],b[2]==='selected')));blocks.push(r);});
     hide('r-footer',true);
-    if(!CHART&&data.t){mount(blocks);if(picker>=0){pager(count);el('t-options').appendChild(el('r-footer'));}return;}
+    if(!CHART&&data.t){mount(blocks);if(picker>=0)pager(count);return;}
     if(!CHART&&data.c) {
       const [offset,days,selected,first,last]=data.c, narrow=card.clientWidth<320;
       const count=Math.ceil((offset+days)/7);local=Math.min(local,count-1);
@@ -100,8 +100,13 @@ import {validGraph, renderGraph} from './graph-render.js';
     el('r-back').disabled=blocked(data?.back);el('r-read').disabled=blocked('read');
     text('r-feedback',locked?w(4):note);hide('r-feedback',!locked&&!note);
     if(CHART)renderGraph(locked?null:data.graph,lang,el,hide);
-    card.insertBefore(el('r-footer'),el('r-feedback'));
+    const position=local;
     hide('r-footer',true);mount([]);if(!locked) layout();
+    // Full-width arrows stay above the clock; only an unpaged graph action
+    // may share its free corner. Re-measure once, preserving the chosen part.
+    if(CHART&&corner&&!el('r-footer').classList.contains('r-hidden')) {
+      card.classList.remove('r-corner','r-left');card.style.paddingBottom='';local=position;layout();
+    }
     if(!CHART) {
       cancelAnimationFrame(frame);
       if(!locked&&data.t&&motion) {

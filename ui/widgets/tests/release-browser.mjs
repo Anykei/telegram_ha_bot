@@ -61,6 +61,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     assert.ok(Math.abs(refresh.right-refresh.parentRight)<1,`${label}: refresh aligned right`);
     assert.equal(refresh.top,12,`${label}: refresh always in the header`);
     assert.ok(Math.abs(result.available-refresh.right-12)<1,`${label}: refresh always 12px from the card edge, including clock insets`);
+    const pager=await evaluate(`({prev:${get('r-prev')}.getBoundingClientRect().toJSON(),next:${get('r-next')}.getBoundingClientRect().toJSON(),count:${get('r-count')}.getBoundingClientRect().toJSON(),bottom:${win}.TelegramWidget.contentSafeAreaInset?.bottom||0})`);
+    if(pager.prev.width) {
+      assert.deepEqual([pager.prev.width,pager.prev.height,pager.next.width,pager.next.height],[44,44,44,44],`${label}: identical compact arrows`);
+      assert.equal(pager.prev.left,12,`${label}: previous at the left card edge`);
+      assert.equal(pager.next.right,result.available-12,`${label}: next at the right card edge`);
+      assert.equal(pager.prev.top,pager.next.top,`${label}: arrows share a row`);
+      assert.ok(Math.abs((pager.count.left+pager.count.right)/2-result.available/2)<1,`${label}: counter centered in card`);
+      assert.ok(pager.next.bottom<=600-Math.max(16,pager.bottom)+.1,`${label}: arrows above the timestamp band`);
+    }
     if(await evaluate(`${get('release')}.dataset.kind==='home'`)) {
       assert.equal(await evaluate(`(()=>{const h=${get('r-title')}.getBoundingClientRect(),r=${get('r-read')}.getBoundingClientRect();return h.top===r.top&&h.right<=r.left-8})()`),true,`${label}: Home title shares the header without overlapping refresh`);
     }
@@ -205,19 +214,13 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
   await click('bounded_detail');
   await until(`${get('r-title')}.textContent==='Гостевая спальня на втором этаже рядом с лестницей'`);
   await assertPreserved(fixtures.find(f=>f.id==='bounded_detail').page,'Complete name after opening its card');
-  // The time band belongs to every screen. Its uncovered side is usable when
-  // the client supplies a corner width; this is independent of the screen kind.
+  // Clock widths never shift the pager horizontally; keep its full band clear.
   for (const fixture of fixtures) for (const side of ['left','right']) {
     await reload(fixture.id,{width:360,theme:'dark'});
     await evaluate(`${win}.previewSetSafeArea(64,${side==='right'?80:0},${side==='left'?80:0})`);
     await assertPreserved(fixture.page,`${fixture.id}/corner-${side}`);
-    const corner=await evaluate(`${get('release')}.classList.contains('r-corner')`);
-    if(corner) assert.equal(await evaluate(`${get('r-server')}.classList.contains('r-hidden')`),false,'Only a visible pager can share the clock band');
     const footer = await evaluate(`${doc}.querySelector('.r-footer').getBoundingClientRect().toJSON()`);
-    assert.ok(footer.bottom<=(corner?584.1:536.1),`${fixture.id}: footer keeps bottom padding`);
-    if(corner && await evaluate(`${get('r-feedback')}.classList.contains('r-hidden')`)) {
-      assert.ok(footer.bottom>536,`${fixture.id}: footer uses the band beside the clock`);
-    }
+    assert.ok(footer.bottom<=536.1,`${fixture.id}: footer keeps the full timestamp band clear`);
   }
   for (const width of [320,360,390,430]) {
     await reload('room_paginated',{width,theme:'dark'});
@@ -236,17 +239,15 @@ export async function checkRelease({root, command, evaluate, until, screenshot})
     const seven=structuredClone(fixtures.find(f=>f.id==='room_paginated').page);
     seven.b.push([['Розетка\nВЫКЛ','extra_socket','nav']]);seven.seq=100;
     await push(seven);
-    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),6);
+    assert.equal(await evaluate(`${doc}.querySelectorAll('.r-row').length`),5);
     assert.equal((await assertPreserved(seven,`seven rows/${width}`)).parts,2);
     await push({seq:101,alert:'Нет ответа. Обновите состояние.'});
     await assertPreserved({...seven,alert:'Нет ответа. Обновите состояние.'},`error/corner/${width}`);
     await evaluate(`${win}.previewSetSafeArea(64,200)`);
-    assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false,'A wide time label falls back to the full band');
     await dimensions(`wide clock/${width}`);
   }
   await reload('room_paginated',{width:200});
   await evaluate(`${win}.previewSetSafeArea(64,64)`);
-  assert.equal(await evaluate(`${get('release')}.classList.contains('r-corner')`),false,'Narrow clients keep the whole time band clear');
   await assertPreserved(fixtures.find(f=>f.id==='room_paginated').page,'narrow/corner');
   // Media stays in Telegram attachments; the camera card preserves its controls
   // and navigation even at the client's largest reserved timestamp inset.

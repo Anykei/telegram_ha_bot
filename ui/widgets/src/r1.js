@@ -137,15 +137,6 @@ import { validGraph, renderGraph } from './graph-render.js';
     const locked = denied || !data;
     if (!GRAPH) card.setAttribute('data-kind', locked ? 'menu' : data.kind || 'menu');
     card.classList.toggle('r-bounded', !locked && (data.l || data.kind === 'room'));
-    const area = api?.contentSafeAreaInset;
-    const corners = area && area.cornerLeft + area.cornerRight;
-    // Graphs keep Refresh at the top: two 44px arrows and a short page count
-    // fit beside wider timestamps, including an edited mark, on 320px cards.
-    card.classList.toggle('r-corner', !locked && corners > 0 && card.clientWidth - corners >= (GRAPH ? 200 : 256));
-    // Resolve the graph's bottom inset in the same pass as its corner layout.
-    // Use a px longhand rather than overriding the env()/max() declaration
-    // through a second class rule in the native renderer's cascade.
-    if (GRAPH) card.style.paddingBottom = card.classList.contains('r-corner') ? '16px' : '';
     text('r-context', locked ? '' : data.context);
     text('r-title', locked ? w(5) : data.title);
     el('r-read').setAttribute('aria-label', w(!GRAPH && (busy || waiting) ? 3 : 2));
@@ -163,14 +154,7 @@ import { validGraph, renderGraph } from './graph-render.js';
     mount([]);
     if (locked) return;
     ['read', 'back'].forEach(k => disable(el('r-' + k), !data[k] || blocked(k === 'read')));
-    const position = local;
-    let overflow = layout();
-    // Without a pager there is no narrow control beside the clock. Reserve its
-    // full band, then measure once more without changing the requested part.
-    if (el('r-server').classList.contains('r-hidden')) {
-      card.classList.remove('r-corner'); local = position; overflow = layout();
-    }
-    if (overflow) {
+    if (layout()) {
       mount([]); hide('r-server', true);
       feedback(w(6));
     }

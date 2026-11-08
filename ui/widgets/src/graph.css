@@ -10,4 +10,4 @@
 /* Actions occupy whole columns; the clock never shortens just one row. */
 .r-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
 .r-left .r-row:last-child button:only-child { grid-column:2; }
-.r-corner footer,.r-corner #r-feedback { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }
+.r-corner #r-feedback { margin-left:var(--tg-content-safe-area-corner-left); margin-right:var(--tg-content-safe-area-corner-right); }

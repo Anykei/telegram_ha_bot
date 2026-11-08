@@ -22,9 +22,9 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-selected { background: var(--ha-accent-soft); border-color: var(--ha-accent); }
 .r-danger { border-color: var(--ha-error); color: var(--ha-error); background: var(--ha-error-soft); }
 .r-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--ha-space-2); }
-.r-pager span { color: var(--ha-muted); font-size: 11px; text-align: center; white-space:pre-line; }
+.r-pager span { flex:1; min-width:0; color: var(--ha-muted); font-size: 11px; text-align: center; white-space:pre-line; }
 .r-pager button { min-width: 44px; min-height: 44px; padding: var(--ha-space-2); border: 0; border-radius: var(--ha-radius-control); color: var(--ha-text); background: var(--ha-surface-soft); }
-#r-read { flex:none; width:44px; height:44px; font-size:22px; line-height:1; }
+#r-read, .r-footer button { flex:none; width:44px; height:44px; font-size:22px; line-height:1; }
 #r-feedback { margin: var(--ha-space-2) 0 0; color: var(--ha-error); }
 [aria-disabled="true"] { opacity: .45; cursor: auto; }
 .r-hidden { display: none; }
@@ -49,11 +49,3 @@ h1 { margin: var(--ha-space-1) 0 var(--ha-space-3); font-size: 28px; line-height
 .r-bounded .r-row { height:68px; flex-shrink:0; }
 .r-bounded .r-row .r-button { padding:8px var(--ha-space-3); }
 .r-bounded .r-row .r-button span { white-space:pre; }
-
-/* Use the uncovered side of the native time band only when its width is known.
-   The footer leaves the reported corner(s) clear; device rows stay above it. */
-.r-corner { padding-bottom:16px; }
-.r-corner .r-row { margin-bottom:4px; }
-.r-corner .r-footer, .r-corner #r-feedback {
-  margin:2px var(--tg-content-safe-area-corner-right) 0 var(--tg-content-safe-area-corner-left);
-}

@@ -1,5 +1,6 @@
-[data-kind=calendar] { padding:6px; padding-bottom:max(12px,env(safe-area-inset-bottom)); }
+[data-kind=calendar] { padding:6px; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
 [data-kind=calendar] .r-top { margin:6px 6px 0; }
+[data-kind=calendar] footer { margin-left:6px; margin-right:6px; }
 .g-days { display:grid; grid-template-columns:repeat(7,1fr); margin-top:8px; }
 .g-days button { padding:2px; text-align:center; }
 @media(max-width:319px) { .g-days { grid-template-columns:repeat(3,1fr); } }
@@ -12,4 +13,3 @@
 
 
 #r-content { flex:1; }
-.t-grid footer { grid-column:1/-1; }
