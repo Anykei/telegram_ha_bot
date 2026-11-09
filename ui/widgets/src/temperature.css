@@ -1,6 +1,6 @@
 /* pending-controls */
 .s-editor { margin:12px 8px; }
-.s-value { display:block; text-align:center; font-size:36px; color:var(--ha-accent); }
+.s-value { display:block; text-align:center; font-size:28px; color:var(--ha-accent); }
 .s-label,.s-scale { font-size:12px; color:var(--ha-muted); }
 .s-label { text-align:center; margin:8px 0; }
 .s-rail { position:relative; height:48px; touch-action:pan-y; }
@@ -10,5 +10,7 @@
 .s-thumb { position:absolute; top:10px; width:28px; height:28px; border-radius:50%; background:var(--ha-accent); transform:translateX(-50%); }
 .s-scale { display:flex; justify-content:space-between; }
 .s-rail[aria-disabled=true] .s-thumb,.s-rail[aria-disabled=true] .s-fill { background:var(--ha-muted); }
-.s-editor button { text-align:center; font-size:22px; }
+.s-mark { position:absolute; top:18px; height:12px; border-left:2px solid var(--ha-text); }
 .r-button.r-action,.r-button.r-wait { background:var(--ha-accent-soft); color:var(--ha-accent); }
+
+.r-alert { color:var(--ha-error); }

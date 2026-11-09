@@ -1926,7 +1926,13 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
             }
 
             if matches!(cmd, DeviceCmd::EditTemperature) {
-                return super::html_ui::temperature::render(ctx, room, device).await;
+                return super::screens::control::device_control::render(
+                    ctx,
+                    room,
+                    device,
+                    DeviceCmd::ShowChart { h: 24, o: 0 },
+                )
+                .await;
             }
             if matches!(
                 cmd,

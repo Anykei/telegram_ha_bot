@@ -31,6 +31,24 @@ async fn temperature_slider_validates_drafts_and_waits_for_ha_target() -> Result
     publish(&fake, &config, route.clone()).await?;
     let session = current(&config);
     assert_eq!(session.pages.len(), 1);
+    assert!(
+        session.view.kb.inline_keyboard.iter().flatten().any(
+            |b| matches!(&b.kind, teloxide::types::InlineKeyboardButtonKind::CallbackData(data)
+            if Payload::from_string(data).ok()==Some(Payload::TemperatureInput {room, device}))
+        ),
+        "Full classic keyboard survives HTML delivery failure"
+    );
+    assert!(
+        !session.actions.values().any(|p| matches!(
+            p,
+            Payload::TemperatureInput { .. }
+                | Payload::Control(ControlPayload::QuickAction {
+                    cmd: DeviceCmd::AdjustTemp(_),
+                    ..
+                })
+        )),
+        "Inline HTML does not duplicate its slider with legacy input controls"
+    );
     assert_eq!(session.pages[0].kind, "temperature");
     assert!(session.pages[0].json()?.len() <= 1024);
     assert_eq!(session.pages[0].slider.as_ref().unwrap().value, 22000);

@@ -119,7 +119,7 @@ import {validSlider,renderSlider,sliderValue,sliderLock} from './temperature.js'
       for(const id of ['r-title','r-context'])if(el(id).scrollWidth>el(id).clientWidth)paragraphs.unshift([el(id).textContent,id]);
     }
     for(const [value,style] of paragraphs)for(const part of SLIDER?(value?[value]:[]):value.match(media(data)?/.{60,99}\s|.{1,100}/gsu:/.{20,39}\s|.{1,40}/gsu)||[])blocks.push(node('p','r-text '+style,part));
-    if(SLIDER)blocks.push(renderSlider(node,data.slider,lang,sliderBlocked(),()=>card.querySelectorAll('[data-key]').forEach(b=>b.p())));
+    if(SLIDER)blocks.push(renderSlider(node,{...data.slider,id:data.s},lang,sliderBlocked(),()=>card.querySelectorAll('[data-key]').forEach(b=>b.p())));
     if(MENU&&!media(data)&&data.status?.length) {
       statuses=node('div','r-statuses');
       data.status.forEach(status=>{
@@ -201,7 +201,7 @@ import {validSlider,renderSlider,sliderValue,sliderLock} from './temperature.js'
     if(MENU)card.classList.toggle('r-bounded',!locked&&!media(data)&&(data.l||data.kind==='room'));
     text('r-context',locked?'':data.context);text('r-title',locked?w(4):data.title);
     text('r-read',busy||waiting?'…':'↻');el('r-read').setAttribute('aria-label',w(2));
-    text('r-back','‹ '+w((SLIDER||RANGE&&data?.kind==='range'||MENU&&['form','confirmation'].includes(data?.kind))?6:0));
+    text('r-back','‹ '+w((RANGE&&data?.kind==='range'||MENU&&['form','confirmation'].includes(data?.kind))?6:0));
     ['read','back'].forEach(k=>{
       const id='r-'+k,button=el(id),missing=locked||!data[k];
       hide(id,missing);button.disabled=missing||blocked(data[k]);

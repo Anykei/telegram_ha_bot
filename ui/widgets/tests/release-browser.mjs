@@ -525,12 +525,6 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await reload(id, {theme}); await capture('release-'+id+'-'+theme);
   }
   await reload('climate', {width:430}); await capture('release-climate-wide');
-  for (const theme of ['light','dark']) {
-    await reload('climate_actual_normal', {theme,width:320});
-    await evaluate(`${win}.previewSetSafeArea(64,72)`);
-    await dimensions('climate/actual/'+theme);
-    await capture('release-climate-actual-'+theme);
-  }
   // Compact controls follow the same request/ACK path as legacy object rows.
   await reload('climate'); await controlRequests();
   const climatePaint=await watchPaintBudget({evaluate,doc,win});

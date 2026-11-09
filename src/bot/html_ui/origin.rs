@@ -60,11 +60,7 @@ fn same_screen(a: &Payload, b: &Payload) -> bool {
 }
 
 pub(super) fn prepare(old: Option<&WidgetSession>, generation: &str, view: &mut View) -> Trail {
-    if view.html_chart.is_some()
-        || view.html_range.is_some()
-        || view.html_temperature.is_some()
-        || view.html_media_controls
-    {
+    if view.html_chart.is_some() || view.html_range.is_some() || view.html_media_controls {
         return Trail::default();
     }
     let old = old.filter(|s| s.generation == generation);

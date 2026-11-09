@@ -479,6 +479,7 @@ pub fn prepare_with_pending(
     }
     let mut structured = view.clone();
     super::super::screen_structure::apply(&mut structured);
+    super::temperature::controls(&mut structured);
     if structured.html_temperature.is_some() && structured.alert.is_none() {
         if let Payload::Control(
             ControlPayload::QuickAction { device, .. }
@@ -801,6 +802,7 @@ pub fn prepare_with_pending(
     let mut home_details = None;
     if summary.is_some()
         && view.html_metrics.is_empty()
+        && view.html_temperature.is_none()
         && !inline_status
         && (!body.is_empty()
             || (room_notice && view.notice.as_ref().is_some_and(|s| !s.is_empty())))
@@ -853,6 +855,12 @@ pub fn prepare_with_pending(
         parts[0].json()?;
     }
     ensure!(parts.len() <= 9999, "Too many HTML pages");
+    // The thermostat owns a single card. Fall back as a whole rather than
+    // deliver continuation pages without the slider specification/Apply pair.
+    ensure!(
+        view.html_temperature.is_none() || parts.len() == 1,
+        "Temperature card exceeds the single-page budget"
+    );
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
         if index == 0 && matches!(view.payload, Payload::Home) {

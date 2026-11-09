@@ -151,7 +151,7 @@ pub async fn render(
         }
         .to_string(),
     );
-    if view.html_kind.as_deref() == Some("climate") {
+    if matches!(view.html_kind.as_deref(), Some("climate" | "temperature")) {
         // Keep temperature actions together, then secondary navigation.
         view.html_button_labels.insert(
             Payload::Home.to_string(),

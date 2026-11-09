@@ -121,11 +121,6 @@ pub(crate) fn device_write_origin(
         return None;
     }
     let session = config.html_ui.sessions.get(&user)?;
-    if session.view.html_temperature.is_some()
-        && session.view.payload == temperature::route(*room, *device)
-    {
-        return Some(session.view.payload.clone());
-    }
     if session.view.html_chart.is_some()
         || session.view.html_range.is_some()
         || session.view.html_media_controls

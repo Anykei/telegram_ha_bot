@@ -15,17 +15,18 @@ pub async fn render(
     let can_control =
         crate::db::access::can_control_device(ctx.user_id, ctx.is_admin, dev.id, &ctx.config.db)
             .await?;
-    let slider = crate::bot::html_ui::preferred(&ctx.config, ctx.user_id).await
-        && crate::bot::html_ui::temperature::Slider::from_entity(&entity).is_some();
-    Ok(render_view(
+    let mut view = render_view(
         ctx.lang,
         ctx.notifications,
         room_id,
         dev,
-        entity,
+        entity.clone(),
         can_control,
-        slider,
-    ))
+    );
+    if can_control && crate::bot::html_ui::preferred(&ctx.config, ctx.user_id).await {
+        crate::bot::html_ui::temperature::attach(&mut view, &entity);
+    }
+    Ok(view)
 }
 
 fn render_view(
@@ -35,7 +36,6 @@ fn render_view(
     dev: Device,
     entity: Entity,
     can_control: bool,
-    slider: bool,
 ) -> View {
     let unit = entity
         .attributes
@@ -163,22 +163,6 @@ fn render_view(
             }
             .to_string(),
         )]);
-        if slider {
-            html_button_labels.insert(
-                Payload::TemperatureInput {
-                    room: room_id,
-                    device: dev.id,
-                }
-                .to_string(),
-                crate::bot::personal::words(lang, "Ввести числом", "Enter number").into(),
-            );
-            rows.last_mut()
-                .unwrap()
-                .push(InlineKeyboardButton::callback(
-                    crate::bot::personal::words(lang, "Ползунок", "Slider"),
-                    crate::bot::html_ui::temperature::route(room_id, dev.id).to_string(),
-                ));
-        }
     }
     let payload = Payload::Control(ControlPayload::DeviceControl {
         room: room_id,

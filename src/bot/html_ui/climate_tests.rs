@@ -102,32 +102,32 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
                 "{lang:?}/{name}: no duplicate continuation"
             );
             let page = &prepared.pages[0];
-            assert_eq!(page.status.len(), 2);
-            if state == "unavailable" {
-                assert_eq!(page.status[1][1], crate::i18n::t(lang, "climate.no_data"));
-            }
-            assert_eq!(
-                page.status[0][0],
-                if lang == Language::Ru {
-                    "Задано"
-                } else {
-                    "Target"
-                }
-            );
-            assert!(page.status[0][2].contains(&format!("16{unit} – 30{unit}")));
-            assert!(page.status[0][2].contains(&format!("{step}{unit}")));
-            if state == "heat_cool" {
-                assert_eq!(page.status[0][1], "20°C – 24°C");
-            }
             if exact {
-                assert!(page.body.is_empty());
+                let slider = page
+                    .slider
+                    .as_ref()
+                    .expect("Control is inline on the device page");
+                assert_eq!(slider.value, (target.unwrap() * 1000.0).round() as i32);
+                assert_eq!(slider.min, 16000);
+                assert_eq!(slider.max, 30000);
+                assert_eq!(slider.step, (step * 1000.0).round() as i32);
+                assert_eq!(slider.unit, unit);
+                assert!(page.status.is_empty());
+                assert!(page.body.contains(if lang == Language::Ru {
+                    "Сейчас"
+                } else {
+                    "Current"
+                }));
             } else {
-                assert!(!page.body.is_empty());
+                assert_eq!(page.status.len(), 2);
+                if state == "unavailable" {
+                    assert_eq!(page.status[1][1], crate::i18n::t(lang, "climate.no_data"));
+                }
+                if state == "heat_cool" {
+                    assert_eq!(page.status[0][1], "20°C – 24°C");
+                }
+                assert!(view.text.contains(&page.status[0][1]));
             }
-            assert!(
-                view.text.contains(&page.status[0][1]),
-                "Classic retains target"
-            );
             let visible = page
                 .rows
                 .iter()
@@ -144,10 +144,10 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(steps, expected_steps);
+            assert_eq!(steps, if exact { vec![] } else { expected_steps });
             assert_eq!(
                 visible.contains(&&Payload::TemperatureInput { room, device }),
-                exact
+                false
             );
             assert!(visible.contains(&&Payload::DeviceDetails { room, device }));
             assert!(visible.contains(&&Payload::Home));
@@ -172,9 +172,12 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
                     })
                 );
             } else {
-                let fixtures: Vec<Value> = serde_json::from_str(include_str!(
+                let mut fixtures: Vec<Value> = serde_json::from_str(include_str!(
                     "../../../ui/widgets/preview/release-fixtures.json"
                 ))?;
+                fixtures.extend(serde_json::from_str::<Vec<Value>>(include_str!(
+                    "../../../ui/widgets/preview/temperature-fixtures.json"
+                ))?);
                 let id = format!(
                     "climate_actual_{name}{}",
                     if lang == Language::En { "_en" } else { "" }

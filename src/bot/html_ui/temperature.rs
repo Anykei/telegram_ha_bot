@@ -1,15 +1,14 @@
-//! Experimental temperature editor. Dragging is local; Apply uses the normal
+//! Inline thermostat control. Dragging is local; Apply uses the normal
 //! temperature command queue, access checks and HA-state acknowledgement.
 use crate::bot::{
     models::View,
     personal::words,
-    router::{ControlPayload, DeviceCmd, Payload, RenderContext},
+    router::{ControlPayload, DeviceCmd, Payload},
 };
-use crate::{db, ha::models::Entity};
-use anyhow::{Context, Result};
+use crate::ha::models::Entity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use teloxide::types::{InlineKeyboardButton as Button, InlineKeyboardMarkup};
+use teloxide::types::{InlineKeyboardButton as Button, InlineKeyboardButtonKind};
 
 /// Integer thousandths keep the wire value, snapping and command consistent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,12 +55,60 @@ impl Slider {
     }
 }
 
+#[cfg(test)]
 pub fn route(room: i64, device: i64) -> Payload {
-    Payload::Control(ControlPayload::QuickAction {
+    Payload::Control(ControlPayload::DeviceControl { room, device })
+}
+
+/// Replace the HTML entry buttons with the control itself. Classic views retain
+/// their existing keyboard; details, Home, favorites and subscriptions are added
+/// by the ordinary device router, exactly as for the other device cards.
+pub fn attach(view: &mut View, entity: &Entity) {
+    let Some(slider) = Slider::from_entity(entity) else {
+        return;
+    };
+    if let Some(current) = view.html_metrics.get(1) {
+        view.html_summary = Some(format!("{}: {}\n{}", current[0], current[1], current[2]));
+    }
+    view.html_metrics.clear();
+    view.html_kind = Some("temperature".into());
+    view.html_temperature = Some(slider);
+}
+
+/// Only the HTML projection changes its controls; failed widget delivery must
+/// still have the complete classic keyboard available.
+pub(super) fn controls(view: &mut View) {
+    let Some(slider) = view.html_temperature.as_ref() else {
+        return;
+    };
+    let Payload::Control(ControlPayload::DeviceControl { room, device }) = view.payload else {
+        return;
+    };
+    view.kb.inline_keyboard.retain(|row| {
+        !row.iter().any(|b| match &b.kind {
+            InlineKeyboardButtonKind::CallbackData(data) => matches!(
+                Payload::from_string(data),
+                Ok(Payload::TemperatureInput { .. }
+                    | Payload::Control(ControlPayload::QuickAction {
+                        cmd: DeviceCmd::AdjustTemp(_),
+                        ..
+                    }))
+            ),
+            _ => false,
+        })
+    });
+    let apply = Payload::Control(ControlPayload::QuickAction {
         room,
         device,
-        cmd: DeviceCmd::EditTemperature,
-    })
+        cmd: DeviceCmd::SetTemp(slider.value as f32 / 1000.0),
+    });
+    view.kb.inline_keyboard.insert(
+        0,
+        vec![Button::callback(
+            words(view.lang, "Применить", "Apply"),
+            apply.to_string(),
+        )],
+    );
 }
 
 pub(super) fn resolve(
@@ -74,11 +121,14 @@ pub(super) fn resolve(
     if key != format!("s{value}") || !slider.accepts(value) {
         return None;
     }
-    let Payload::Control(ControlPayload::QuickAction {
-        room,
-        device,
-        cmd: DeviceCmd::EditTemperature,
-    }) = view.payload
+    let Payload::Control(
+        ControlPayload::DeviceControl { room, device }
+        | ControlPayload::QuickAction {
+            room,
+            device,
+            cmd: DeviceCmd::EditTemperature,
+        },
+    ) = view.payload
     else {
         return None;
     };
@@ -91,88 +141,6 @@ pub(super) fn resolve(
         device,
         cmd: DeviceCmd::SetTemp(value as f32 / 1000.0),
     }))
-}
-
-pub async fn render(ctx: RenderContext, room: i64, device: i64) -> Result<View> {
-    let dev = db::devices::get_device_by_id(device, &ctx.config.db)
-        .await?
-        .context("Device not found")?;
-    ctx.track_device(dev.id, &dev.entity_id);
-    let read_started = std::time::Instant::now();
-    let entity = ctx
-        .config
-        .ha_client
-        .fetch_states_by_ids(std::slice::from_ref(&dev.entity_id))
-        .await?
-        .into_iter()
-        .next()
-        .context("HA state missing")?;
-    ctx.config.html_ui.pending.observe_states(
-        ctx.user_id,
-        &ctx.admission_generation,
-        read_started,
-        std::slice::from_ref(&entity),
-    );
-    let slider = Slider::from_entity(&entity);
-    if slider.is_none()
-        || !super::preferred(&ctx.config, ctx.user_id).await
-        || !db::access::can_control_device(ctx.user_id, ctx.is_admin, device, &ctx.config.db)
-            .await?
-    {
-        return crate::bot::screens::control::device_control::render(
-            ctx,
-            room,
-            device,
-            DeviceCmd::default(),
-        )
-        .await;
-    }
-    let slider = slider.unwrap();
-    let room = db::devices::get_room_id_by_entity(&dev.entity_id, &ctx.config.db)
-        .await?
-        .unwrap_or(room);
-    let room_name = db::rooms::get_room_by_id(room, &ctx.config.db)
-        .await?
-        .map(|r| {
-            ctx.track_room(r.id);
-            r.display_name().to_owned()
-        })
-        .unwrap_or_default();
-    let parent = Payload::Control(ControlPayload::DeviceControl { room, device });
-    let apply = Payload::Control(ControlPayload::QuickAction {
-        room,
-        device,
-        cmd: DeviceCmd::SetTemp(slider.value as f32 / 1000.0),
-    });
-    let name = crate::bot::screens::control::labels::device_name(&dev, &entity, ctx.lang);
-    Ok(View {
-        payload: route(room, device),
-        lang: ctx.lang,
-        compact: true,
-        header: Some(name.clone()),
-        html_title: Some(name),
-        html_context: Some(room_name),
-        html_kind: Some("temperature".into()),
-        html_back: Some(parent.clone()),
-        html_temperature: Some(slider),
-        text: words(
-            ctx.lang,
-            "Выберите температуру и нажмите «Применить».",
-            "Choose a temperature, then Apply.",
-        )
-        .into(),
-        kb: InlineKeyboardMarkup::new(vec![
-            vec![Button::callback(
-                words(ctx.lang, "Применить", "Apply"),
-                apply.to_string(),
-            )],
-            vec![Button::callback(
-                words(ctx.lang, "Отмена", "Cancel"),
-                parent.to_string(),
-            )],
-        ]),
-        ..Default::default()
-    })
 }
 
 #[cfg(test)]
