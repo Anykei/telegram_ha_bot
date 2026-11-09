@@ -7,18 +7,29 @@ export async function checkTemperature({root,command,evaluate,until}) {
   evaluate=s=>raw(mediaExpression(s));until=s=>wait(mediaExpression(s));
   const doc="document.getElementById('release-frame').contentDocument",win="document.getElementById('release-frame').contentWindow";
   const state=`JSON.parse(${win}.TelegramWidget.chatData)`,apply=`${doc}.querySelector('[data-key="a0"]')`;
+  async function checkLayout(label, expectedActions) {
+    const size=await evaluate(`({height:${doc}.body.scrollHeight,width:${doc}.documentElement.scrollWidth,available:${doc}.documentElement.clientWidth,actions:${doc}.querySelectorAll('[data-key]').length,buttons:[...${doc}.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().width).map(b=>({h:b.getBoundingClientRect().height,w:b.getBoundingClientRect().width,bottom:b.getBoundingClientRect().bottom}))})`);
+    const diagnostic=label+': '+JSON.stringify(size);
+    assert.equal(size.height,600,diagnostic);
+    assert.ok(size.width<=size.available,diagnostic);
+    assert.ok(size.buttons.every(b=>b.h>=44&&b.w>=44&&b.bottom<=584),diagnostic);
+    assert.equal(size.actions,expectedActions,diagnostic);
+  }
   await command('Emulation.setDeviceMetricsOverride',{width:1280,height:1080,deviceScaleFactor:1,mobile:false});
   await command('Page.navigate',{url:pathToFileURL(root+'dist/temperature-preview.html').href});
   await until(`${doc}.querySelector('.s-rail')`);
   const fixtures=JSON.parse(await readFile(root+'preview/temperature-fixtures.json','utf8'));
-  for(const fixture of fixtures)for(const theme of ['light','dark'])for(const width of [200,320,360,430]) {
+  for(const fixture of fixtures)for(const theme of ['light','dark'])for(const width of [200,240,241,280,281,320,360,430]) {
     await evaluate(`new Promise(resolve=>{document.getElementById('release-frame').addEventListener('load',()=>resolve(true),{once:true});theme='${theme}';width=${width};document.getElementById('fixture').value='${fixture.id}';load();})`);
     await until(`${doc}.querySelector('.s-rail')`);
-    const size=await evaluate(`({height:${doc}.body.scrollHeight,width:${doc}.documentElement.scrollWidth,available:${doc}.documentElement.clientWidth,buttons:[...${doc}.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().width).map(b=>({h:b.getBoundingClientRect().height,w:b.getBoundingClientRect().width,bottom:b.getBoundingClientRect().bottom}))})`);
-    assert.equal(size.height,600);
-    assert.ok(size.width<=size.available);
-    assert.ok(size.buttons.every(b=>b.h>=44&&b.w>=44&&b.bottom<=584),JSON.stringify(size));
+    const label=`${fixture.id}/${theme}/${width}`,expectedActions=fixture.page.b.flat().filter(b=>b[1]!==fixture.page.back).length;
+    await checkLayout(label,expectedActions);
     assert.equal(await evaluate(`${apply}.disabled`),true);
+    for(const status of ['wait','uncertain']) {
+      await evaluate(`(()=>{const p=${state};p.seq++;p.b[0].forEach(b=>b[2]='${status}');p.alert='${status}'==='uncertain'?(p.lang==='ru'?'HA не подтвердил изменение. Обновите состояние.':'HA has not confirmed the change. Refresh the state.'):'';${win}.previewSetData(p);})()`);
+      await checkLayout(label+'/'+status,expectedActions);
+      assert.equal(await evaluate(`${apply}.disabled`),true);
+    }
   }
   await evaluate(`new Promise(resolve=>{document.getElementById('release-frame').addEventListener('load',()=>resolve(true),{once:true});theme='dark';width=320;document.getElementById('fixture').value='climate_actual_normal';load();})`);
   await until(`${doc}.querySelector('.s-rail')`);
