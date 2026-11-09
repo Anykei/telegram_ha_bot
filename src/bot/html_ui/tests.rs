@@ -418,6 +418,11 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
                     .iter()
                     .any(|p| p.back.as_deref() == Some(&key))
                     || presentation::is_source_pager_button(view, index)
+                    || (prepared.actions[&key] == Payload::Home
+                        && presentation::redundant_home(view))
+                    || crate::bot::screen_structure::parent(view).as_ref()
+                        == Some(&prepared.actions[&key])
+                    || original[..index].iter().any(|b| b.kind == button.kind)
                     || (button.text == crate::i18n::t(view.lang, "control.refresh")
                         && prepared.actions[&key] == view.payload.for_refresh()),
                 "Missing action: {} on {:?}",
@@ -430,6 +435,26 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
         rendered.iter().map(|b| b.key.clone()).collect::<Vec<_>>(),
         order
     );
+    let mut seen = std::collections::HashSet::new();
+    let parent = crate::bot::screen_structure::parent(view);
+    for button in &rendered {
+        let target = &prepared.actions[&button.key];
+        assert!(
+            seen.insert(target.to_string()),
+            "Duplicate action on {:?}: {target:?}",
+            view.payload
+        );
+        if presentation::redundant_home(view) {
+            assert_ne!(
+                target,
+                &Payload::Home,
+                "Home must not duplicate the main card or header"
+            );
+        }
+        if parent.is_some() {
+            assert_ne!(Some(target), parent.as_ref(), "Back belongs in the header");
+        }
+    }
     Ok(())
 }
 

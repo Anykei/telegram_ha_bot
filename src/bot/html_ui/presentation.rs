@@ -8,7 +8,7 @@ use super::super::{
 use crate::i18n::{t, Language};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use teloxide::types::InlineKeyboardButtonKind;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -467,6 +467,20 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     prepare_with_pending(view, rev, seq, &HashMap::new())
 }
 
+/// Keep the Home shortcut on the main card, not in its details/input subpages.
+/// First-level pages already return Home through the header's Back button.
+pub(super) fn redundant_home(view: &View) -> bool {
+    view.next_state.is_some()
+        || matches!(
+            view.payload,
+            Payload::Home
+                | Payload::DeviceDetails { .. }
+                | Payload::TemperatureInput { .. }
+                | Payload::Camera(CameraPayload::CameraDetails { .. })
+        )
+        || super::super::screen_structure::parent(view) == Some(Payload::Home)
+}
+
 pub fn prepare_with_pending(
     view: &View,
     rev: String,
@@ -675,6 +689,7 @@ pub fn prepare_with_pending(
     let root = empty.clone();
     let mut empty = empty;
     let mut actions = HashMap::new();
+    let mut seen = HashSet::new();
     for (row_index, row) in view.kb.inline_keyboard.iter().enumerate() {
         if view.text_page.is_none() && view.next_state.is_none() {
             if let Some(section) = view
@@ -699,10 +714,15 @@ pub fn prepare_with_pending(
                 };
                 let payload = Payload::from_string(data)?;
                 let key = format!("a{}", actions.len());
+                // The header owns Back (Home on first-level pages).
+                // Keep original keys/sections intact for source pagination and
+                // classic fallback, but do not repeat navigation in the body.
                 let pinned = pager.as_ref().is_some_and(|pager| pager.row == row_index)
-                    || empty.back.as_deref() == Some(&key)
+                    || parent.as_ref() == Some(&payload)
+                    || (payload == Payload::Home && redundant_home(view))
                     || (button.text == t(view.lang, "control.refresh")
-                        && payload == view.payload.for_refresh());
+                        && payload == view.payload.for_refresh())
+                    || !seen.insert(data.clone());
                 if !pinned {
                     let pending_kind = match &payload {
                         Payload::Control(ControlPayload::QuickAction { device, cmd, .. })
