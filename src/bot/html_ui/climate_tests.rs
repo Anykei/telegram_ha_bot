@@ -146,10 +146,7 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
                 })
                 .collect::<Vec<_>>();
             assert_eq!(steps, if exact { vec![] } else { expected_steps });
-            assert_eq!(
-                visible.contains(&&Payload::TemperatureInput { room, device }),
-                false
-            );
+            assert!(!visible.contains(&&Payload::TemperatureInput { room, device }));
             assert!(visible.contains(&&Payload::DeviceDetails { room, device }));
             assert!(visible.contains(&&Payload::Home));
             assert!(page.back.is_some());
