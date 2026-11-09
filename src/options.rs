@@ -7,6 +7,7 @@ use std::path::Path;
 /// Настройки приложения.
 /// Соответствует Google Rust Style Guide: использование документационных комментариев и явная типизация.
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AppOptions {
     pub bot_token: String,
 
@@ -183,9 +184,35 @@ impl AppOptions {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read options file: {:?}", path))?;
 
-        let mut options: AppOptions =
-            serde_json::from_str(&content).context("JSON schema mismatch in options file")?;
-        let document: serde_json::Value = serde_json::from_str(&content)?;
+        Self::from_json(&content)
+    }
+
+    fn from_json(content: &str) -> Result<Self> {
+        let mut document: serde_json::Value =
+            serde_json::from_str(content).context("Invalid options JSON")?;
+        let object = document
+            .as_object_mut()
+            .context("Options must be a JSON object")?;
+        if let Some(extra) = object.remove("extra_options") {
+            let extra = extra
+                .as_str()
+                .context("extra_options must be a JSON string")?;
+            if !extra.trim().is_empty() {
+                let extra: serde_json::Value =
+                    serde_json::from_str(extra).context("Invalid JSON in extra_options")?;
+                let extra = extra
+                    .as_object()
+                    .context("extra_options must contain a JSON object")?;
+                ensure!(
+                    !extra.contains_key("extra_options"),
+                    "extra_options cannot contain itself"
+                );
+                // Explicit overrides win over HA's persisted/default options.
+                object.extend(extra.clone());
+            }
+        }
+        let mut options: AppOptions = serde_json::from_value(document.clone())
+            .context("JSON schema mismatch in options file")?;
         options.camera_recording_storage_root = resolve_recording_storage_root(
             document
                 .get("camera_recording_storage_root")
@@ -373,6 +400,74 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_options_override_defaults_and_preserve_typed_values() {
+        let options = AppOptions::from_json(
+            &serde_json::json!({
+                "bot_token": "token",
+                "root_user": "42",
+                "html_widgets_enabled": false,
+                "camera_recording_storage_root": "base/archive",
+                "extra_options": serde_json::json!({
+                    "html_widgets_enabled": true,
+                    "camera_clip_intervals_s": [7, 20],
+                    "camera_recording_storage_root": "custom/archive",
+                    "delete_notification_messages_timeout_s": 0,
+                    "voice_ha_pipeline_id": null
+                }).to_string()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(options.html_widgets_enabled);
+        assert_eq!(options.root_user, 42);
+        assert_eq!(options.camera_clip_intervals_s, [7, 20]);
+        assert_eq!(options.camera_recording_storage_root, "custom/archive");
+        assert_eq!(options.delete_notification_messages_timeout_s, 0);
+        assert_eq!(options.voice_ha_pipeline_id, None);
+        assert_eq!(options.session_ttl_hours, 24);
+    }
+
+    #[test]
+    fn extra_options_allow_empty_input() {
+        for extra in ["", "  \n", "{}"] {
+            let options = AppOptions::from_json(
+                &serde_json::json!({
+                    "bot_token": "token", "root_user": 42, "extra_options": extra
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(!options.html_widgets_enabled);
+            assert_eq!(options.camera_default_clip_s, 10);
+        }
+        assert!(AppOptions::from_json(r#"{"bot_token":"token","root_user":42}"#).is_ok());
+    }
+
+    #[test]
+    fn extra_options_reject_invalid_shapes_types_names_and_ranges() {
+        for extra in [
+            serde_json::json!({"html_widgets_enabled": true}),
+            serde_json::Value::Null,
+            serde_json::json!("not json"),
+            serde_json::json!("[]"),
+            serde_json::json!(r#"{"extra_options":"{}"}"#),
+            serde_json::json!(r#"{"html_widget_enabled":true}"#),
+            serde_json::json!(r#"{"html_widgets_enabled":"true"}"#),
+            serde_json::json!(r#"{"camera_clip_intervals_s":[0]}"#),
+            serde_json::json!(r#"{"delete_notification_messages_timeout_s":86401}"#),
+            serde_json::json!(r#"{"root_user":0}"#),
+        ] {
+            let result = AppOptions::from_json(
+                &serde_json::json!({
+                    "bot_token": "token", "root_user": 42, "extra_options": extra
+                })
+                .to_string(),
+            );
+            assert!(result.is_err(), "Invalid extra_options accepted: {extra}");
+        }
+    }
 
     #[test]
     fn archive_path_precedence_preserves_explicit_json() {
