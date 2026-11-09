@@ -193,6 +193,16 @@ impl MockHa {
                 entity.attributes.temperature = Some(target);
                 changes.push((before, entity));
             }
+            ("climate", "set_hvac_mode", _) => {
+                let mode = data["hvac_mode"].as_str().context("Missing HVAC mode")?;
+                ensure!(
+                    entity.supports_hvac_mode(mode),
+                    "Mock HVAC mode unavailable"
+                );
+                let before = entity.state.clone();
+                entity.state = mode.into();
+                changes.push((before, entity));
+            }
             ("climate", "toggle" | "turn_on" | "turn_off", _) => {
                 ensure!(
                     data == json!({}),

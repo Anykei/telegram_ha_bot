@@ -109,6 +109,15 @@ pub(super) fn controls(view: &mut View) {
             apply.to_string(),
         )],
     );
+    // Apply and power share a control row; changing mode never applies a draft.
+    if let Some(index) = view.kb.inline_keyboard.iter().position(|row| row.len() == 1 &&
+        matches!(&row[0].kind, InlineKeyboardButtonKind::CallbackData(data)
+            if matches!(Payload::from_string(data), Ok(Payload::Control(ControlPayload::QuickAction {
+                cmd: DeviceCmd::TurnOn | DeviceCmd::TurnOff, ..
+            }))))) {
+        let power = view.kb.inline_keyboard.remove(index);
+        view.kb.inline_keyboard[0].extend(power);
+    }
 }
 
 pub(super) fn resolve(

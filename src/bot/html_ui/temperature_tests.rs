@@ -2,6 +2,137 @@ use super::*;
 use crate::ha::models::EntityAttributes;
 
 #[tokio::test]
+async fn heating_mode_waits_for_exact_ha_mode_and_does_not_change_temperature() -> Result<()> {
+    let (config, ha) = config().await?;
+    db::devices::sync_device("climate.test", "living", "Термостат", "climate", &config.db).await?;
+    ha.states
+        .lock()
+        .unwrap()
+        .insert("climate.test".into(), "off".into());
+    ha.attributes.lock().unwrap().insert(
+        "climate.test".into(),
+        EntityAttributes {
+            hvac_modes: Some(vec!["heat".into(), "off".into()]),
+            temperature: Some(25.0),
+            current_temperature: Some(24.6),
+            target_temp_step: Some(0.5),
+            min_temp: Some(5.0),
+            max_temp: Some(35.0),
+            ..Default::default()
+        },
+    );
+    let (room, device) = device(&config, "climate.test").await?;
+    let route = temperature::route(room, device);
+    let fake = FakeTelegram::new().await?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
+        ChatId(1),
+    );
+    for (cmd, mode) in [(DeviceCmd::TurnOn, "heat"), (DeviceCmd::TurnOff, "off")] {
+        publish(&fake, &config, route.clone()).await?;
+        let action = Payload::Control(ControlPayload::QuickAction { room, device, cmd });
+        let before = ha.calls.lock().unwrap().len();
+        let q = action_query(&config, &action);
+        press(&fake, &config, &dialogue, q.clone()).await?;
+        assert_eq!(
+            ha.calls.lock().unwrap().last().unwrap(),
+            "climate:set_hvac_mode:climate.test"
+        );
+        assert_eq!(
+            ha.service_data.lock().unwrap().last().unwrap(),
+            &json!({"hvac_mode":mode})
+        );
+        assert_eq!(current(&config).view.payload, route);
+        assert_eq!(
+            current(&config).pages[0].slider.as_ref().unwrap().value,
+            25000
+        );
+        assert!(current(&config).pages[0].rows[0]
+            .iter()
+            .all(|b| b.kind == "wait"));
+        press(&fake, &config, &dialogue, q).await?;
+        let pending_q = action_query(&config, &action);
+        press(&fake, &config, &dialogue, pending_q).await?;
+        assert_eq!(ha.calls.lock().unwrap().len(), before + 1);
+        // A temperature update or another device's mode must not confirm power.
+        ha.attributes
+            .lock()
+            .unwrap()
+            .get_mut("climate.test")
+            .unwrap()
+            .current_temperature = Some(25.0);
+        ha.states
+            .lock()
+            .unwrap()
+            .insert("climate.other".into(), mode.into());
+        publish(&fake, &config, route.clone()).await?;
+        assert_eq!(current(&config).pages[0].rows[0][1].kind, "wait");
+        ha.states
+            .lock()
+            .unwrap()
+            .insert("climate.test".into(), mode.into());
+        publish(&fake, &config, route.clone()).await?;
+        assert!(current(&config).pages[0].rows[0]
+            .iter()
+            .all(|b| b.kind == "action"));
+    }
+    // A previously issued action is revalidated against live HA capabilities.
+    let q = action_query(
+        &config,
+        &Payload::Control(ControlPayload::QuickAction {
+            room,
+            device,
+            cmd: DeviceCmd::TurnOn,
+        }),
+    );
+    ha.attributes
+        .lock()
+        .unwrap()
+        .get_mut("climate.test")
+        .unwrap()
+        .hvac_modes = Some(vec!["off".into()]);
+    press(&fake, &config, &dialogue, q).await?;
+    assert_eq!(
+        ha.calls.lock().unwrap().len(),
+        2,
+        "Unsupported mode must not reach HA"
+    );
+    ha.attributes
+        .lock()
+        .unwrap()
+        .get_mut("climate.test")
+        .unwrap()
+        .hvac_modes = Some(vec!["heat".into(), "off".into()]);
+    publish(&fake, &config, route.clone()).await?;
+    ha.fail_service.store(true, Ordering::Relaxed);
+    let action = Payload::Control(ControlPayload::QuickAction {
+        room,
+        device,
+        cmd: DeviceCmd::TurnOn,
+    });
+    let q = action_query(&config, &action);
+    press(&fake, &config, &dialogue, q).await?;
+    assert_eq!(ha.calls.lock().unwrap().len(), 3);
+    assert_eq!(current(&config).pages[0].rows[0][1].kind, "uncertain");
+    let q = action_query(&config, &action);
+    press(&fake, &config, &dialogue, q).await?;
+    assert_eq!(
+        ha.calls.lock().unwrap().len(),
+        3,
+        "An uncertain mode write must not retry"
+    );
+    ha.fail_service.store(false, Ordering::Relaxed);
+    press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
+    assert_eq!(current(&config).pages[0].rows[0][1].kind, "action");
+    assert_eq!(
+        ha.calls.lock().unwrap().len(),
+        3,
+        "Explicit recovery only reads the mode"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn temperature_slider_validates_drafts_and_waits_for_ha_target() -> Result<()> {
     let (config, ha) = config().await?;
     db::devices::sync_device("climate.test", "living", "Термостат", "climate", &config.db).await?;

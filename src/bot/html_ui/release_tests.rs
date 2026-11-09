@@ -70,7 +70,7 @@ async fn device(config: &AppConfig, id: &str) -> Result<(i64, i64)> {
     )
 }
 
-fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
+pub(super) fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
     let mut html_view = view.clone();
     temperature::controls(&mut html_view);
     assert_buttons_preserved(&html_view, prepared)?;

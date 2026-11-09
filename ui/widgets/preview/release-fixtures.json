@@ -4513,30 +4513,37 @@
       "b": [
         [
           [
-            "Подробности",
+            "Выключить отопление",
             "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a1",
             "nav"
           ],
           [
             "Дом",
-            "a1",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a4",
+            "a5",
             "action"
           ]
         ]
       ],
-      "back": "a5",
+      "back": "a6",
       "body": "Изменение температуры недоступно. Обновите данные или откройте подробности.",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -4637,30 +4644,37 @@
       "b": [
         [
           [
-            "Подробности",
+            "Выключить отопление",
             "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a1",
             "nav"
           ],
           [
             "Дом",
-            "a1",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a4",
+            "a5",
             "action"
           ]
         ]
       ],
-      "back": "a5",
+      "back": "a6",
       "body": "Изменение температуры недоступно. Обновите данные или откройте подробности.",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -4699,30 +4713,37 @@
       "b": [
         [
           [
-            "Details",
+            "Turn off heating",
             "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a1",
             "nav"
           ],
           [
             "Home",
-            "a1",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a4",
+            "a5",
             "action"
           ]
         ]
       ],
-      "back": "a5",
+      "back": "a6",
       "body": "Temperature adjustment unavailable. Refresh or open details.",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -4823,30 +4844,37 @@
       "b": [
         [
           [
-            "Details",
+            "Turn off heating",
             "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a1",
             "nav"
           ],
           [
             "Home",
-            "a1",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a4",
+            "a5",
             "action"
           ]
         ]
       ],
-      "back": "a5",
+      "back": "a6",
       "body": "Temperature adjustment unavailable. Refresh or open details.",
       "context": "🛋 Гостиная",
       "kind": "climate",

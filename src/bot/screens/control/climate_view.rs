@@ -168,6 +168,34 @@ fn render_view(
         room: room_id,
         device: dev.id,
     });
+    let turn_on = entity.state == "off";
+    if can_control && entity.supports_hvac_mode(if turn_on { "heat" } else { "off" }) {
+        rows.push(vec![InlineKeyboardButton::callback(
+            crate::bot::personal::words(
+                lang,
+                if turn_on {
+                    "Включить отопление"
+                } else {
+                    "Выключить отопление"
+                },
+                if turn_on {
+                    "Enable heating"
+                } else {
+                    "Turn off heating"
+                },
+            ),
+            Payload::Control(ControlPayload::QuickAction {
+                room: room_id,
+                device: dev.id,
+                cmd: if turn_on {
+                    DeviceCmd::TurnOn
+                } else {
+                    DeviceCmd::TurnOff
+                },
+            })
+            .to_string(),
+        )]);
+    }
     rows.push(vec![InlineKeyboardButton::callback(
         t(lang, "control.refresh"),
         payload.to_string(),

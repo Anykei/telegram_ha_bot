@@ -504,8 +504,8 @@ pub fn prepare_with_pending(
                 structured.alert = Some(
                     crate::bot::personal::words(
                         structured.lang,
-                        "HA не подтвердил температуру. Обновите состояние.",
-                        "HA has not confirmed the temperature. Refresh the state.",
+                        "HA не подтвердил изменение. Обновите состояние.",
+                        "HA has not confirmed the change. Refresh the state.",
                     )
                     .into(),
                 );

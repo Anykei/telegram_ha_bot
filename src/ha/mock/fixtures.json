@@ -12,7 +12,7 @@
     "id": "bedroom", "name": "Спальня",
     "entities": [
       {"entity_id":"light.bedside","name":"Ночник","state":"off","device_class":"light"},
-      {"entity_id":"climate.bedroom","name":"Термостат","state":"heat","attributes":{"current_temperature":21.5,"temperature":22.0,"target_temp_step":0.5,"min_temp":16.0,"max_temp":28.0,"unit_of_measurement":"°C"}},
+      {"entity_id":"climate.bedroom","name":"Термостат","state":"heat","attributes":{"hvac_modes":["heat","off"],"current_temperature":21.5,"temperature":22.0,"target_temp_step":0.5,"min_temp":16.0,"max_temp":28.0,"unit_of_measurement":"°C"}},
       {"entity_id":"sensor.bedroom_humidity","name":"Влажность","state":"46","device_class":"humidity","attributes":{"unit_of_measurement":"%"}}
     ]
   },

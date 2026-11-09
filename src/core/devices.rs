@@ -236,6 +236,32 @@ impl SmartEntity for SmartDevice {
             }
 
             Self::Climate(_) => match action {
+                DeviceAction::TurnOn | DeviceAction::TurnOff => {
+                    let mode = if matches!(action, DeviceAction::TurnOn) {
+                        "heat"
+                    } else {
+                        "off"
+                    };
+                    if !entity.supports_hvac_mode(mode) {
+                        return InteractionResult::Error {
+                            error: "Heating mode is unavailable or unsupported".into(),
+                        };
+                    }
+                    match ha
+                        .call_service_with_data(
+                            "climate",
+                            "set_hvac_mode",
+                            entity_id,
+                            serde_json::json!({"hvac_mode": mode}),
+                        )
+                        .await
+                    {
+                        Ok(()) => InteractionResult::RequiresDetail,
+                        Err(error) => InteractionResult::Error {
+                            error: error.to_string(),
+                        },
+                    }
+                }
                 DeviceAction::AdjustTemperature(direction) => {
                     if !matches!(direction, -1 | 1) {
                         return InteractionResult::Error {

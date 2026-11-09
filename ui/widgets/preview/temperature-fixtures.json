@@ -10,34 +10,39 @@
             "Применить",
             "a0",
             "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Подробности",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Дом",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Сейчас: 21°C\nРежим: обогрев",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -73,34 +78,39 @@
             "Применить",
             "a0",
             "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Подробности",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Дом",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Сейчас: 21°C\nРежим: обогрев",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -136,34 +146,39 @@
             "Применить",
             "a0",
             "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Подробности",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Дом",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Сейчас: 21°C\nРежим: охлаждение",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -199,34 +214,39 @@
             "Применить",
             "a0",
             "action"
+          ],
+          [
+            "Включить отопление",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Подробности",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Дом",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Сейчас: нет данных\nРежим: выключен",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -262,34 +282,39 @@
             "Apply",
             "a0",
             "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Details",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Home",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Current: 21°C\nMode: heating",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -325,34 +350,39 @@
             "Apply",
             "a0",
             "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Details",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Home",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Current: 21°C\nMode: heating",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -388,34 +418,39 @@
             "Apply",
             "a0",
             "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Details",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Home",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Current: 21°C\nMode: cooling",
       "context": "🛋 Гостиная",
       "kind": "temperature",
@@ -451,34 +486,39 @@
             "Apply",
             "a0",
             "action"
+          ],
+          [
+            "Enable heating",
+            "a1",
+            "action"
           ]
         ],
         [
           [
             "Details",
-            "a1",
+            "a2",
             "nav"
           ],
           [
             "Home",
-            "a2",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a4",
+            "a5",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a5",
+            "a6",
             "action"
           ]
         ]
       ],
-      "back": "a6",
+      "back": "a7",
       "body": "Current: unavailable\nMode: off",
       "context": "🛋 Гостиная",
       "kind": "temperature",

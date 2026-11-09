@@ -17,6 +17,7 @@ mod live_tests;
 #[derive(Default)]
 struct FakeHa {
     calls: Mutex<Vec<String>>,
+    service_data: Mutex<Vec<Value>>,
     states: Mutex<HashMap<String, String>>,
     attributes: Mutex<HashMap<String, crate::ha::models::EntityAttributes>>,
     fail_reads: std::sync::atomic::AtomicBool,
@@ -82,8 +83,9 @@ impl crate::ha::HomeAssistantClient for FakeHa {
         domain: &str,
         service: &str,
         entity: &str,
-        _: Value,
+        data: Value,
     ) -> Result<()> {
+        self.service_data.lock().unwrap().push(data);
         self.call_service(domain, service, entity).await
     }
 }

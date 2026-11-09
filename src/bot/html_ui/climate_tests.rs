@@ -83,6 +83,7 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
             ha.attributes.lock().unwrap().insert(
                 "climate.test".into(),
                 EntityAttributes {
+                    hvac_modes: Some(vec!["heat".into(), "cool".into(), "off".into()]),
                     temperature: target,
                     current_temperature: current,
                     target_temp_low: (state == "heat_cool").then_some(20.0),
