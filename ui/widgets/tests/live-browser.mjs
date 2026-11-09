@@ -11,7 +11,7 @@ export async function checkLive({root, command, evaluate, until, file}) {
   until=source=>rawUntil(release?releaseExpression(source):mediaExpression(source));
   const fixtures = JSON.parse(await readFile(file, 'utf8'));
   assert.ok(fixtures.length > 0, 'Live test exported pages');
-  const assets = Object.fromEntries(await Promise.all(['release','graph'].map(async name => [name, await readFile(root+`dist/${name}.html`, 'utf8')])));
+  const assets = Object.fromEntries(await Promise.all(['release','graph','temperature'].map(async name => [name, await readFile(root+`dist/${name}.html`, 'utf8')])));
   const folder = join(dirname(file), 'screenshots');
   await mkdir(folder, {recursive:true, mode:0o700});
   const doc = `document.getElementById('live').contentDocument`;

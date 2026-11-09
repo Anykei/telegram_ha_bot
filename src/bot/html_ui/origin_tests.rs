@@ -85,6 +85,8 @@ async fn origin_preserves_favorite_page_through_device_details_subscription_read
     let details = Payload::DeviceDetails { room, device };
     press(&fake, &config, &dialogue, action_query(&config, &details)).await?;
     assert_eq!(back_target(&config), target);
+    press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
+    assert_eq!(back_target(&config), second);
     let subscribe = Payload::Personal(PersonalPayload::SetSubscription {
         device,
         enabled: true,
@@ -92,12 +94,11 @@ async fn origin_preserves_favorite_page_through_device_details_subscription_read
     press(&fake, &config, &dialogue, action_query(&config, &subscribe)).await?;
     assert_eq!(
         back_target(&config),
-        details,
-        "Subscription opened by details returns to details"
+        target,
+        "Subscription opened by main card returns to main card"
     );
     press(&fake, &config, &dialogue, query(&current(&config), "read")).await?;
-    assert_eq!(back_target(&config), details);
-    press(&fake, &config, &dialogue, action_query(&config, &details)).await?;
+    assert_eq!(back_target(&config), target);
     press(&fake, &config, &dialogue, action_query(&config, &target)).await?;
     assert_eq!(
         back_target(&config),

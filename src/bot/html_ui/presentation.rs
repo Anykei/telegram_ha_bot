@@ -481,6 +481,19 @@ pub(super) fn redundant_home(view: &View) -> bool {
         || super::super::screen_structure::parent(view) == Some(Payload::Home)
 }
 
+/// Personal controls belong to the device's main card; Details is informational.
+pub(super) fn redundant_detail_action(view: &View, action: &Payload) -> bool {
+    matches!(view.payload, Payload::DeviceDetails { .. })
+        && matches!(
+            action,
+            Payload::Personal(
+                PersonalPayload::FavoriteOptions { .. }
+                    | PersonalPayload::SetSubscription { .. }
+                    | PersonalPayload::Subscription { .. }
+            )
+        )
+}
+
 pub fn prepare_with_pending(
     view: &View,
     rev: String,
@@ -720,6 +733,7 @@ pub fn prepare_with_pending(
                 let pinned = pager.as_ref().is_some_and(|pager| pager.row == row_index)
                     || parent.as_ref() == Some(&payload)
                     || (payload == Payload::Home && redundant_home(view))
+                    || redundant_detail_action(view, &payload)
                     || (button.text == t(view.lang, "control.refresh")
                         && payload == view.payload.for_refresh())
                     || !seen.insert(data.clone());

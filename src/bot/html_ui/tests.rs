@@ -422,6 +422,7 @@ fn assert_buttons_preserved(view: &View, prepared: &presentation::Prepared) -> R
                     || presentation::is_source_pager_button(view, index)
                     || (prepared.actions[&key] == Payload::Home
                         && presentation::redundant_home(view))
+                    || presentation::redundant_detail_action(view, &prepared.actions[&key])
                     || crate::bot::screen_structure::parent(view).as_ref()
                         == Some(&prepared.actions[&key])
                     || original[..index].iter().any(|b| b.kind == button.kind)
