@@ -1,0 +1,47 @@
+[
+  {
+    "id": "temperature",
+    "label": "Temperature slider",
+    "page": {
+      "v": 1,
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "lang": "ru",
+      "kind": "temperature",
+      "title": "Термостат",
+      "context": "Спальня",
+      "body": "Выберите температуру и нажмите «Применить».",
+      "notice": "",
+      "alert": "",
+      "read": "read",
+      "back": "back",
+      "prev": null,
+      "next": null,
+      "page": 1,
+      "pages": 1,
+      "slider": {
+        "min": 16000,
+        "max": 30000,
+        "step": 500,
+        "value": 22000,
+        "unit": "°C"
+      },
+      "b": [
+        [
+          [
+            "Применить",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Отмена",
+            "back",
+            "nav"
+          ]
+        ]
+      ]
+    }
+  }
+]

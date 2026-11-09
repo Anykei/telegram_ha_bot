@@ -8,14 +8,17 @@ import {compactRelease,compactScript} from './private-names.mjs';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const read=name=>readFile(root+'src/'+name,'utf8');
 export async function compileWidget(screen, compression={passes:2,sequences:1,keep_fargs:false,conditionals:false}) {
-  if(!['release','graph','range','unified'].includes(screen))throw Error('Unknown widget capability: '+screen);
+  if(!['release','graph','range','temperature','unified'].includes(screen))throw Error('Unknown widget capability: '+screen);
   const menu=['release','unified'].includes(screen),chart=['graph','unified'].includes(screen),range=['range','unified'].includes(screen);
+  const slider=screen==='temperature';
   const tokens=JSON.parse(await readFile(root+'design-tokens.json','utf8'));
   let css=await read('widget.css');
   if(menu)css+=await read('menu.css');
-  if(chart||range)css+=await read('media.css');
+  if(chart||range||slider)css+=await read('media.css');
   if(chart)css+=await read('graph.css');
   if(range)css+=await read('range.css');
+  if(slider)css+=await read('temperature.css');
+  css=css.replaceAll('/* pending-controls */',await read('pending.css'));
   css+=await read('widget-utilities.css');
   // A shipping subset has one mode. Resolve its mode constants at build time;
   // the unified artifact keeps the same definitions for runtime transitions.
@@ -36,7 +39,7 @@ export async function compileWidget(screen, compression={passes:2,sequences:1,ke
   const aliases=[...new Set(css.match(/--(?:ha|ui)-[a-z0-9-]+/g))];
   css=css.replace(/--(?:ha|ui)-[a-z0-9-]+/g,key=>{const i=aliases.indexOf(key);return '--'+String.fromCharCode(97+i%26)+(i>=26?Math.floor(i/26):'');});
   css=(await transform(css,{loader:'css',minify:true,charset:'utf8'})).code.trim();
-  const define=Object.fromEntries(Object.entries({MENU:menu,MEDIA:chart||range,CHART:chart,RANGE:range,UNIFIED:screen==='unified'}).map(([k,v])=>[k,String(v)]));
+  const define=Object.fromEntries(Object.entries({MENU:menu,MEDIA:chart||range||slider,CHART:chart,RANGE:range,SLIDER:slider,UNIFIED:screen==='unified'}).map(([k,v])=>[k,String(v)]));
   let source=await read('widget.js');
   if(screen!=='unified') {
     // These pure predicates are constants in a single-capability artifact.
@@ -47,6 +50,7 @@ export async function compileWidget(screen, compression={passes:2,sequences:1,ke
   const bundle=await build({stdin:{contents:source,resolveDir:root+'src',sourcefile:'widget.js'},bundle:true,write:false,format:'esm',target:'es2020',charset:'utf8',define,minifySyntax:true});
   const script=await minify(compactScript(bundle.outputFiles[0].text),{ecma:2020,module:true,compress:compression,format:{ascii_only:true}});
   let body=await read('widget.html');
+  if(slider)body=body.replace(/<div id="r-server"[^>]*>.*?<\/div>/,'<div id="r-server" hidden></div>');
   if(!range)body=body.replace(' id="r-top"','');
   if(!chart)body=body.replace(/<!-- chart:start -->[\s\S]*?<!-- chart:end -->/,'');
   // A trailing slash belongs to an unquoted attribute value: class=x/>

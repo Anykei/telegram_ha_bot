@@ -36,6 +36,8 @@ pub struct Page {
     /// Home statuses or device metrics: label, value, detail. Plain text only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<[String; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slider: Option<super::temperature::Slider>,
     pub notice: String,
     pub alert: String,
     #[serde(rename = "b", alias = "rows", with = "button_rows")]
@@ -339,7 +341,8 @@ fn screen_kind(view: &View) -> &str {
         return "confirmation";
     }
     if let Some(
-        kind @ ("menu" | "device" | "climate" | "confirmation" | "list" | "room" | "camera"),
+        kind @ ("menu" | "device" | "climate" | "temperature" | "confirmation" | "list" | "room"
+        | "camera"),
     ) = view.html_kind.as_deref()
     {
         return kind;
@@ -479,6 +482,7 @@ pub fn prepare_with_pending(
     let view = &structured;
     let bounded = !view.html_media_controls
         && view.html_chart.is_none()
+        && view.html_temperature.is_none()
         && !matches!(view.payload, Payload::Camera(_));
     let pager = bounded.then(|| source_pager(view)).flatten();
     let parent = super::super::screen_structure::parent(view);
@@ -555,6 +559,7 @@ pub fn prepare_with_pending(
         hint: String::new(),
         body: String::new(),
         status: Vec::new(),
+        slider: None,
         notice: String::new(),
         alert: String::new(),
         rows: Vec::new(),
@@ -576,6 +581,7 @@ pub fn prepare_with_pending(
     let mut current = empty.clone();
     current.graph = view.html_chart.clone();
     current.status = view.html_metrics.clone();
+    current.slider = view.html_temperature.clone();
     current.json()?;
     if view.next_state.is_some() {
         current.hint = if english {

@@ -183,6 +183,7 @@ pub enum DeviceCmd {
         edit: ChartRangeEdit,
     },
     ExportChart,
+    EditTemperature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -249,7 +250,8 @@ impl From<DeviceCmd> for devices::DeviceAction {
             }),
             DeviceCmd::EnterManualInput => DeviceAction::EnterManualInput,
             // Read-only chart routes are intercepted before device interaction.
-            DeviceCmd::ShowChartRange { .. }
+            DeviceCmd::EditTemperature
+            | DeviceCmd::ShowChartRange { .. }
             | DeviceCmd::OpenChartRange
             | DeviceCmd::ExportChart
             | DeviceCmd::EditChartRange { .. } => DeviceAction::GenerateChart(ChartParams {
@@ -1741,6 +1743,7 @@ fn control_recovery_payload(payload: &ControlPayload) -> ControlPayload {
             cmd:
                 DeviceCmd::ShowChart { .. }
                 | DeviceCmd::ShowChartRange { .. }
+                | DeviceCmd::EditTemperature
                 | DeviceCmd::EnterManualInput,
             ..
         } => payload.clone(),
@@ -1922,6 +1925,9 @@ async fn router_control_inner(ctx: RenderContext, payload: ControlPayload) -> an
                 ));
             }
 
+            if matches!(cmd, DeviceCmd::EditTemperature) {
+                return super::html_ui::temperature::render(ctx, room, device).await;
+            }
             if matches!(
                 cmd,
                 DeviceCmd::OpenChartRange | DeviceCmd::EditChartRange { .. }

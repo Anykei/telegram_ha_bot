@@ -4525,7 +4525,93 @@
         ],
         [
           [
-            "Задать температуру",
+            "Ввести числом",
+            "a2",
+            "nav"
+          ],
+          [
+            "Ползунок",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a4",
+            "nav"
+          ],
+          [
+            "Дом",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a7",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a8",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a9",
+      "body": "",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Задано",
+          "22°C",
+          "16°C – 30°C · Шаг: 0.5°C"
+        ],
+        [
+          "Сейчас",
+          "21°C",
+          "Режим: обогрев"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_min",
+    "label": "Thermostat / min / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "+ 1°C",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Ввести числом",
+            "a1",
+            "nav"
+          ],
+          [
+            "Ползунок",
             "a2",
             "nav"
           ]
@@ -4573,82 +4659,6 @@
       "status": [
         [
           "Задано",
-          "22°C",
-          "16°C – 30°C · Шаг: 0.5°C"
-        ],
-        [
-          "Сейчас",
-          "21°C",
-          "Режим: обогрев"
-        ]
-      ],
-      "title": "Термостат",
-      "v": 1
-    }
-  },
-  {
-    "id": "climate_actual_min",
-    "label": "Thermostat / min / Ru",
-    "page": {
-      "alert": "",
-      "b": [
-        [
-          [
-            "+ 1°C",
-            "a0",
-            "action"
-          ]
-        ],
-        [
-          [
-            "Задать температуру",
-            "a1",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Подробности",
-            "a2",
-            "nav"
-          ],
-          [
-            "Дом",
-            "a3",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "☆ В\nизбранное",
-            "a5",
-            "nav"
-          ],
-          [
-            "Включить\nуведомления",
-            "a6",
-            "action"
-          ]
-        ]
-      ],
-      "back": "a7",
-      "body": "",
-      "context": "🛋 Гостиная",
-      "kind": "climate",
-      "l": true,
-      "lang": "ru",
-      "next": null,
-      "notice": "",
-      "page": 1,
-      "pages": 1,
-      "prev": null,
-      "read": "read",
-      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "s": "AQICBA",
-      "seq": 1,
-      "status": [
-        [
-          "Задано",
           "16°C",
           "16°C – 30°C · Шаг: 1°C"
         ],
@@ -4677,37 +4687,42 @@
         ],
         [
           [
-            "Задать температуру",
+            "Ввести числом",
             "a1",
+            "nav"
+          ],
+          [
+            "Ползунок",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "Подробности",
-            "a2",
+            "a3",
             "nav"
           ],
           [
             "Дом",
-            "a3",
+            "a4",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a5",
+            "a6",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a6",
+            "a7",
             "action"
           ]
         ]
       ],
-      "back": "a7",
+      "back": "a8",
       "body": "",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -4944,37 +4959,42 @@
         ],
         [
           [
-            "Задать температуру",
+            "Ввести числом",
             "a2",
+            "nav"
+          ],
+          [
+            "Ползунок",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "Подробности",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Дом",
-            "a4",
+            "a5",
             "nav"
           ]
         ],
         [
           [
             "☆ В\nизбранное",
-            "a6",
+            "a7",
             "nav"
           ],
           [
             "Включить\nуведомления",
-            "a7",
+            "a8",
             "action"
           ]
         ]
       ],
-      "back": "a8",
+      "back": "a9",
       "body": "",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -5025,7 +5045,93 @@
         ],
         [
           [
-            "Set temperature",
+            "Enter number",
+            "a2",
+            "nav"
+          ],
+          [
+            "Slider",
+            "a3",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a4",
+            "nav"
+          ],
+          [
+            "Home",
+            "a5",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a7",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a8",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a9",
+      "body": "",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Target",
+          "22°C",
+          "16°C – 30°C · Step: 0.5°C"
+        ],
+        [
+          "Current",
+          "21°C",
+          "Mode: heating"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_min_en",
+    "label": "Thermostat / min / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "+ 1°C",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Enter number",
+            "a1",
+            "nav"
+          ],
+          [
+            "Slider",
             "a2",
             "nav"
           ]
@@ -5073,82 +5179,6 @@
       "status": [
         [
           "Target",
-          "22°C",
-          "16°C – 30°C · Step: 0.5°C"
-        ],
-        [
-          "Current",
-          "21°C",
-          "Mode: heating"
-        ]
-      ],
-      "title": "Термостат",
-      "v": 1
-    }
-  },
-  {
-    "id": "climate_actual_min_en",
-    "label": "Thermostat / min / En",
-    "page": {
-      "alert": "",
-      "b": [
-        [
-          [
-            "+ 1°C",
-            "a0",
-            "action"
-          ]
-        ],
-        [
-          [
-            "Set temperature",
-            "a1",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "Details",
-            "a2",
-            "nav"
-          ],
-          [
-            "Home",
-            "a3",
-            "nav"
-          ]
-        ],
-        [
-          [
-            "☆ Add\nfavorite",
-            "a5",
-            "nav"
-          ],
-          [
-            "Enable\nnotifications",
-            "a6",
-            "action"
-          ]
-        ]
-      ],
-      "back": "a7",
-      "body": "",
-      "context": "🛋 Гостиная",
-      "kind": "climate",
-      "l": true,
-      "lang": "en",
-      "next": null,
-      "notice": "",
-      "page": 1,
-      "pages": 1,
-      "prev": null,
-      "read": "read",
-      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "s": "AQICBA",
-      "seq": 1,
-      "status": [
-        [
-          "Target",
           "16°C",
           "16°C – 30°C · Step: 1°C"
         ],
@@ -5177,37 +5207,42 @@
         ],
         [
           [
-            "Set temperature",
+            "Enter number",
             "a1",
+            "nav"
+          ],
+          [
+            "Slider",
+            "a2",
             "nav"
           ]
         ],
         [
           [
             "Details",
-            "a2",
+            "a3",
             "nav"
           ],
           [
             "Home",
-            "a3",
+            "a4",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a5",
+            "a6",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a6",
+            "a7",
             "action"
           ]
         ]
       ],
-      "back": "a7",
+      "back": "a8",
       "body": "",
       "context": "🛋 Гостиная",
       "kind": "climate",
@@ -5444,37 +5479,42 @@
         ],
         [
           [
-            "Set temperature",
+            "Enter number",
             "a2",
+            "nav"
+          ],
+          [
+            "Slider",
+            "a3",
             "nav"
           ]
         ],
         [
           [
             "Details",
-            "a3",
+            "a4",
             "nav"
           ],
           [
             "Home",
-            "a4",
+            "a5",
             "nav"
           ]
         ],
         [
           [
             "☆ Add\nfavorite",
-            "a6",
+            "a7",
             "nav"
           ],
           [
             "Enable\nnotifications",
-            "a7",
+            "a8",
             "action"
           ]
         ]
       ],
-      "back": "a8",
+      "back": "a9",
       "body": "",
       "context": "🛋 Гостиная",
       "kind": "climate",

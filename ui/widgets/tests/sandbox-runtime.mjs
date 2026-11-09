@@ -12,6 +12,7 @@ const {tsImport}=await import(pathToFileURL(requireSDK.resolve('tsx/esm/api')));
 const {runWidget}=await tsImport(sdk+'/packages/core/scripts/sandbox-node.ts',import.meta.url);
 const root=new URL('../',import.meta.url);
 const menus=JSON.parse(await readFile(new URL('preview/release-fixtures.json',root),'utf8'));
+const sliders=JSON.parse(await readFile(new URL('preview/temperature-fixtures.json',root),'utf8'));
 const media=JSON.parse(await readFile(new URL('preview/graph-fixtures.json',root),'utf8'));
 function page(fixture) {
   const p=structuredClone(fixture.page);
@@ -19,6 +20,7 @@ function page(fixture) {
   return p;
 }
 for(const [asset,fixtures] of [
+  ['temperature',[sliders[0],{...sliders[0],page:{...sliders[0].page,title:'Temperature'}}]],
   ['release',menus.filter(f=>['home','room','climate'].includes(f.id))],
   ['graph',media.filter(f=>['constant','empty','binary'].includes(f.id))],
   ['range',media.filter(f=>['range','calendar','time'].includes(f.id))]

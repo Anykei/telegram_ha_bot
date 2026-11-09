@@ -20,6 +20,9 @@ mod pending_tests;
 #[path = "camera_tests.rs"]
 mod camera_tests;
 
+#[path = "temperature_tests.rs"]
+mod temperature_tests;
+
 #[path = "climate_tests.rs"]
 mod climate_tests;
 

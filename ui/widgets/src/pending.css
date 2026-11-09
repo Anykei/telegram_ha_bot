@@ -1,0 +1,4 @@
+:disabled { opacity:.45; }
+.r-wait { position:relative; opacity:1; }
+.r-wait span { opacity:0; }
+.r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }

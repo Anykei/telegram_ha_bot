@@ -13,7 +13,7 @@ const block = (selector, values) => `${selector} {\n${Object.entries(values).map
 await writeFile(root + 'src/tokens.css', block(':root', { ...tokens.shared, ...tokens.themes.light }) + block(':root[data-theme="dark"]', tokens.themes.dark));
 await mkdir(root + 'dist', { recursive: true });
 async function build(screen, stylesheet, title) {
-  const r1 = ['release','graph','range'].includes(screen);
+  const r1 = ['release','graph','range','temperature'].includes(screen);
   let html;
   if(r1) ({html}=await compileWidget(screen));
   else {
@@ -66,4 +66,10 @@ const range = await build('range');
 await writeFile(root + 'dist/range-manifest.json', JSON.stringify(range.manifest, null, 2) + '\n');
 await writeFile(root + 'dist/range-preview.html', embed(await read('preview/release.html'), {
   PAYLOAD: range.html, FIXTURES: JSON.parse(await read('preview/graph-fixtures.json')).filter(f=>!f.page.graph), MANIFEST: range.manifest
+}));
+
+const temperature = await build('temperature');
+await writeFile(root + 'dist/temperature-manifest.json', JSON.stringify(temperature.manifest, null, 2) + '\n');
+await writeFile(root + 'dist/temperature-preview.html', embed(await read('preview/release.html'), {
+  PAYLOAD: temperature.html, FIXTURES: JSON.parse(await read('preview/temperature-fixtures.json')), MANIFEST: temperature.manifest
 }));
