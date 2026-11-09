@@ -6,6 +6,7 @@ pub(crate) mod pending;
 mod presentation;
 pub(crate) mod range;
 mod recovery;
+pub(crate) mod temperature;
 #[cfg(test)]
 mod tests;
 pub(crate) mod transport;
@@ -35,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 const HTML: &str = include_str!("../../../ui/widgets/dist/release.html");
 const GRAPH_HTML: &str = include_str!("../../../ui/widgets/dist/graph.html");
 const RANGE_HTML: &str = include_str!("../../../ui/widgets/dist/range.html");
+const TEMPERATURE_HTML: &str = include_str!("../../../ui/widgets/dist/temperature.html");
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 fn sequence() -> u64 {
     SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -132,7 +134,9 @@ pub(crate) fn device_write_origin(
     (session.view.payload.for_refresh() == expected).then_some(expected)
 }
 fn renderer(view: &View) -> &'static str {
-    if view.html_chart.is_some() {
+    if view.html_temperature.is_some() {
+        TEMPERATURE_HTML
+    } else if view.html_chart.is_some() {
         GRAPH_HTML
     } else if view.html_range.is_some() {
         RANGE_HTML
@@ -426,7 +430,8 @@ pub async fn resolve(
         }
         return Ok(None);
     }
-    let Some(action) = snapshot.actions.get(parts[2]) else {
+    let selected = temperature::resolve(&snapshot.view, &snapshot.actions, parts[2]);
+    let Some(action) = selected.as_ref().or_else(|| snapshot.actions.get(parts[2])) else {
         answer(bot, query, "denied").await?;
         return Ok(None);
     };

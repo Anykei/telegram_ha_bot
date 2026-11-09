@@ -1,4 +1,5 @@
 //! Opt-in acceptance against the configured HA, with an isolated database and no service calls.
+use super::release_tests::assert_complete;
 use super::*;
 use crate::bot::router::{AdminPayload, CameraPayload};
 use crate::ha::{client::HistoryResult, models::Entity, HomeAssistantClient, Room};
@@ -258,13 +259,12 @@ async fn live_readonly_html_screens() -> Result<()> {
                     ensure!(prepared.actions.values().any(|p| matches!(p, Payload::DeviceDetails { .. })), "Device details missing");
                     ensure!(prepared.pages[0].back.as_ref().is_some_and(|key| prepared.actions.contains_key(key)), "Graph parent missing");
                 } else {
-                    assert_buttons_preserved(&view, &prepared)?;
-                    ensure!(prepared.pages.iter().map(|p| p.body.as_str()).collect::<String>().contains(&view.text), "Body text lost");
+                    assert_complete(&view, &prepared)?;
                 }
                 ensure!(view.alert.is_none(), "Screen has an error alert");
                 for (index, page) in prepared.pages.iter().enumerate() {
                     ensure!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024, "Query reply exceeds budget");
-                    fixtures.push(json!({"id":format!("{label}-{lang:?}-{index}"),"renderer":if view.html_chart.is_some() {"graph"} else {"release"},"page":page}));
+                    fixtures.push(json!({"id":format!("{label}-{lang:?}-{index}"),"renderer":if view.html_chart.is_some() {"graph"} else if view.html_temperature.is_some() {"temperature"} else {"release"},"page":page}));
                 }
                 ensure!(handlers::send_new_view_inner(&fake.bot, ChatId(user as i64), user, view.clone(), config.clone(), None).await?, "Delivery rejected");
                 ensure!(config.sessions.get(&user).is_some_and(|s| s.ui_message_mode == UiMessageMode::Html), "HTML delivery fell back");
@@ -279,8 +279,8 @@ async fn live_readonly_html_screens() -> Result<()> {
                     let actual = resolve(&fake.bot, &live_query(&session, user, back), &config).await?;
                     ensure!(actual == session.actions.get(back).map(|p| p.to_string()), "Back did not resolve to its issued route");
                 }
-                let renderer = if view.html_chart.is_some() { "graph" } else if view.html_kind.as_deref() == Some("climate") { "climate" } else { "home" };
-                telegram_samples.entry(renderer).or_insert_with(|| (view.html_chart.is_some(), prepared.pages));
+                let template = renderer(&view);
+                telegram_samples.entry(template).or_insert_with(|| prepared.pages);
                 checked += 1;
                 Ok(())
             }.await;
@@ -296,9 +296,9 @@ async fn live_readonly_html_screens() -> Result<()> {
     let mut telegram_deliveries = 0;
     if std::env::var("HA_UI_TELEGRAM_SMOKE").as_deref() == Ok("1") {
         let bot = Bot::new(&options.bot_token);
-        for (graph, pages) in telegram_samples.values() {
+        for (html, pages) in &telegram_samples {
             // Test-owned, noninteractive messages; never consume the running bot's updates.
-            let message = transport::call(&bot, "sendWidget", json!({"chat_id":user,"html":if *graph {GRAPH_HTML} else {HTML},"width":0,"allow_queries":false,"chat_data":pages[0].json()?,"caption":"Проверка HTML на реальном HA · без управления"})).await?;
+            let message = transport::call(&bot, "sendWidget", json!({"chat_id":user,"html":html,"width":0,"allow_queries":false,"chat_data":pages[0].json()?,"caption":"Проверка HTML на реальном HA · без управления"})).await?;
             let id = MessageId(
                 message["message_id"]
                     .as_i64()

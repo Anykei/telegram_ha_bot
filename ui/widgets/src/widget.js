@@ -1,12 +1,13 @@
 import {validGraph, renderGraph} from './graph-render.js';
+import {validSlider,renderSlider,sliderValue,sliderLock} from './temperature.js';
 
 // Compile-time capabilities produce the shipping subsets and the unified build
 // from this single state machine. Screen changes never install new listeners.
 (() => {
   const api=window.TelegramWidget, el=id=>document.getElementById(id), card=el('r-root');
   const words={
-    ru:['Назад',MENU?'Далее':'','Обновить','Нет ответа. Обновите.','Доступ закрыт','/start',MENU||RANGE?'Отмена':'',...(RANGE?['Пн Вт Ср Чт Пт Сб Вс','Часы','Минуты']:[])],
-    en:['Back',MENU?'Next':'','Refresh',MENU?'No response. Refresh.':'No response.','Access denied','/start',MENU||RANGE?'Cancel':'',...(RANGE?['Mon Tue Wed Thu Fri Sat Sun','Hours','Minutes']:[])]
+    ru:['Назад',MENU?'Далее':'','Обновить','Нет ответа. Обновите.','Доступ закрыт','/start',MENU||RANGE||SLIDER?'Отмена':'',...(RANGE?['Пн Вт Ср Чт Пт Сб Вс','Часы','Минуты']:[])],
+    en:['Back',MENU?'Next':'','Refresh',MENU?'No response. Refresh.':'No response.','Access denied','/start',MENU||RANGE||SLIDER?'Cancel':'',...(RANGE?['Mon Tue Wed Thu Fri Sat Sun','Hours','Minutes']:[])]
   };
   const mediaKinds=['chart','range','calendar','time'];
   let data, lang=navigator.language.startsWith('ru')?'ru':'en', lastKind=MENU?'menu':CHART?'chart':'range';
@@ -27,9 +28,9 @@ import {validGraph, renderGraph} from './graph-render.js';
     if(!v||v.v!==1||!string(v.rev)||!/^[a-f0-9]{32}$/.test(v.rev)||!integer(v.seq)||v.seq<0
       ||!['ru','en'].includes(v.lang)||!['title','context','body','notice','alert'].every(k=>string(v[k]))
       ||v.read!=='read'||!list(v.rows,media(v)?8:64,row=>list(row,media(v)?4:2,
-        b=>Array.isArray(b)&&b.length===3&&string(b[0])&&key(b[1])&&(media(v)?['nav','selected']:['action','nav','danger','selected','wait','uncertain','status']).includes(b[2]))&&row.length))return false;
+        b=>Array.isArray(b)&&b.length===3&&string(b[0])&&key(b[1])&&(media(v)&&!SLIDER?['nav','selected']:['action','nav','danger','selected','wait','uncertain','status']).includes(b[2]))&&row.length))return false;
     if(MEDIA&&media(v)) {
-      if(!(chart(v)?v.kind==='chart':RANGE&&['range','calendar','time'].includes(v.kind))||!key(v.back)
+      if(!(SLIDER?v.kind==='temperature'&&v.rows.length>0&&validSlider(v.slider):chart(v)?v.kind==='chart':RANGE&&['range','calendar','time'].includes(v.kind))||!key(v.back)
         ||(chart(v)?!validGraph(v.graph):v.graph!=null))return false;
       if(RANGE&&!chart(v)) {
         const c=v.c,t=v.t;
@@ -69,21 +70,22 @@ import {validGraph, renderGraph} from './graph-render.js';
     data=v;lang=v.lang;if(UNIFIED)lastKind=v.kind||'menu';return true;
   }
   function action(b,off=false) {
-    const button=node('button','r-button'+(media(data)?'':' r-'+b[2]));
+    const button=node('button','r-button'+(media(data)&&!SLIDER?'':' r-'+b[2]));
     button.dataset.key=b[1];
     if(b[2]==='selected')button.setAttribute('aria-pressed','true');
     let ring;
-    if(MEDIA&&media(data))button.textContent=b[0];
+    if(MEDIA&&!SLIDER&&media(data))button.textContent=b[0];
     else {ring=node('i');button.append(node('span','',b[0]),ring);}
     // Keep the control and its indicator alive while only request state changes.
     button.p=()=>{
-      const awaiting=MENU&&!media(data)&&(b[2]==='wait'||b[1]===activeKey&&(busy||waiting));
-      if(MENU&&!media(data)) {
+      const awaiting=(MENU&&!media(data)||SLIDER)&&(b[2]==='wait'||b[1]===activeKey&&(busy||waiting));
+      if(MENU&&!media(data)||SLIDER) {
         button.classList.toggle('r-wait',awaiting);
         button.setAttribute('aria-busy',awaiting);
         ring.hidden=!awaiting;
       }
-      button.disabled=RANGE&&off||blocked(b[1])||MENU&&!media(data)&&(awaiting||b[2]==='uncertain');
+      button.disabled=RANGE&&off||blocked(b[1])||(MENU&&!media(data)||SLIDER)&&(awaiting||b[2]==='uncertain');
+      if(SLIDER&&b[1]===data.rows[0][0][1]&&sliderValue()===data.slider.value)button.disabled=true;
     };
     button.onclick=()=>send(b[1]);
     button.p();return button;
@@ -116,7 +118,8 @@ import {validGraph, renderGraph} from './graph-render.js';
       paragraphs.push([data.hint||'','r-hint']);
       for(const id of ['r-title','r-context'])if(el(id).scrollWidth>el(id).clientWidth)paragraphs.unshift([el(id).textContent,id]);
     }
-    for(const [value,style] of paragraphs)for(const part of value.match(media(data)?/.{60,99}\s|.{1,100}/gsu:/.{20,39}\s|.{1,40}/gsu)||[])blocks.push(node('p','r-text '+style,part));
+    for(const [value,style] of paragraphs)for(const part of SLIDER?(value?[value]:[]):value.match(media(data)?/.{60,99}\s|.{1,100}/gsu:/.{20,39}\s|.{1,40}/gsu)||[])blocks.push(node('p','r-text '+style,part));
+    if(SLIDER)blocks.push(renderSlider(node,{...data.slider,id:data.s},lang,sliderBlocked(),()=>card.querySelectorAll('[data-key]').forEach(b=>b.p())));
     if(MENU&&!media(data)&&data.status?.length) {
       statuses=node('div','r-statuses');
       data.status.forEach(status=>{
@@ -144,12 +147,13 @@ import {validGraph, renderGraph} from './graph-render.js';
       }
     }
     data.rows.forEach(row=>{
-      if(MENU&&!media(data))row=row.filter(b=>b[1]!==data.back);
+      if(MENU&&!media(data)||SLIDER)row=row.filter(b=>b[1]!==data.back);
       if(!row.length)return;
       if(MENU&&statuses&&row[0][2]==='status'){row.forEach(b=>statuses.append(action(b)));return;}
       const group=node('div','r-row');row.forEach(b=>group.append(action(b)));blocks.push(group);
     });
     if(MEDIA&&media(data))hide('r-server',true);
+    if(SLIDER){mount(blocks);return;}
     if(RANGE&&media(data)&&data.t){mount(blocks);if(picker>=0)pager();return;}
     if(RANGE&&media(data)&&data.c) {
       const [offset,days,selected,first,last]=data.c,narrow=card.clientWidth<320;
@@ -205,7 +209,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     });
     const feedback=locked?w(5):note||(!media(data)&&data.rows.flat().some(b=>b[2]==='uncertain')?w(3):'');
     text('r-feedback',feedback);hide('r-feedback',!feedback);
-    if(MENU&&!media(data)&&quick===1)card.querySelectorAll('[data-key]').forEach(b=>b.p());
+    if((MENU&&!media(data)||SLIDER)&&quick===1)card.querySelectorAll('[data-key]').forEach(b=>b.p());
     else {
       card.style.height='';
       const corner=!feedback&&corners>0&&card.clientWidth-corners>=200;
@@ -217,7 +221,7 @@ import {validGraph, renderGraph} from './graph-render.js';
       hide('r-server',true);mount([]);
       if(!locked) {
         const position=local;let overflow=layout();
-        if(!el('r-server').hidden&&(media(data)||corner)) {
+        if(!SLIDER&&!el('r-server').hidden&&(media(data)||corner)) {
           inset(corner);if(CHART&&media(data)&&!corner)card.classList.remove('r-left');
           local=position;overflow=layout(!media(data));
         }
@@ -226,12 +230,13 @@ import {validGraph, renderGraph} from './graph-render.js';
       // Keep the menu's intrinsic denied layout and media's fixed-height contract.
       if(!locked||media(data))card.style.height='600px';
     }
-    if(!locked)['prev','next'].forEach((key,i)=>el('r-'+key).disabled=
+    if(!SLIDER&&!locked)['prev','next'].forEach((key,i)=>el('r-'+key).disabled=
       (i?local===count-1:!local)&&(media(data)||!external(i))||!media(data)&&blocked(''));
     if(cover)cover.remove();
+    if(SLIDER)sliderLock(sliderBlocked());
     if(RANGE&&media(data)){cancelAnimationFrame(frame);frame=0;}
     if(RANGE&&!locked&&media(data)&&data.t&&motion)animate(0);
-    else if(MENU&&!media(data)&&!frame)frame=requestAnimationFrame(animate);
+    else if((MENU&&!media(data)||SLIDER)&&!frame)frame=requestAnimationFrame(animate);
   }
   function animate(now) {
     frame=0;
@@ -239,13 +244,14 @@ import {validGraph, renderGraph} from './graph-render.js';
       const p=document.hidden||matchMedia('(prefers-reduced-motion: reduce)').matches?1:Math.min(1,(Date.now()-motion[2])/240);
       el('t'+motion[0]).style.transform='translateY('+(1-p)*(1-p)*12*motion[1]+'px)';
       if(p>=1)return;
-    } else if(MENU&&!media(data)) {
+    } else if(MENU&&!media(data)||SLIDER) {
       const rings=card.querySelectorAll('.r-wait i');if(!rings.length)return;
       if(now-painted>=32&&!matchMedia('(prefers-reduced-motion:reduce)').matches){rings.forEach(r=>{r.style.transform='rotate('+now%1000*.36+'deg)';});painted=now;}
     } else return;
     frame=requestAnimationFrame(animate);
   }
   function stop(){waiting=false;clearTimeout(timer);}
+  function sliderBlocked(){return blocked('')||data?.rows.some(row=>row.some(b=>['wait','uncertain'].includes(b[2])));}
   function complete(){if(reading)uncertain=false;reading=false;stop();note='';}
   function fail(){reading=false;if(MENU)tail=false;stop();uncertain=true;note=w(3);}
   function recover(page) {
@@ -264,7 +270,8 @@ import {validGraph, renderGraph} from './graph-render.js';
   async function send(k,last=false) {
     if(!key(k)||blocked(k))return;
     const rev=data.rev,seq=data.seq,id=UNIFIED?++ticket:0;
-    requested=seq;reading=k==='read';if(MENU){activeKey=k;tail=last;}busy=true;note='';
+    requested=seq;reading=k==='read';if(MENU||SLIDER){activeKey=k;tail=last;}busy=true;note='';
+    if(SLIDER&&k===data.rows[0][0][1])k='s'+sliderValue();
     render(1);
     try {
       const answer=JSON.parse((await api.request('r1:'+rev+':'+k)).result);
@@ -285,7 +292,7 @@ import {validGraph, renderGraph} from './graph-render.js';
     render();
   }
   const theme=()=>document.documentElement.dataset.theme=api?.colorScheme==='dark'?'dark':'light';
-  ['prev','next'].forEach((key,i)=>{el('r-'+key).onclick=()=>{
+  if(!SLIDER)['prev','next'].forEach((key,i)=>{el('r-'+key).onclick=()=>{
     if(!media(data)&&blocked(''))return;
     const next=local+(i?1:-1);
     if(next>=0&&next<count){local=next;render();}else if(!media(data))send(external(i),!i);

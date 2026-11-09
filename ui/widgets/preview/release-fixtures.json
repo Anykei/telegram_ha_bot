@@ -1433,16 +1433,16 @@
       "seq": 14,
       "lang": "ru",
       "kind": "climate",
-      "title": "Климат",
+      "title": "Терморегулятор",
       "context": "Гостиная · Отопление",
-      "body": "Сейчас: 21,4 °C\nЗадано: 22 °C\nРежим: Обогрев",
+      "body": "",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "climate_more",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "back": "room",
       "b": [
         [
@@ -1466,13 +1466,30 @@
         ],
         [
           [
+            "Подробности",
+            "climate_more",
+            "nav"
+          ],
+          [
             "Дом",
             "home",
             "nav"
           ]
         ]
       ],
-      "l": true
+      "l": true,
+      "status": [
+        [
+          "Задано",
+          "22 °C",
+          "16–28 °C · Шаг: 0,5 °C"
+        ],
+        [
+          "Сейчас",
+          "21,4 °C",
+          "Режим: Обогрев"
+        ]
+      ]
     }
   },
   {
@@ -1484,16 +1501,16 @@
       "seq": 15,
       "lang": "en",
       "kind": "climate",
-      "title": "Climate",
+      "title": "Thermostat",
       "context": "Living room · Heating",
-      "body": "Current: 21.4 °C\nTarget: 22 °C\nMode: Heating",
+      "body": "",
       "notice": "",
       "alert": "",
       "read": "read",
       "prev": null,
-      "next": "climate_more",
+      "next": null,
       "page": 1,
-      "pages": 2,
+      "pages": 1,
       "back": "room",
       "b": [
         [
@@ -1517,13 +1534,30 @@
         ],
         [
           [
+            "Details",
+            "climate_more",
+            "nav"
+          ],
+          [
             "Home",
             "home",
             "nav"
           ]
         ]
       ],
-      "l": true
+      "l": true,
+      "status": [
+        [
+          "Target",
+          "22 °C",
+          "16–28 °C · Step: 0.5 °C"
+        ],
+        [
+          "Current",
+          "21.4 °C",
+          "Mode: Heating"
+        ]
+      ]
     }
   },
   {
@@ -2777,7 +2811,7 @@
         ],
         [
           [
-            "🏠 В главное меню",
+            "Дом",
             "a10",
             "nav"
           ]
@@ -2938,7 +2972,7 @@
         ],
         [
           [
-            "🏠 Main menu",
+            "Home",
             "a10",
             "nav"
           ]
@@ -4469,6 +4503,376 @@
     "label": "Problems · EN",
     "links": {
       "a0": "help_en"
+    }
+  },
+  {
+    "id": "climate_actual_missing",
+    "label": "Thermostat / missing / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Выключить отопление",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a4",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a5",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a6",
+      "body": "Изменение температуры недоступно. Обновите данные или откройте подробности.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Задано",
+          "нет данных",
+          "16°C – 30°C · Шаг: 0.5°C"
+        ],
+        [
+          "Сейчас",
+          "нет данных",
+          "Режим: обогрев"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_offline",
+    "label": "Thermostat / offline / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Подробности",
+            "a0",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a3",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a4",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Изменение температуры недоступно. Обновите данные или откройте подробности.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Задано",
+          "22°C",
+          "16°C – 30°C · Шаг: 0.5°C"
+        ],
+        [
+          "Сейчас",
+          "нет данных",
+          "Режим: нет данных"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_range",
+    "label": "Thermostat / range / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Выключить отопление",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a4",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a5",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a6",
+      "body": "Изменение температуры недоступно. Обновите данные или откройте подробности.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Задано",
+          "20°C – 24°C",
+          "16°C – 30°C · Шаг: 0.5°C"
+        ],
+        [
+          "Сейчас",
+          "21°C",
+          "Режим: обогрев / охлаждение"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_missing_en",
+    "label": "Thermostat / missing / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Turn off heating",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a4",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a5",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a6",
+      "body": "Temperature adjustment unavailable. Refresh or open details.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Target",
+          "unavailable",
+          "16°C – 30°C · Step: 0.5°C"
+        ],
+        [
+          "Current",
+          "unavailable",
+          "Mode: heating"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_offline_en",
+    "label": "Thermostat / offline / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Details",
+            "a0",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a3",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a4",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a5",
+      "body": "Temperature adjustment unavailable. Refresh or open details.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Target",
+          "22°C",
+          "16°C – 30°C · Step: 0.5°C"
+        ],
+        [
+          "Current",
+          "unavailable",
+          "Mode: unavailable"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_range_en",
+    "label": "Thermostat / range / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Turn off heating",
+            "a0",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a1",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a4",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a5",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a6",
+      "body": "Temperature adjustment unavailable. Refresh or open details.",
+      "context": "🛋 Гостиная",
+      "kind": "climate",
+      "l": true,
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "status": [
+        [
+          "Target",
+          "20°C – 24°C",
+          "16°C – 30°C · Step: 0.5°C"
+        ],
+        [
+          "Current",
+          "21°C",
+          "Mode: heating / cooling"
+        ]
+      ],
+      "title": "Термостат",
+      "v": 1
     }
   }
 ]

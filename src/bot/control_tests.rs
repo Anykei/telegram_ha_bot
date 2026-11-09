@@ -157,6 +157,7 @@ async fn setup() -> anyhow::Result<(Arc<AppConfig>, Arc<FakeHa>)> {
     }
     let mut climate = entity("climate.bedroom", "heat");
     climate.attributes = EntityAttributes {
+        hvac_modes: Some(vec!["heat".into(), "off".into()]),
         current_temperature: Some(20.0),
         temperature: Some(22.0),
         target_temp_step: Some(0.5),
@@ -726,6 +727,48 @@ async fn critical_temperature_approves_exact_target_and_rechecks_limits() -> any
 }
 
 #[tokio::test]
+async fn heating_mode_respects_critical_confirmation_permissions_and_availability(
+) -> anyhow::Result<()> {
+    let (config, ha) = setup().await?;
+    let route = ControlPayload::DeviceControl { room: 1, device: 1 };
+    let command = ControlPayload::QuickAction {
+        room: 1,
+        device: 1,
+        cmd: DeviceCmd::TurnOff,
+    };
+    let card = open(&config, route.clone()).await?;
+    assert!(callbacks(&card).contains(&Payload::Control(command.clone())));
+    db::devices::toggle_device_critical(1, &config.db).await?;
+    let review = open(&config, command.clone()).await?;
+    let id = confirmation_id(&review);
+    assert!(review.text.contains("Выключить отопление"));
+    assert!(ha.calls.lock().unwrap().is_empty());
+    open(&config, ControlPayload::ConfirmAction { id }).await?;
+    open(&config, ControlPayload::ConfirmAction { id }).await?;
+    assert_eq!(
+        *ha.calls.lock().unwrap(),
+        vec![(
+            "climate.set_hvac_mode".into(),
+            "climate.bedroom".into(),
+            serde_json::json!({"hvac_mode":"off"})
+        )]
+    );
+    db::access::set_device_access(42, "climate.bedroom", true, false, &config.db).await?;
+    assert!(!callbacks(&open(&config, route.clone()).await?)
+        .contains(&Payload::Control(command.clone())));
+    open(&config, command.clone()).await?;
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    db::access::set_device_access(42, "climate.bedroom", true, true, &config.db).await?;
+    db::devices::toggle_device_critical(1, &config.db).await?;
+    ha.states.lock().unwrap()[0].state = "unavailable".into();
+    assert!(!callbacks(&open(&config, route.clone()).await?)
+        .contains(&Payload::Control(command.clone())));
+    open(&config, command).await?;
+    assert_eq!(ha.calls.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn uncertain_confirmed_command_is_not_retried() -> anyhow::Result<()> {
     let (config, ha) = setup().await?;
     db::devices::toggle_device_critical(3, &config.db).await?;
@@ -949,6 +992,12 @@ async fn view_only_user_can_open_sensor_graph_and_climate_but_cannot_change_temp
     )
     .await?;
     assert!(climate.text.contains("только просмотр"));
+    assert!(climate
+        .html_summary
+        .as_deref()
+        .unwrap()
+        .contains("только просмотр"));
+    assert_eq!(climate.html_metrics.len(), 2);
     assert!(!callbacks(&climate).iter().any(|p| matches!(
         p,
         Payload::Control(ControlPayload::QuickAction {

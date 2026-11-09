@@ -20,13 +20,14 @@ const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum Expected {
     State(&'static str),
+    HvacMode(&'static str),
     Temperature(f32),
 }
 
 impl Expected {
     fn matches(&self, entity: &Entity) -> bool {
         match self {
-            Self::State(state) => entity.state == *state,
+            Self::State(state) | Self::HvacMode(state) => entity.state == *state,
             Self::Temperature(target) => {
                 !matches!(entity.state.as_str(), "unknown" | "unavailable")
                     && entity
@@ -40,6 +41,7 @@ impl Expected {
     fn known(&self, entity: &Entity) -> bool {
         match self {
             Self::State(_) => matches!(entity.state.as_str(), "on" | "off"),
+            Self::HvacMode(_) => entity.supports_hvac_mode(&entity.state),
             Self::Temperature(_) => entity
                 .attributes
                 .temperature
@@ -207,6 +209,12 @@ pub(crate) fn begin(
         return Ok(None);
     }
     let expected = match (state.entity_id.split('.').next(), action) {
+        (Some("climate"), DeviceAction::TurnOn) if state.supports_hvac_mode("heat") => {
+            Expected::HvacMode("heat")
+        }
+        (Some("climate"), DeviceAction::TurnOff) if state.supports_hvac_mode("off") => {
+            Expected::HvacMode("off")
+        }
         (Some("light" | "switch"), DeviceAction::TurnOn) => Expected::State("on"),
         (Some("light" | "switch"), DeviceAction::TurnOff) => Expected::State("off"),
         (Some("light" | "switch"), DeviceAction::Toggle) if state.state == "off" => {

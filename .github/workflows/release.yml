@@ -16,6 +16,7 @@ concurrency:
 env:
   STORE_REPO: Anykei/ha_addons
   CONFIG_PATH: telegram_bot_addon/config.yaml
+  CHANGELOG_PATH: telegram_bot_addon/CHANGELOG.md
 
 jobs:
   validate:
@@ -60,10 +61,10 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           path: store_repo
 
-      - name: Validate store version and image
+      - name: Validate store version, image and release notes
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE"
+        run: python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE" --config-source ha-addon/config.yaml --changelog ha-addon/CHANGELOG.md --check
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -159,8 +160,8 @@ jobs:
             # store updates from the fresh branch, without force-pushing.
             git -C store_repo fetch origin main
             git -C store_repo reset --hard origin/main
-            python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE"
-            git -C store_repo add "$CONFIG_PATH"
+            python3 scripts/release.py store --path "store_repo/$CONFIG_PATH" --version "$RELEASE_VERSION" --image "$IMAGE" --config-source ha-addon/config.yaml --changelog ha-addon/CHANGELOG.md
+            git -C store_repo add "$CONFIG_PATH" "$CHANGELOG_PATH"
             if git -C store_repo diff --cached --quiet; then
               exit 0
             fi

@@ -223,6 +223,7 @@ impl HAClient {
                 "name": {{{{ (state_attr(eid, 'friendly_name') | default(eid, true)) | to_json }}}},
                 "device_class": {{{{ (state_attr(eid, 'device_class') | default('', true)) | to_json }}}},
                 "attributes": {{%- if eid.startswith('climate.') -%}} {{
+                  "hvac_modes": {{{{ state_attr(eid, 'hvac_modes') | to_json }}}},
                   "current_temperature": {{{{ state_attr(eid, 'current_temperature') | to_json }}}},
                   "temperature": {{{{ state_attr(eid, 'temperature') | to_json }}}},
                   "target_temp_low": {{{{ state_attr(eid, 'target_temp_low') | to_json }}}},

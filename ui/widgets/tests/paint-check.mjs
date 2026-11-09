@@ -27,7 +27,7 @@ export async function watchPaintBudget({evaluate,doc,win,stable=false}) {
       return {heavy,roots:roots.length,view};
     };
     const check=w.__paintCheck={active:false,samples:[],sample};
-    const probe=()=>{if(check.active)check.samples.push(sample());};
+    const probe=()=>{if(check.active)check.samples.push({...sample(),source:new Error().stack});};
     for(const property of ['clientWidth','scrollWidth','scrollHeight']) {
       const descriptor=Object.getOwnPropertyDescriptor(w.Element.prototype,property);
       Object.defineProperty(w.Element.prototype,property,{...descriptor,get(){probe();return descriptor.get.call(this);}});
@@ -35,6 +35,9 @@ export async function watchPaintBudget({evaluate,doc,win,stable=false}) {
     w.Element.prototype.getBoundingClientRect=function(){probe();return rect.call(this);};
   })()`);
   return async (operation,label)=>{
+    // Finish the previous render/initial ResizeObserver delivery before measuring
+    // this operation. A slow runner can otherwise count it as part of the click.
+    await evaluate(`new Promise(resolve=>${win}.requestAnimationFrame(()=>${win}.requestAnimationFrame(resolve)))`);
     const before=await evaluate(`${win}.__paintCheck.sample()`);
     await evaluate(`${win}.__paintCheck.samples=[];${win}.__paintCheck.active=true`);
     await operation();

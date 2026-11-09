@@ -50,7 +50,7 @@
           if (parts[0] !== 'r1' || parts[1] !== state.rev) throw Error('stale');
           const key = parts[2];
           parent.postMessage({type:'release-preview',text:raw}, '*');
-          if (!allowed.has(key)) return {result:JSON.stringify({denied:true})};
+          if (!allowed.has(key) && !(state.slider && /^s-?\d+$/.test(key))) return {result:JSON.stringify({denied:true})};
           if (key === 'admin' && !homeProfile.owner) return {result:JSON.stringify({denied:true})};
           if (scenario === 'denied') return {result:JSON.stringify({denied:true})};
           if (scenario === 'error' && key !== 'read') { await new Promise(resolve => setTimeout(resolve, 300)); throw Error('timeout'); }
@@ -70,6 +70,7 @@
             if (next.b) next.b[0] = [['Выключить','ceiling_off','action']];
             else next.rows[0] = [{text:'Выключить',key:'ceiling_off',kind:'action'}];
           }
+          if (state.slider && /^s-?\d+$/.test(key)) next.slider.value = Number(key.slice(1));
           if (state.t && /^[hm]\d+$/.test(key)) { next.t = [...state.t]; next.t[key[0] === 'm' ? 1 : 0] = Number(key.slice(1)); }
           next.seq = state.seq + 1; next.rev = next.seq.toString(16).padStart(32, '0');
           if (key !== 'read' && !found) next.notice = state.lang === 'ru' ? 'Действие обработано в предпросмотре.' : 'Action handled in this preview.';

@@ -5,6 +5,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
+import { checkTemperature } from './temperature-browser.mjs';
 import { checkPanel } from './panel-browser.mjs';
 import { checkRelease } from './release-browser.mjs';
 import { checkGraph } from './graph-browser.mjs';
@@ -69,7 +70,9 @@ try {
   await command('Network.enable');
   // The complete page must work even with networking forcibly offline.
   await command('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-  if (process.env.HA_WIDGET_LIVE_FIXTURES) {
+  if (process.env.HA_WIDGET_TEMPERATURE_ONLY) {
+    await checkTemperature({root,command,evaluate,until});
+  } else if (process.env.HA_WIDGET_LIVE_FIXTURES) {
     await checkLive({root, command, evaluate, until, file:process.env.HA_WIDGET_LIVE_FIXTURES});
   } else if (process.env.HA_WIDGET_GRAPH_ONLY) {
     await checkGraph({root,command,evaluate,until,screenshot:async()=>{}});
@@ -140,6 +143,7 @@ try {
   assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile overflow');
   console.log('Browser checks passed: offline preview, actions, themes, confirmation, ACL, 200–430px.');
   console.log('Screenshots: ui/widgets/screenshots/{light,dark,confirmation,mobile}.png');
+  await checkTemperature({root,command,evaluate,until});
   await checkPanel({root, command, evaluate, until, screenshot});
   await checkRelease({root, command, evaluate, until, screenshot});
   await checkGraph({root, command, evaluate, until, screenshot});

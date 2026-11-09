@@ -110,17 +110,39 @@ async fn proposal(ctx: &RenderContext, payload: &Payload) -> Result<Option<(Prop
             let inverted = db::devices::is_state_inverted(&dev.entity_id, &ctx.config.db).await?;
             let verb = match &command {
                 DeviceCmd::TurnOn | DeviceCmd::TurnOff => {
-                    ensure!(matches!(domain, "light" | "switch"), "Unsupported command");
-                    let turn_on = matches!(command, DeviceCmd::TurnOn) != inverted;
-                    t(
-                        ctx.lang,
-                        if turn_on {
-                            "control.turn_on"
-                        } else {
-                            "control.turn_off"
-                        },
-                    )
-                    .to_string()
+                    if domain == "climate" {
+                        let turn_on = matches!(command, DeviceCmd::TurnOn);
+                        ensure!(
+                            entity.supports_hvac_mode(if turn_on { "heat" } else { "off" }),
+                            "Heating mode unavailable"
+                        );
+                        super::personal::words(
+                            ctx.lang,
+                            if turn_on {
+                                "Включить отопление"
+                            } else {
+                                "Выключить отопление"
+                            },
+                            if turn_on {
+                                "Enable heating"
+                            } else {
+                                "Turn off heating"
+                            },
+                        )
+                        .to_string()
+                    } else {
+                        ensure!(matches!(domain, "light" | "switch"), "Unsupported command");
+                        let turn_on = matches!(command, DeviceCmd::TurnOn) != inverted;
+                        t(
+                            ctx.lang,
+                            if turn_on {
+                                "control.turn_on"
+                            } else {
+                                "control.turn_off"
+                            },
+                        )
+                        .to_string()
+                    }
                 }
                 DeviceCmd::SetTemp(target) => {
                     ensure!(

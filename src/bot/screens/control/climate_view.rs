@@ -15,14 +15,18 @@ pub async fn render(
     let can_control =
         crate::db::access::can_control_device(ctx.user_id, ctx.is_admin, dev.id, &ctx.config.db)
             .await?;
-    Ok(render_view(
+    let mut view = render_view(
         ctx.lang,
         ctx.notifications,
         room_id,
         dev,
-        entity,
+        entity.clone(),
         can_control,
-    ))
+    );
+    if can_control && crate::bot::html_ui::preferred(&ctx.config, ctx.user_id).await {
+        crate::bot::html_ui::temperature::attach(&mut view, &entity);
+    }
+    Ok(view)
 }
 
 fn render_view(
@@ -69,8 +73,10 @@ fn render_view(
         "{}\n\n{summary}",
         super::labels::device_name(&dev, &entity, lang)
     );
+    let mut limits = String::new();
     if let (Some(min), Some(max)) = (entity.attributes.min_temp, entity.attributes.max_temp) {
         if min.is_finite() && max.is_finite() {
+            limits = format!("{} – {}", temperature(Some(min)), temperature(Some(max)));
             text.push_str(&format!(
                 "\n{}: {} – {}",
                 t(lang, "climate.limits"),
@@ -91,6 +97,8 @@ fn render_view(
         unit
     ));
     let mut rows = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
+    let mut html_summary = String::new();
     if can_control {
         let step = entity
             .attributes
@@ -103,26 +111,43 @@ fn render_view(
                 let target =
                     ((current_target + f32::from(direction) * step) * 1000.0).round() / 1000.0;
                 if entity.temperature_target_is_valid(target) && target != current_target {
+                    let callback = Payload::Control(ControlPayload::QuickAction {
+                        room: room_id,
+                        device: dev.id,
+                        cmd: DeviceCmd::AdjustTemp(direction),
+                    })
+                    .to_string();
+                    html_button_labels.insert(
+                        callback.clone(),
+                        format!(
+                            "{} {}{}",
+                            if direction < 0 { "−" } else { "+" },
+                            display_number(step),
+                            unit
+                        ),
+                    );
                     controls.push(InlineKeyboardButton::callback(
                         format!("{} {}{}", icon, display_number(step), unit),
-                        Payload::Control(ControlPayload::QuickAction {
-                            room: room_id,
-                            device: dev.id,
-                            cmd: DeviceCmd::AdjustTemp(direction),
-                        })
-                        .to_string(),
+                        callback,
                     ));
                 }
             }
         }
         if controls.is_empty() {
             text.push_str(&format!("\n\n{}", t(lang, "climate.adjust_unavailable")));
+            html_summary = crate::bot::personal::words(
+                lang,
+                "Изменение температуры недоступно. Обновите данные или откройте подробности.",
+                "Temperature adjustment unavailable. Refresh or open details.",
+            )
+            .into();
         } else {
             text.push_str(&format!("\n\n{}", t(lang, "climate.choose_target")));
             rows.push(controls);
         }
     } else {
         text.push_str(&format!("\n\n{}", t(lang, "control.view_only")));
+        html_summary = t(lang, "control.view_only").into();
     }
     if can_control
         && entity
@@ -143,6 +168,34 @@ fn render_view(
         room: room_id,
         device: dev.id,
     });
+    let turn_on = entity.state == "off";
+    if can_control && entity.supports_hvac_mode(if turn_on { "heat" } else { "off" }) {
+        rows.push(vec![InlineKeyboardButton::callback(
+            crate::bot::personal::words(
+                lang,
+                if turn_on {
+                    "Включить отопление"
+                } else {
+                    "Выключить отопление"
+                },
+                if turn_on {
+                    "Enable heating"
+                } else {
+                    "Turn off heating"
+                },
+            ),
+            Payload::Control(ControlPayload::QuickAction {
+                room: room_id,
+                device: dev.id,
+                cmd: if turn_on {
+                    DeviceCmd::TurnOn
+                } else {
+                    DeviceCmd::TurnOff
+                },
+            })
+            .to_string(),
+        )]);
+    }
     rows.push(vec![InlineKeyboardButton::callback(
         t(lang, "control.refresh"),
         payload.to_string(),
@@ -154,7 +207,37 @@ fn render_view(
     View {
         compact: true,
         html_kind: Some("climate".into()),
-        html_summary: Some(summary),
+        html_button_labels,
+        html_summary: Some(html_summary),
+        html_metrics: vec![
+            [
+                crate::bot::personal::words(lang, "Задано", "Target").into(),
+                target_text,
+                format!(
+                    "{}{}{}: {}{}",
+                    limits,
+                    if limits.is_empty() { "" } else { " · " },
+                    t(lang, "climate.step"),
+                    display_number(step),
+                    unit,
+                ),
+            ],
+            [
+                crate::bot::personal::words(lang, "Сейчас", "Current").into(),
+                temperature(
+                    if matches!(entity.state.as_str(), "unavailable" | "unknown") {
+                        None
+                    } else {
+                        entity.attributes.current_temperature
+                    },
+                ),
+                format!(
+                    "{}: {}",
+                    t(lang, "climate.mode"),
+                    mode_label(lang, &entity.state)
+                ),
+            ],
+        ],
         header: Some(t(lang, "climate.title").into()),
         notifications,
         text,

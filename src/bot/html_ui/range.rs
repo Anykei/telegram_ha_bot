@@ -601,6 +601,7 @@ pub(super) fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
         notice: view.notice.clone().unwrap_or_default(),
         alert: view.alert.clone().unwrap_or_default(),
         status: Vec::new(),
+        slider: None,
         graph: view.html_chart.clone(),
         calendar: view.html_calendar,
         list: None,

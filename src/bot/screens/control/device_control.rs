@@ -143,17 +143,26 @@ pub async fn render(
         matches!(&button.kind, teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if matches!(Payload::from_string(data), Ok(Payload::Control(crate::bot::router::ControlPayload::QuickAction {..}))))
     })))
     };
-    view.kb.inline_keyboard.insert(
-        details_index,
-        vec![teloxide::types::InlineKeyboardButton::callback(
-            crate::bot::personal::words(lang, "Подробности", "Details"),
-            Payload::DeviceDetails {
-                room: room_id,
-                device: device_id,
-            }
-            .to_string(),
-        )],
+    let details = teloxide::types::InlineKeyboardButton::callback(
+        crate::bot::personal::words(lang, "Подробности", "Details"),
+        Payload::DeviceDetails {
+            room: room_id,
+            device: device_id,
+        }
+        .to_string(),
     );
+    if matches!(view.html_kind.as_deref(), Some("climate" | "temperature")) {
+        // Keep temperature actions together, then secondary navigation.
+        view.kb.inline_keyboard.insert(
+            view.kb.inline_keyboard.len().saturating_sub(2),
+            vec![
+                details,
+                crate::bot::screens::common::main_menu_button_lang(lang),
+            ],
+        );
+    } else {
+        view.kb.inline_keyboard.insert(details_index, vec![details]);
+    }
     if !view.kb.inline_keyboard.iter().flatten().any(|button| matches!(&button.kind,
         teloxide::types::InlineKeyboardButtonKind::CallbackData(data) if data == &Payload::Home.to_string())) {
         if let Some(row) = view.kb.inline_keyboard.last_mut() {

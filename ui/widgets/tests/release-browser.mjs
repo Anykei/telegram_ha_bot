@@ -179,6 +179,10 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
           assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0, 'Idle feedback takes no space');
         }
         const content = await assertPreserved(fixture.page, `${fixture.id}/${theme}/${width}`);
+        if (fixture.id.startsWith('climate_actual_') && width>=320) {
+          assert.equal(content.parts,1,`${fixture.id}/${width}: complete thermostat on one screen`);
+          assert.equal(fixture.page.pages,1,'No duplicate server-side thermostat summary');
+        }
         localPaginationSeen ||= content.parts > 1;
       }
     }
@@ -528,7 +532,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   const beforePress = await geometry();
   await evaluate(`${win}.__pressedButton=${button('temp_up')};${win}.__pressedRing=${button('temp_up')}.querySelector('i')`);
   const press=await climatePaint(()=>click('temp_up'),'Start device command');
-  assert.equal(press.samples.length,0,'Press performs no synchronous layout queries');
+  assert.equal(press.samples.length,0,'Press performs no synchronous layout queries: '+JSON.stringify(press.samples.map(s=>s.source)));
   assert.equal(await evaluate(`${win}.__pressedButton===${button('temp_up')} && ${win}.__pressedRing===${button('temp_up')}.querySelector('i')`),true,'Press preserves button and spinner nodes');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
@@ -680,11 +684,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
     assert.deepEqual(await evaluate(`${win}.__requests.map(r=>r.value)`), ['r1:home'], 'Invalid state only requests a fresh Home');
   }
-  // The thermostat's original Back lives on chunk 2; its persistent control works on both.
+  // Both the redesigned thermostat and legacy continuation keep the parent exit.
   for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
     await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
     if (serverPage === 2) {
-      await serverStep();
+      await reload(lang === 'ru' ? 'climate_more' : 'climate_more_en', {theme,width:200});
       await until(`${state}.page===2 && ${get('r-read')}.disabled.toString() === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');

@@ -20,6 +20,12 @@ mod pending_tests;
 #[path = "camera_tests.rs"]
 mod camera_tests;
 
+#[path = "temperature_tests.rs"]
+mod temperature_tests;
+
+#[path = "climate_tests.rs"]
+mod climate_tests;
+
 #[path = "media_pending_tests.rs"]
 mod media_pending_tests;
 
@@ -64,14 +70,28 @@ async fn device(config: &AppConfig, id: &str) -> Result<(i64, i64)> {
     )
 }
 
-fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
-    assert_buttons_preserved(view, prepared)?;
-    assert!(prepared
-        .pages
-        .iter()
-        .map(|p| p.body.as_str())
-        .collect::<String>()
-        .contains(&view.text));
+pub(super) fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
+    let mut html_view = view.clone();
+    temperature::controls(&mut html_view);
+    assert_buttons_preserved(&html_view, prepared)?;
+    if view.html_temperature.is_some() {
+        assert_eq!(prepared.pages.len(), 1);
+        assert!(prepared.pages[0].slider.is_some());
+        assert_eq!(
+            prepared.pages[0].body,
+            view.html_summary.as_deref().unwrap_or_default()
+        );
+    } else if view.html_metrics.is_empty() {
+        assert!(prepared
+            .pages
+            .iter()
+            .map(|p| p.body.as_str())
+            .collect::<String>()
+            .contains(&view.text));
+    } else {
+        assert_eq!(prepared.pages[0].status, view.html_metrics);
+        assert!(prepared.pages.iter().skip(1).all(|p| p.status.is_empty()));
+    }
     for page in &prepared.pages {
         assert!(page.json()?.len() <= 1000);
         assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);
@@ -386,7 +406,11 @@ async fn html_temperature_form_keeps_dialogue_on_read_and_uses_regular_input_val
         room,
         device: climate,
     };
-    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    // Existing classic callbacks still open exact input; HTML uses the inline slider.
+    let mut legacy = query(&current(&config), "unused");
+    legacy.chat_instance = "legacy".into();
+    legacy.data = Some(open.to_string());
+    press(&fake, &config, &dialogue, legacy).await?;
     let form = current(&config);
     assert!(form.pages.iter().all(|p| p.kind == "form"));
     assert!(form.pages[0].hint.contains("сообщением"));
@@ -450,10 +474,13 @@ async fn html_temperature_form_keeps_dialogue_on_read_and_uses_regular_input_val
         Some(23.5)
     );
     assert!(current(&config).view.next_state.is_none());
-    assert_eq!(current(&config).pages[0].kind, "climate");
+    assert_eq!(current(&config).pages[0].kind, "temperature");
     assert!(dialogue.get().await?.is_none());
 
-    press(&fake, &config, &dialogue, action_query(&config, &open)).await?;
+    let mut legacy = query(&current(&config), "unused");
+    legacy.chat_instance = "legacy".into();
+    legacy.data = Some(open.to_string());
+    press(&fake, &config, &dialogue, legacy).await?;
     let cancel = action_query(&config, &card);
     press(&fake, &config, &dialogue, cancel.clone()).await?;
     assert!(current(&config).view.next_state.is_none());

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic release planning and narrowly scoped version updates (no publishing)."""
+"""Deterministic release planning, version stamping and add-on metadata (no publishing)."""
 import argparse
 import json
 import os
@@ -86,25 +86,78 @@ def stamp(repo, version):
     lock_path.write_text(lock)
 
 
-def update_store(path, version, image):
-    """Update a single top-level YAML version without reformatting the add-on config."""
+def changelog_sections(text):
+    """Parse the intentionally small HA release-notes format: ## MAJOR.MINOR.PATCH."""
+    headings = list(re.finditer(r"^## (.+)$", text, re.MULTILINE))
+    if not headings:
+        raise ValueError("Changelog must contain version sections")
+    sections = {}
+    for index, heading in enumerate(headings):
+        version = heading[1].strip()
+        semver(version)
+        if version in sections:
+            raise ValueError(f"Duplicate changelog version: {version}")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        body = text[heading.end():end].strip()
+        if not re.search(r"^\s*[-*] \S", body, re.MULTILINE):
+            raise ValueError(f"Empty changelog section: {version}")
+        sections[version] = body
+    return sections
+
+
+def render_changelog(source, version, existing=None):
+    """Publish only notes through this release; retain older store-only history."""
+    target = semver(version)
+    incoming = changelog_sections(source)
+    if version not in incoming:
+        raise ValueError(f"Missing changelog section for release {version}")
+    sections = changelog_sections(existing) if existing is not None else {}
+    if any(semver(old) > target for old in sections):
+        raise ValueError("Refusing to downgrade the add-on changelog")
+    sections.update({v: body for v, body in incoming.items() if semver(v) <= target})
+    return "# История изменений Telegram Bot\n\n" + "\n\n".join(
+        f"## {v}\n\n{sections[v]}" for v in sorted(sections, key=semver, reverse=True)
+    ) + "\n"
+
+
+def config_scalar(text, key):
+    values = re.findall(r"^" + re.escape(key) + r":\s*([^\n#]+?)(?:\s+#.*)?$", text, re.MULTILINE)
+    if len(values) != 1:
+        raise ValueError(f"Expected exactly one top-level {key} in add-on config")
+    return values[0].strip().strip("\"'")
+
+
+def update_store(path, version, image, changelog=None, check=False, config_source=None):
+    """Validate both files before updating; the workflow commits them together."""
     semver(version)
     path = Path(path)
-    text = path.read_text()
-    def scalar(key):
-        values = re.findall(r"^" + key + r":\s*([^\n#]+?)(?:\s+#.*)?$", text, re.MULTILINE)
-        if len(values) != 1:
-            raise ValueError(f"Expected exactly one top-level {key} in add-on config")
-        return values[0].strip().strip("\"'")
-    old = scalar("version")
+    text = path.read_text(encoding="utf-8")
+    old = config_scalar(text, "version")
     if semver(old) > semver(version):
         raise ValueError("Refusing to downgrade the add-on store")
-    if scalar("image") != image:
+    if config_scalar(text, "image") != image:
         raise ValueError("Add-on image does not match the image built by this repository")
-    updated = re.sub(r"^version:[^\n]*", "version: " + json.dumps(version), text, count=1, flags=re.MULTILINE)
-    if updated != text:
-        path.write_text(updated)
-    return old != version
+    source = text
+    if config_source is not None:
+        source = Path(config_source).read_text(encoding="utf-8")
+        semver(config_scalar(source, "version"))
+        if config_scalar(source, "image") != image:
+            raise ValueError("Source add-on image does not match the release image")
+        if config_scalar(source, "slug") != config_scalar(text, "slug"):
+            raise ValueError("Refusing to change the installed add-on slug")
+    updated = re.sub(r"^version:[^\n]*", "version: " + json.dumps(version), source, count=1, flags=re.MULTILINE)
+    notes_path = path.with_name("CHANGELOG.md")
+    previous_notes = notes_path.read_text(encoding="utf-8") if notes_path.exists() else None
+    notes = previous_notes
+    if changelog is not None:
+        notes = render_changelog(Path(changelog).read_text(encoding="utf-8"), version, previous_notes)
+    changed = updated != text or notes != previous_notes
+    if not check:
+        if notes != previous_notes:
+            notes_path.write_text(notes, encoding="utf-8")
+        if updated != text:
+            path.write_text(updated, encoding="utf-8")
+    return changed
 
 
 def verify_image(manifest, version, sha):
@@ -132,6 +185,9 @@ def main():
     p.add_argument("--path", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--image", required=True)
+    p.add_argument("--changelog", help="Versioned HA release notes from the source repository")
+    p.add_argument("--config-source", help="Authoritative add-on config; version is stamped for this release")
+    p.add_argument("--check", action="store_true", help="Validate without modifying store files")
     p = commands.add_parser("verify-image")
     p.add_argument("--path", required=True)
     p.add_argument("--version", required=True)
@@ -148,10 +204,10 @@ def main():
         elif args.command == "stamp":
             stamp(args.repo, args.version)
         elif args.command == "store":
-            update_store(args.path, args.version, args.image)
+            update_store(args.path, args.version, args.image, args.changelog, args.check, args.config_source)
         else:
             verify_image(json.loads(Path(args.path).read_text()), args.version, args.sha)
-    except (ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Release error: {error}\n")
 
 

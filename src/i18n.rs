@@ -135,8 +135,8 @@ pub fn t(lang: Language, key: &str) -> &str {
 
         (Language::Ru, "common.back") => "⬅️ Назад",
         (Language::En, "common.back") => "⬅️ Back",
-        (Language::Ru, "common.main_menu") => "🏠 В главное меню",
-        (Language::En, "common.main_menu") => "🏠 Main menu",
+        (Language::Ru, "common.main_menu") => "Дом",
+        (Language::En, "common.main_menu") => "Home",
         (Language::Ru, "common.in_development") => "В разработке",
         (Language::En, "common.in_development") => "In development",
         (Language::Ru, "common.updated") => "Меню обновлено:",

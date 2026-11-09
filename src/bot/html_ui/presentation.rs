@@ -8,7 +8,7 @@ use super::super::{
 use crate::i18n::{t, Language};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use teloxide::types::InlineKeyboardButtonKind;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,9 +33,11 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hint: String,
     pub body: String,
-    /// Home status tiles: source, state, event count/age. All fields are plain text.
+    /// Home statuses or device metrics: label, value, detail. Plain text only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<[String; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slider: Option<super::temperature::Slider>,
     pub notice: String,
     pub alert: String,
     #[serde(rename = "b", alias = "rows", with = "button_rows")]
@@ -339,7 +341,8 @@ fn screen_kind(view: &View) -> &str {
         return "confirmation";
     }
     if let Some(
-        kind @ ("menu" | "device" | "climate" | "confirmation" | "list" | "room" | "camera"),
+        kind @ ("menu" | "device" | "climate" | "temperature" | "confirmation" | "list" | "room"
+        | "camera"),
     ) = view.html_kind.as_deref()
     {
         return kind;
@@ -464,6 +467,35 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
     prepare_with_pending(view, rev, seq, &HashMap::new())
 }
 
+/// Keep the Home shortcut on the main card, not in its details/input subpages.
+/// First-level pages already return Home through the header's Back button.
+/// Thermostat cards also use Back as their only exit to the opening context.
+pub(super) fn redundant_home(view: &View) -> bool {
+    view.next_state.is_some()
+        || matches!(view.html_kind.as_deref(), Some("climate" | "temperature"))
+        || matches!(
+            view.payload,
+            Payload::Home
+                | Payload::DeviceDetails { .. }
+                | Payload::TemperatureInput { .. }
+                | Payload::Camera(CameraPayload::CameraDetails { .. })
+        )
+        || super::super::screen_structure::parent(view) == Some(Payload::Home)
+}
+
+/// Personal controls belong to the device's main card; Details is informational.
+pub(super) fn redundant_detail_action(view: &View, action: &Payload) -> bool {
+    matches!(view.payload, Payload::DeviceDetails { .. })
+        && matches!(
+            action,
+            Payload::Personal(
+                PersonalPayload::FavoriteOptions { .. }
+                    | PersonalPayload::SetSubscription { .. }
+                    | PersonalPayload::Subscription { .. }
+            )
+        )
+}
+
 pub fn prepare_with_pending(
     view: &View,
     rev: String,
@@ -476,9 +508,29 @@ pub fn prepare_with_pending(
     }
     let mut structured = view.clone();
     super::super::screen_structure::apply(&mut structured);
+    super::temperature::controls(&mut structured);
+    if structured.html_temperature.is_some() && structured.alert.is_none() {
+        if let Payload::Control(
+            ControlPayload::QuickAction { device, .. }
+            | ControlPayload::DeviceControl { device, .. },
+        ) = &structured.payload
+        {
+            if pending.get(device) == Some(&"uncertain") {
+                structured.alert = Some(
+                    crate::bot::personal::words(
+                        structured.lang,
+                        "HA не подтвердил изменение. Обновите состояние.",
+                        "HA has not confirmed the change. Refresh the state.",
+                    )
+                    .into(),
+                );
+            }
+        }
+    }
     let view = &structured;
     let bounded = !view.html_media_controls
         && view.html_chart.is_none()
+        && view.html_temperature.is_none()
         && !matches!(view.payload, Payload::Camera(_));
     let pager = bounded.then(|| source_pager(view)).flatten();
     let parent = super::super::screen_structure::parent(view);
@@ -555,6 +607,7 @@ pub fn prepare_with_pending(
         hint: String::new(),
         body: String::new(),
         status: Vec::new(),
+        slider: None,
         notice: String::new(),
         alert: String::new(),
         rows: Vec::new(),
@@ -575,6 +628,8 @@ pub fn prepare_with_pending(
     let mut parts: Vec<Page> = Vec::new();
     let mut current = empty.clone();
     current.graph = view.html_chart.clone();
+    current.status = view.html_metrics.clone();
+    current.slider = view.html_temperature.clone();
     current.json()?;
     if view.next_state.is_some() {
         current.hint = if english {
@@ -649,6 +704,7 @@ pub fn prepare_with_pending(
     let root = empty.clone();
     let mut empty = empty;
     let mut actions = HashMap::new();
+    let mut seen = HashSet::new();
     for (row_index, row) in view.kb.inline_keyboard.iter().enumerate() {
         if view.text_page.is_none() && view.next_state.is_none() {
             if let Some(section) = view
@@ -673,10 +729,16 @@ pub fn prepare_with_pending(
                 };
                 let payload = Payload::from_string(data)?;
                 let key = format!("a{}", actions.len());
+                // The header owns Back (Home on first-level pages).
+                // Keep original keys/sections intact for source pagination and
+                // classic fallback, but do not repeat navigation in the body.
                 let pinned = pager.as_ref().is_some_and(|pager| pager.row == row_index)
-                    || empty.back.as_deref() == Some(&key)
+                    || parent.as_ref() == Some(&payload)
+                    || (payload == Payload::Home && redundant_home(view))
+                    || redundant_detail_action(view, &payload)
                     || (button.text == t(view.lang, "control.refresh")
-                        && payload == view.payload.for_refresh());
+                        && payload == view.payload.for_refresh())
+                    || !seen.insert(data.clone());
                 if !pinned {
                     let pending_kind = match &payload {
                         Payload::Control(ControlPayload::QuickAction { device, cmd, .. })
@@ -775,6 +837,8 @@ pub fn prepare_with_pending(
     };
     let mut home_details = None;
     if summary.is_some()
+        && view.html_metrics.is_empty()
+        && view.html_temperature.is_none()
         && !inline_status
         && (!body.is_empty()
             || (room_notice && view.notice.as_ref().is_some_and(|s| !s.is_empty())))
@@ -827,6 +891,12 @@ pub fn prepare_with_pending(
         parts[0].json()?;
     }
     ensure!(parts.len() <= 9999, "Too many HTML pages");
+    // The thermostat owns a single card. Fall back as a whole rather than
+    // deliver continuation pages without the slider specification/Apply pair.
+    ensure!(
+        view.html_temperature.is_none() || parts.len() == 1,
+        "Temperature card exceeds the single-page budget"
+    );
     let pages = parts.len();
     for (index, page) in parts.iter_mut().enumerate() {
         if index == 0 && matches!(view.payload, Payload::Home) {

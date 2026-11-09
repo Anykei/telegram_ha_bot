@@ -1,0 +1,506 @@
+[
+  {
+    "id": "climate_actual_normal",
+    "label": "Thermostat / normal / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Применить",
+            "a0",
+            "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a5",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Сейчас: 21°C\nРежим: обогрев",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 500,
+        "unit": "°C",
+        "value": 22000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_min",
+    "label": "Thermostat / min / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Применить",
+            "a0",
+            "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a5",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Сейчас: 21°C\nРежим: обогрев",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 1000,
+        "unit": "°C",
+        "value": 16000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_max",
+    "label": "Thermostat / max / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Применить",
+            "a0",
+            "action"
+          ],
+          [
+            "Выключить отопление",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a5",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Сейчас: 21°C\nРежим: охлаждение",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 100,
+        "unit": "°C",
+        "value": 30000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_fahrenheit",
+    "label": "Thermostat / fahrenheit / Ru",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Применить",
+            "a0",
+            "action"
+          ],
+          [
+            "Включить отопление",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Подробности",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ В\nизбранное",
+            "a5",
+            "nav"
+          ],
+          [
+            "Включить\nуведомления",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Сейчас: нет данных\nРежим: выключен",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "ru",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 1000,
+        "unit": "°F",
+        "value": 22000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_normal_en",
+    "label": "Thermostat / normal / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Apply",
+            "a0",
+            "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a5",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Current: 21°C\nMode: heating",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 500,
+        "unit": "°C",
+        "value": 22000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_min_en",
+    "label": "Thermostat / min / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Apply",
+            "a0",
+            "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a5",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Current: 21°C\nMode: heating",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 1000,
+        "unit": "°C",
+        "value": 16000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_max_en",
+    "label": "Thermostat / max / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Apply",
+            "a0",
+            "action"
+          ],
+          [
+            "Turn off heating",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a5",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Current: 21°C\nMode: cooling",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 100,
+        "unit": "°C",
+        "value": 30000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  },
+  {
+    "id": "climate_actual_fahrenheit_en",
+    "label": "Thermostat / fahrenheit / En",
+    "page": {
+      "alert": "",
+      "b": [
+        [
+          [
+            "Apply",
+            "a0",
+            "action"
+          ],
+          [
+            "Enable heating",
+            "a1",
+            "action"
+          ]
+        ],
+        [
+          [
+            "Details",
+            "a2",
+            "nav"
+          ]
+        ],
+        [
+          [
+            "☆ Add\nfavorite",
+            "a5",
+            "nav"
+          ],
+          [
+            "Enable\nnotifications",
+            "a6",
+            "action"
+          ]
+        ]
+      ],
+      "back": "a7",
+      "body": "Current: unavailable\nMode: off",
+      "context": "🛋 Гостиная",
+      "kind": "temperature",
+      "lang": "en",
+      "next": null,
+      "notice": "",
+      "page": 1,
+      "pages": 1,
+      "prev": null,
+      "read": "read",
+      "rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "s": "AQICBA",
+      "seq": 1,
+      "slider": {
+        "max": 30000,
+        "min": 16000,
+        "step": 1000,
+        "unit": "°F",
+        "value": 22000
+      },
+      "title": "Термостат",
+      "v": 1
+    }
+  }
+]

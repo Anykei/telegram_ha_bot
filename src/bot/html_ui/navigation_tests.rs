@@ -1,6 +1,56 @@
 use super::*;
 
 #[tokio::test]
+async fn navigation_deduplicates_routes_and_keeps_home_on_the_main_card() -> Result<()> {
+    let (config, _) = mock_config().await?;
+    let (room, device) = device(&config, "climate.bedroom").await?;
+    let (light_room, light_device) = super::device(&config, "light.floor_lamp").await?;
+    for (route, home_count) in [
+        (
+            Payload::Control(ControlPayload::DeviceControl { room, device }),
+            0,
+        ),
+        (
+            Payload::Control(ControlPayload::DeviceControl {
+                room: light_room,
+                device: light_device,
+            }),
+            1,
+        ),
+        (Payload::DeviceDetails { room, device }, 0),
+        (Payload::Personal(PersonalPayload::Settings), 0),
+        (Payload::Help, 0),
+    ] {
+        let mut view = router(route.clone(), 1, config.clone()).await?;
+        let parent = crate::bot::screen_structure::parent(&view).unwrap();
+        // Different labels must not bypass route-based deduplication.
+        view.kb.inline_keyboard.push(vec![
+            teloxide::types::InlineKeyboardButton::callback(
+                "Home again",
+                Payload::Home.to_string(),
+            ),
+            teloxide::types::InlineKeyboardButton::callback("Parent again", parent.to_string()),
+        ]);
+        let prepared = presentation::prepare(&view, "c".repeat(32), 1)?;
+        assert_complete(&view, &prepared)?;
+        let targets = prepared
+            .pages
+            .iter()
+            .flat_map(|p| p.rows.iter().flatten())
+            .filter_map(|b| prepared.actions.get(&b.key))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets.iter().filter(|p| **p == &Payload::Home).count(),
+            home_count,
+            "{route:?}"
+        );
+        let back = prepared.pages[0].back.as_ref().unwrap();
+        assert_eq!(prepared.actions.get(back), Some(&parent));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn ordinary_screens_keep_explicit_titles_and_exit_on_every_page() -> Result<()> {
     let (config, _) = mock_config().await?;
     let (room, device) = device(&config, "climate.bedroom").await?;

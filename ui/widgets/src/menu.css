@@ -11,10 +11,7 @@
 .r-action { border-color:var(--ha-accent-soft); }
 .r-selected { background:var(--ha-accent-soft); border-color:var(--ha-accent); }
 .r-danger { border-color:var(--ha-error); }
-:disabled { opacity:.45; }
-.r-wait { position:relative; opacity:1; }
-.r-wait span { opacity:0; }
-.r-wait i { position:absolute; inset:0; margin:auto; width:28px; height:28px; border:2px solid var(--ha-accent); border-top-color:transparent; border-radius:50%; }
+/* pending-controls */
 [data-kind=home] .r-row,[data-kind=camera] .r-row { flex:1; }
 [data-kind=camera] .r-button { min-height:48px; }
 [data-kind=home] h1 { margin:-44px 56px 8px 0; line-height:44px; }

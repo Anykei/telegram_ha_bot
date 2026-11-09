@@ -245,10 +245,7 @@ async fn send_command_help(
                 if en { "Help" } else { "Помощь" },
                 Payload::Help.to_string(),
             ),
-            InlineKeyboardButton::callback(
-                if en { "Main menu" } else { "В меню" },
-                Payload::Home.to_string(),
-            ),
+            super::screens::common::main_menu_button_lang(lang),
         ],
     ]);
     bot.send_message(chat, text).reply_markup(kb).await?;
@@ -794,6 +791,7 @@ pub async fn handle_callback(
     }
 
     if is_background_view {
+        let write_origin = super::html_ui::device_write_origin(&config, user_id, &payload);
         dialogue.exit().await?;
         let token = config.begin_view_update(user_id);
         let chat_id = msg.chat().id;
@@ -807,10 +805,9 @@ pub async fn handle_callback(
                     if let Some((room, device, reply)) = temperature_request {
                         let outcome = reply.await.context("Climate command worker stopped")?;
                         (
-                            Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
-                                room,
-                                device,
-                            }),
+                            write_origin.unwrap_or(Payload::Control(
+                                crate::bot::router::ControlPayload::DeviceControl { room, device },
+                            )),
                             Some(outcome),
                         )
                     } else {

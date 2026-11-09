@@ -15,6 +15,7 @@ pub struct Entity {
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone)]
 pub struct EntityAttributes {
+    pub hvac_modes: Option<Vec<String>>,
     pub current_temperature: Option<f32>,
     pub temperature: Option<f32>,
     pub target_temp_low: Option<f32>,
@@ -26,6 +27,16 @@ pub struct EntityAttributes {
 }
 
 impl Entity {
+    pub fn supports_hvac_mode(&self, mode: &str) -> bool {
+        self.entity_id.starts_with("climate.")
+            && !matches!(self.state.as_str(), "" | "unknown" | "unavailable")
+            && self
+                .attributes
+                .hvac_modes
+                .as_ref()
+                .is_some_and(|modes| modes.iter().any(|value| value == mode))
+    }
+
     pub fn temperature_target_is_valid(&self, target: f32) -> bool {
         !matches!(self.state.as_str(), "unavailable" | "unknown" | "heat_cool")
             && self.attributes.temperature.is_some_and(f32::is_finite)

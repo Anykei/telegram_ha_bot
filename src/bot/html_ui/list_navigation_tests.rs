@@ -75,20 +75,34 @@ async fn source_list_arrows_open_first_or_last_part_without_skipping_items() -> 
 }
 
 #[tokio::test]
-async fn details_keep_personal_actions_before_full_diagnostics() -> Result<()> {
+async fn details_keep_full_diagnostics_and_personal_actions_stay_on_main_card() -> Result<()> {
     let (config, _) = mock_config().await?;
     let (room, device) = device(&config, "light.floor_lamp").await?;
+    let card = router(
+        Payload::Control(ControlPayload::DeviceControl { room, device }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    let main = presentation::prepare(&card, "a".repeat(32), 1)?;
+    let visible: Vec<_> = main.pages.iter().flat_map(|p| &p.rows).flatten().collect();
+    assert!(visible.iter().any(|b| matches!(
+        main.actions.get(&b.key),
+        Some(Payload::Personal(PersonalPayload::FavoriteOptions { .. }))
+    )));
+    assert!(visible.iter().any(|b| matches!(
+        main.actions.get(&b.key),
+        Some(Payload::Personal(PersonalPayload::SetSubscription { .. }))
+    )));
     let view = router(Payload::DeviceDetails { room, device }, 1, config.clone()).await?;
     let prepared = presentation::prepare(&view, "a".repeat(32), 1)?;
     let first = &prepared.pages[0];
-    assert!(first.rows.iter().flatten().any(|b| matches!(
-        prepared.actions.get(&b.key),
-        Some(Payload::Personal(PersonalPayload::FavoriteOptions { .. }))
-    )));
-    assert!(first.rows.iter().flatten().any(|b| matches!(
-        prepared.actions.get(&b.key),
-        Some(Payload::Personal(PersonalPayload::SetSubscription { .. }))
-    )));
+    assert!(prepared
+        .pages
+        .iter()
+        .flat_map(|p| &p.rows)
+        .flatten()
+        .all(|b| { !matches!(prepared.actions.get(&b.key), Some(Payload::Personal(_))) }));
     assert!(!first.body.contains("EntityAttributes"));
     assert!(prepared
         .pages

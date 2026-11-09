@@ -44,14 +44,21 @@ async fn thermostat_waits_for_target_attribute_not_room_temperature() -> Result<
         teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
         ChatId(1),
     );
-    let up = Payload::Control(ControlPayload::QuickAction {
-        room,
-        device: climate,
-        cmd: DeviceCmd::AdjustTemp(1),
-    });
-    press(&fake, &config, &dialogue, action_query(&config, &up)).await?;
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        query(&current(&config), "s22500"),
+    )
+    .await?;
     assert_eq!(control_kind(&config, climate), "wait");
-    press(&fake, &config, &dialogue, action_query(&config, &up)).await?;
+    press(
+        &fake,
+        &config,
+        &dialogue,
+        query(&current(&config), "s22500"),
+    )
+    .await?;
     assert_eq!(ha.calls.lock().unwrap().len(), 1);
     ha.attributes
         .lock()
@@ -65,6 +72,11 @@ async fn thermostat_waits_for_target_attribute_not_room_temperature() -> Result<
         "wait",
         "Actual room temperature is not the requested setpoint"
     );
+    assert_eq!(
+        current(&config).pages[0].slider.as_ref().unwrap().value,
+        22000
+    );
+    assert!(current(&config).pages[0].body.contains("22.5°C"));
     ha.attributes
         .lock()
         .unwrap()
@@ -73,10 +85,10 @@ async fn thermostat_waits_for_target_attribute_not_room_temperature() -> Result<
         .temperature = Some(22.5);
     publish(&fake, &config, route).await?;
     assert_eq!(control_kind(&config, climate), "action");
-    assert!(current(&config)
-        .pages
-        .iter()
-        .any(|p| p.body.contains("22.5")));
+    assert_eq!(
+        current(&config).pages[0].slider.as_ref().unwrap().value,
+        22500
+    );
     assert_eq!(ha.calls.lock().unwrap().len(), 1);
     config.climate_controls.stop_accepting();
     config.climate_controls.shutdown().await?;
