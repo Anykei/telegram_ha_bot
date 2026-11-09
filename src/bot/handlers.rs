@@ -245,10 +245,7 @@ async fn send_command_help(
                 if en { "Help" } else { "Помощь" },
                 Payload::Help.to_string(),
             ),
-            InlineKeyboardButton::callback(
-                if en { "Main menu" } else { "В меню" },
-                Payload::Home.to_string(),
-            ),
+            super::screens::common::main_menu_button_lang(lang),
         ],
     ]);
     bot.send_message(chat, text).reply_markup(kb).await?;

@@ -153,10 +153,6 @@ pub async fn render(
     );
     if matches!(view.html_kind.as_deref(), Some("climate" | "temperature")) {
         // Keep temperature actions together, then secondary navigation.
-        view.html_button_labels.insert(
-            Payload::Home.to_string(),
-            crate::bot::personal::words(lang, "Дом", "Home").into(),
-        );
         view.kb.inline_keyboard.insert(
             view.kb.inline_keyboard.len().saturating_sub(2),
             vec![
