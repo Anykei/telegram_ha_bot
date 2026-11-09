@@ -8,7 +8,7 @@ export async function checkTemperature({root,command,evaluate,until}) {
   const doc="document.getElementById('release-frame').contentDocument",win="document.getElementById('release-frame').contentWindow";
   const state=`JSON.parse(${win}.TelegramWidget.chatData)`,apply=`${doc}.querySelector('[data-key="a0"]')`;
   async function checkLayout(label, expectedActions) {
-    const size=await evaluate(`({height:${doc}.body.scrollHeight,width:${doc}.documentElement.scrollWidth,available:${doc}.documentElement.clientWidth,actions:${doc}.querySelectorAll('[data-key]').length,buttons:[...${doc}.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().width).map(b=>({h:b.getBoundingClientRect().height,w:b.getBoundingClientRect().width,bottom:b.getBoundingClientRect().bottom}))})`);
+    const size=await evaluate(`({height:${doc}.body.scrollHeight,width:${doc}.documentElement.scrollWidth,available:${doc}.documentElement.clientWidth,actions:${doc}.querySelectorAll('[data-key]').length,buttons:[...${doc}.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().width).map(b=>({h:b.getBoundingClientRect().height,w:b.getBoundingClientRect().width,bottom:b.getBoundingClientRect().bottom,text:b.textContent,font:${win}.getComputedStyle(b).font}))})`);
     const diagnostic=label+': '+JSON.stringify(size);
     assert.equal(size.height,600,diagnostic);
     assert.ok(size.width<=size.available,diagnostic);
@@ -19,10 +19,14 @@ export async function checkTemperature({root,command,evaluate,until}) {
   await command('Page.navigate',{url:pathToFileURL(root+'dist/temperature-preview.html').href});
   await until(`${doc}.querySelector('.s-rail')`);
   const fixtures=JSON.parse(await readFile(root+'preview/temperature-fixtures.json','utf8'));
+  // System UI resolves to different fonts on macOS, Debian and Ubuntu runners.
+  // Exercise wider font metrics explicitly instead of relying on one host default.
+  for(const font of ['', 'Arial, sans-serif', '"DejaVu Sans", sans-serif'])
   for(const fixture of fixtures)for(const theme of ['light','dark'])for(const width of [200,240,241,280,281,320,360,430]) {
     await evaluate(`new Promise(resolve=>{document.getElementById('release-frame').addEventListener('load',()=>resolve(true),{once:true});theme='${theme}';width=${width};document.getElementById('fixture').value='${fixture.id}';load();})`);
     await until(`${doc}.querySelector('.s-rail')`);
-    const label=`${fixture.id}/${theme}/${width}`,expectedActions=fixture.page.b.flat().filter(b=>b[1]!==fixture.page.back).length;
+    if(font)await evaluate(`(()=>{const style=${doc}.createElement('style');style.textContent=${JSON.stringify('body,button {font-family:'+font+'!important}')};${doc}.head.append(style);})()`);
+    const label=`${fixture.id}/${theme}/${width}/${font||'system'}`,expectedActions=fixture.page.b.flat().filter(b=>b[1]!==fixture.page.back).length;
     await checkLayout(label,expectedActions);
     assert.equal(await evaluate(`${apply}.disabled`),true);
     for(const status of ['wait','uncertain']) {
@@ -101,5 +105,5 @@ export async function checkTemperature({root,command,evaluate,until}) {
   const clip=await evaluate(`document.getElementById('release-frame').getBoundingClientRect().toJSON()`);
   const shot=await command('Page.captureScreenshot',{format:'png',clip:{x:clip.x,y:clip.y,width:clip.width,height:600,scale:1},captureBeyondViewport:true});
   await writeFile(root+'screenshots/temperature-dark.png',Buffer.from(shot.data,'base64'));
-  console.log('temperature: actual backend fixtures at 200–430px, slider and heating controls, local draft, single dispatch, animated wait, HA confirmation and stale pushes passed');
+  console.log('temperature: system/Arial/DejaVu Sans at 200–430px, normal/wait/uncertain layouts, slider and heating controls, local draft, single dispatch, animated wait, HA confirmation and stale pushes passed');
 }

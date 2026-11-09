@@ -15,7 +15,7 @@
 
 .r-alert { color:var(--ha-error); }
 
-/* At the minimum widget width, Linux fonts otherwise wrap actions to four lines. */
+/* Compact leading keeps multiline labels clear of the timestamp with wider Linux fonts. */
 @media (max-width:280px) {
-  .r-button { font-size:12px; padding:6px; }
+  .r-button { font:12px/1.2 var(--ha-font); padding:6px; }
 }
