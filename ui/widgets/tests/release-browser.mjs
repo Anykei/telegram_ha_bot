@@ -532,7 +532,7 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
   const beforePress = await geometry();
   await evaluate(`${win}.__pressedButton=${button('temp_up')};${win}.__pressedRing=${button('temp_up')}.querySelector('i')`);
   const press=await climatePaint(()=>click('temp_up'),'Start device command');
-  assert.equal(press.samples.length,0,'Press performs no synchronous layout queries');
+  assert.equal(press.samples.length,0,'Press performs no synchronous layout queries: '+JSON.stringify(press.samples.map(s=>s.source)));
   assert.equal(await evaluate(`${win}.__pressedButton===${button('temp_up')} && ${win}.__pressedRing===${button('temp_up')}.querySelector('i')`),true,'Press preserves button and spinner nodes');
   assert.ok((await evaluate(`${win}.__requests[0].value`)).endsWith(':temp_up'));
   assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0);
