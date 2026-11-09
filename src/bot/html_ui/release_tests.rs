@@ -20,6 +20,9 @@ mod pending_tests;
 #[path = "camera_tests.rs"]
 mod camera_tests;
 
+#[path = "climate_tests.rs"]
+mod climate_tests;
+
 #[path = "media_pending_tests.rs"]
 mod media_pending_tests;
 
@@ -66,12 +69,17 @@ async fn device(config: &AppConfig, id: &str) -> Result<(i64, i64)> {
 
 fn assert_complete(view: &View, prepared: &presentation::Prepared) -> Result<()> {
     assert_buttons_preserved(view, prepared)?;
-    assert!(prepared
-        .pages
-        .iter()
-        .map(|p| p.body.as_str())
-        .collect::<String>()
-        .contains(&view.text));
+    if view.html_metrics.is_empty() {
+        assert!(prepared
+            .pages
+            .iter()
+            .map(|p| p.body.as_str())
+            .collect::<String>()
+            .contains(&view.text));
+    } else {
+        assert_eq!(prepared.pages[0].status, view.html_metrics);
+        assert!(prepared.pages.iter().skip(1).all(|p| p.status.is_empty()));
+    }
     for page in &prepared.pages {
         assert!(page.json()?.len() <= 1000);
         assert!(serde_json::to_string(&json!({"page":page}))?.len() <= 1024);

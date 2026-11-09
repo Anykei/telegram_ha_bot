@@ -33,6 +33,10 @@ pub struct View {
     /// Short confirmed state shown with controls; full text stays in details.
     #[serde(default)]
     pub html_summary: Option<String>,
+    /// Complete device summary as label/value/detail tiles. Replaces the
+    /// automatic full-text continuation; classic text remains unchanged.
+    #[serde(default)]
+    pub html_metrics: Vec<[String; 3]>,
     /// Compact labels by callback; the classic keyboard keeps its full labels.
     #[serde(default)]
     pub html_button_labels: std::collections::HashMap<String, String>,

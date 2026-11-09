@@ -69,8 +69,10 @@ fn render_view(
         "{}\n\n{summary}",
         super::labels::device_name(&dev, &entity, lang)
     );
+    let mut limits = String::new();
     if let (Some(min), Some(max)) = (entity.attributes.min_temp, entity.attributes.max_temp) {
         if min.is_finite() && max.is_finite() {
+            limits = format!("{} – {}", temperature(Some(min)), temperature(Some(max)));
             text.push_str(&format!(
                 "\n{}: {} – {}",
                 t(lang, "climate.limits"),
@@ -91,6 +93,8 @@ fn render_view(
         unit
     ));
     let mut rows = Vec::new();
+    let mut html_button_labels = std::collections::HashMap::new();
+    let mut html_summary = String::new();
     if can_control {
         let step = entity
             .attributes
@@ -103,26 +107,43 @@ fn render_view(
                 let target =
                     ((current_target + f32::from(direction) * step) * 1000.0).round() / 1000.0;
                 if entity.temperature_target_is_valid(target) && target != current_target {
+                    let callback = Payload::Control(ControlPayload::QuickAction {
+                        room: room_id,
+                        device: dev.id,
+                        cmd: DeviceCmd::AdjustTemp(direction),
+                    })
+                    .to_string();
+                    html_button_labels.insert(
+                        callback.clone(),
+                        format!(
+                            "{} {}{}",
+                            if direction < 0 { "−" } else { "+" },
+                            display_number(step),
+                            unit
+                        ),
+                    );
                     controls.push(InlineKeyboardButton::callback(
                         format!("{} {}{}", icon, display_number(step), unit),
-                        Payload::Control(ControlPayload::QuickAction {
-                            room: room_id,
-                            device: dev.id,
-                            cmd: DeviceCmd::AdjustTemp(direction),
-                        })
-                        .to_string(),
+                        callback,
                     ));
                 }
             }
         }
         if controls.is_empty() {
             text.push_str(&format!("\n\n{}", t(lang, "climate.adjust_unavailable")));
+            html_summary = crate::bot::personal::words(
+                lang,
+                "Изменение температуры недоступно. Обновите данные или откройте подробности.",
+                "Temperature adjustment unavailable. Refresh or open details.",
+            )
+            .into();
         } else {
             text.push_str(&format!("\n\n{}", t(lang, "climate.choose_target")));
             rows.push(controls);
         }
     } else {
         text.push_str(&format!("\n\n{}", t(lang, "control.view_only")));
+        html_summary = t(lang, "control.view_only").into();
     }
     if can_control
         && entity
@@ -154,7 +175,37 @@ fn render_view(
     View {
         compact: true,
         html_kind: Some("climate".into()),
-        html_summary: Some(summary),
+        html_button_labels,
+        html_summary: Some(html_summary),
+        html_metrics: vec![
+            [
+                crate::bot::personal::words(lang, "Задано", "Target").into(),
+                target_text,
+                format!(
+                    "{}{}{}: {}{}",
+                    limits,
+                    if limits.is_empty() { "" } else { " · " },
+                    t(lang, "climate.step"),
+                    display_number(step),
+                    unit,
+                ),
+            ],
+            [
+                crate::bot::personal::words(lang, "Сейчас", "Current").into(),
+                temperature(
+                    if matches!(entity.state.as_str(), "unavailable" | "unknown") {
+                        None
+                    } else {
+                        entity.attributes.current_temperature
+                    },
+                ),
+                format!(
+                    "{}: {}",
+                    t(lang, "climate.mode"),
+                    mode_label(lang, &entity.state)
+                ),
+            ],
+        ],
         header: Some(t(lang, "climate.title").into()),
         notifications,
         text,

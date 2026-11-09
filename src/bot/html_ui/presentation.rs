@@ -33,7 +33,7 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hint: String,
     pub body: String,
-    /// Home status tiles: source, state, event count/age. All fields are plain text.
+    /// Home statuses or device metrics: label, value, detail. Plain text only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status: Vec<[String; 3]>,
     pub notice: String,
@@ -575,6 +575,7 @@ pub fn prepare_with_pending(
     let mut parts: Vec<Page> = Vec::new();
     let mut current = empty.clone();
     current.graph = view.html_chart.clone();
+    current.status = view.html_metrics.clone();
     current.json()?;
     if view.next_state.is_some() {
         current.hint = if english {
@@ -775,6 +776,7 @@ pub fn prepare_with_pending(
     };
     let mut home_details = None;
     if summary.is_some()
+        && view.html_metrics.is_empty()
         && !inline_status
         && (!body.is_empty()
             || (room_notice && view.notice.as_ref().is_some_and(|s| !s.is_empty())))

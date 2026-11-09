@@ -949,6 +949,12 @@ async fn view_only_user_can_open_sensor_graph_and_climate_but_cannot_change_temp
     )
     .await?;
     assert!(climate.text.contains("только просмотр"));
+    assert!(climate
+        .html_summary
+        .as_deref()
+        .unwrap()
+        .contains("только просмотр"));
+    assert_eq!(climate.html_metrics.len(), 2);
     assert!(!callbacks(&climate).iter().any(|p| matches!(
         p,
         Payload::Control(ControlPayload::QuickAction {

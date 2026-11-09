@@ -179,6 +179,10 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
           assert.equal(await evaluate(`${get('r-feedback')}.getBoundingClientRect().height`), 0, 'Idle feedback takes no space');
         }
         const content = await assertPreserved(fixture.page, `${fixture.id}/${theme}/${width}`);
+        if (fixture.id.startsWith('climate_actual_') && width>=320) {
+          assert.equal(content.parts,1,`${fixture.id}/${width}: complete thermostat on one screen`);
+          assert.equal(fixture.page.pages,1,'No duplicate server-side thermostat summary');
+        }
         localPaginationSeen ||= content.parts > 1;
       }
     }
@@ -521,6 +525,12 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     await reload(id, {theme}); await capture('release-'+id+'-'+theme);
   }
   await reload('climate', {width:430}); await capture('release-climate-wide');
+  for (const theme of ['light','dark']) {
+    await reload('climate_actual_normal', {theme,width:320});
+    await evaluate(`${win}.previewSetSafeArea(64,72)`);
+    await dimensions('climate/actual/'+theme);
+    await capture('release-climate-actual-'+theme);
+  }
   // Compact controls follow the same request/ACK path as legacy object rows.
   await reload('climate'); await controlRequests();
   const climatePaint=await watchPaintBudget({evaluate,doc,win});
@@ -680,11 +690,11 @@ export async function checkRelease({root, command, evaluate, until, screenshot, 
     assert.equal(await evaluate(`${get('r-content')}.textContent`), '');
     assert.deepEqual(await evaluate(`${win}.__requests.map(r=>r.value)`), ['r1:home'], 'Invalid state only requests a fresh Home');
   }
-  // The thermostat's original Back lives on chunk 2; its persistent control works on both.
+  // Both the redesigned thermostat and legacy continuation keep the parent exit.
   for (const lang of ['ru','en']) for (const theme of ['light','dark']) for (const serverPage of [1,2]) {
     await reload(lang === 'ru' ? 'climate' : 'climate_en', {theme,width:200});
     if (serverPage === 2) {
-      await serverStep();
+      await reload(lang === 'ru' ? 'climate_more' : 'climate_more_en', {theme,width:200});
       await until(`${state}.page===2 && ${get('r-read')}.disabled.toString() === 'false'`);
     }
     assert.equal(await evaluate(`${get('r-back')}.textContent`), lang === 'ru' ? '‹ Назад' : '‹ Back');

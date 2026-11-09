@@ -65,6 +65,8 @@ async fn thermostat_waits_for_target_attribute_not_room_temperature() -> Result<
         "wait",
         "Actual room temperature is not the requested setpoint"
     );
+    assert_eq!(current(&config).pages[0].status[0][1], "22°C");
+    assert_eq!(current(&config).pages[0].status[1][1], "22.5°C");
     ha.attributes
         .lock()
         .unwrap()
@@ -73,10 +75,7 @@ async fn thermostat_waits_for_target_attribute_not_room_temperature() -> Result<
         .temperature = Some(22.5);
     publish(&fake, &config, route).await?;
     assert_eq!(control_kind(&config, climate), "action");
-    assert!(current(&config)
-        .pages
-        .iter()
-        .any(|p| p.body.contains("22.5")));
+    assert_eq!(current(&config).pages[0].status[0][1], "22.5°C");
     assert_eq!(ha.calls.lock().unwrap().len(), 1);
     config.climate_controls.stop_accepting();
     config.climate_controls.shutdown().await?;
