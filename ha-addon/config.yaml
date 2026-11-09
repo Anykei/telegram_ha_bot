@@ -1,0 +1,44 @@
+# Source: Anykei/telegram_ha_bot/ha-addon/config.yaml.
+# Release automation copies this file to ha_addons and replaces version.
+name: "Telegram Bot"
+version: "0.3.0"
+slug: "telegram_bot"
+description: "Бот для управления домом через Telegram"
+hassio_api: true
+homeassistant_api: true
+
+arch:
+  - aarch64
+  - amd64
+image: "ghcr.io/anykei/telegram_ha_bot"
+
+init: false
+
+map:
+  - config:rw
+options:
+  bot_token: ""
+  root_user: ""
+  html_widgets_enabled: true
+  default_language: ru
+  delete_notification_messages_timeout_s: 60
+  camera_clip_intervals_s: [5, 10, 15, 30]
+  camera_default_clip_s: 10
+  camera_recording_max_parallel_jobs: 4
+  voice_enabled: false
+  # JSON overrides; requires a bot release with extra_options support.
+  extra_options: ""
+
+schema:
+  bot_token: password
+  root_user: str
+  html_widgets_enabled: bool
+  default_language: "list(ru|en)"
+  delete_notification_messages_timeout_s: "int(0,86400)"
+  camera_clip_intervals_s:
+    - "int(1,120)"
+  camera_default_clip_s: "int(1,120)"
+  camera_recording_max_parallel_jobs: "int(1,16)"
+  voice_enabled: bool
+  voice_ha_pipeline_id: "str?"
+  extra_options: str
