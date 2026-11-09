@@ -54,6 +54,15 @@ async fn temperature_slider_validates_drafts_and_waits_for_ha_target() -> Result
     assert!(
         temperature::resolve(&session.view, &std::collections::HashMap::new(), "s23500").is_none()
     );
+    let uncertain = presentation::prepare_with_pending(
+        &session.view,
+        "a".repeat(32),
+        1,
+        &std::collections::HashMap::from([(device, "uncertain")]),
+    )?;
+    assert_eq!(uncertain.pages.len(), 1);
+    assert!(uncertain.pages[0].alert.contains("HA"));
+    assert_eq!(uncertain.pages[0].rows[0][0].kind, "uncertain");
     let apply = temperature::resolve(&session.view, &session.actions, "s23500").unwrap();
     assert_eq!(
         apply,

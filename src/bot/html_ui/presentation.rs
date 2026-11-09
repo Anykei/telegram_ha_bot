@@ -479,6 +479,24 @@ pub fn prepare_with_pending(
     }
     let mut structured = view.clone();
     super::super::screen_structure::apply(&mut structured);
+    if structured.html_temperature.is_some() && structured.alert.is_none() {
+        if let Payload::Control(
+            ControlPayload::QuickAction { device, .. }
+            | ControlPayload::DeviceControl { device, .. },
+        ) = &structured.payload
+        {
+            if pending.get(device) == Some(&"uncertain") {
+                structured.alert = Some(
+                    crate::bot::personal::words(
+                        structured.lang,
+                        "HA не подтвердил температуру. Обновите состояние.",
+                        "HA has not confirmed the temperature. Refresh the state.",
+                    )
+                    .into(),
+                );
+            }
+        }
+    }
     let view = &structured;
     let bounded = !view.html_media_controls
         && view.html_chart.is_none()

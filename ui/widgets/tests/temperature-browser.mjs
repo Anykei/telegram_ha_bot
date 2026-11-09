@@ -53,7 +53,16 @@ export async function checkTemperature({root,command,evaluate,until}) {
   assert.equal(await evaluate(`${apply}.disabled`),false);
   await evaluate(`(()=>{const p=${state};p.seq--;p.slider.value=22000;${win}.previewSetData(p);})()`);
   assert.equal(await evaluate(`${doc}.querySelector('.s-value').textContent`),'26°C','Old pushes do not reset draft');
-  await mkdir(root+'screenshots',{recursive:true});
+  await evaluate(`(()=>{const p=${state};p.seq+=3;p.b[0][0][2]='uncertain';p.alert='HA не подтвердил температуру. Обновите состояние.';${win}.previewSetData(p);})()`);
+  assert.equal(await evaluate(`${apply}.disabled`),true);
+  assert.ok(await evaluate(`${doc}.body.textContent.includes('HA не подтвердил')`));
+  assert.equal(await evaluate(`${doc}.getElementById('r-read').disabled`),false,'Read remains available after unconfirmed command');
+  await evaluate(`${doc}.getElementById('r-read').click()`);
+  assert.ok((await evaluate(`${win}.__requests.at(-1).value`)).endsWith(':read'));
+  await evaluate(`(()=>{const p=${state};p.seq++;p.b[0][0][2]='action';p.alert='';${win}.__requests.at(-1).resolve({result:JSON.stringify({page:p})});})()`);
+  await until(`${doc}.querySelector('.s-rail').getAttribute('aria-disabled')==='false'`);
+  assert.equal(await evaluate(`${win}.__requests.length`),2,'Recovery only reads; it never repeats Apply');
+  await mkdir(root+'screenshots' ,{recursive:true});
   const clip=await evaluate(`document.getElementById('release-frame').getBoundingClientRect().toJSON()`);
   const shot=await command('Page.captureScreenshot',{format:'png',clip:{x:clip.x,y:clip.y,width:clip.width,height:600,scale:1},captureBeyondViewport:true});
   await writeFile(root+'screenshots/temperature-dark.png',Buffer.from(shot.data,'base64'));
