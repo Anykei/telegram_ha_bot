@@ -469,8 +469,10 @@ pub fn prepare(view: &View, rev: String, seq: u64) -> Result<Prepared> {
 
 /// Keep the Home shortcut on the main card, not in its details/input subpages.
 /// First-level pages already return Home through the header's Back button.
+/// Thermostat cards also use Back as their only exit to the opening context.
 pub(super) fn redundant_home(view: &View) -> bool {
     view.next_state.is_some()
+        || matches!(view.html_kind.as_deref(), Some("climate" | "temperature"))
         || matches!(
             view.payload,
             Payload::Home

@@ -4,9 +4,17 @@ use super::*;
 async fn navigation_deduplicates_routes_and_keeps_home_on_the_main_card() -> Result<()> {
     let (config, _) = mock_config().await?;
     let (room, device) = device(&config, "climate.bedroom").await?;
+    let (light_room, light_device) = super::device(&config, "light.floor_lamp").await?;
     for (route, home_count) in [
         (
             Payload::Control(ControlPayload::DeviceControl { room, device }),
+            0,
+        ),
+        (
+            Payload::Control(ControlPayload::DeviceControl {
+                room: light_room,
+                device: light_device,
+            }),
             1,
         ),
         (Payload::DeviceDetails { room, device }, 0),

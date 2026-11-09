@@ -148,7 +148,7 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
             assert_eq!(steps, if exact { vec![] } else { expected_steps });
             assert!(!visible.contains(&&Payload::TemperatureInput { room, device }));
             assert!(visible.contains(&&Payload::DeviceDetails { room, device }));
-            assert!(visible.contains(&&Payload::Home));
+            assert!(!visible.contains(&&Payload::Home));
             assert!(page.back.is_some());
             assert!(
                 page.rows.iter().any(|row| {
@@ -156,9 +156,9 @@ async fn climate_metrics_keep_controls_and_bounds_without_duplicate_pages() -> R
                         .iter()
                         .map(|b| &prepared.actions[&b.key])
                         .collect::<Vec<_>>();
-                    targets == vec![&Payload::DeviceDetails { room, device }, &Payload::Home]
+                    targets == vec![&Payload::DeviceDetails { room, device }]
                 }),
-                "Details and Home share a row"
+                "Details use the row without a redundant Home shortcut"
             );
             // Export actual backend pages for the offline renderer review.
             if std::env::var_os("HA_CLIMATE_EXPORT").is_some() {
