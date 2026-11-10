@@ -73,7 +73,7 @@ pub async fn clear(config: &AppConfig) {
 fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
     tokio::spawn(async move {
         let camera_id = camera.id;
-        let result = crate::core::cameras::capture_snapshot(&camera).await;
+        let result = super::camera_snapshots::capture_preview(config.clone(), &camera).await;
         let mut cache = config.ui_background_cache.lock().await;
 
         let Some(cache) = cache.as_mut().filter(|cache| cache.camera_id == camera_id) else {
@@ -87,6 +87,7 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
                 cache.captured_at = Some(Utc::now());
                 cache.failed_at = None;
                 cache.last_error = None;
+                cache.last_warned_at = None;
             }
             Ok(_) => {
                 mark_refresh_failed(
@@ -96,8 +97,22 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
                     "keeping previous background",
                 );
             }
+            Err(error) if crate::core::cameras::is_capacity_error(&error) => {
+                // Keep the previous frame and back off; busy media workers do
+                // not mean that the camera or its snapshot endpoint is broken.
+                cache.failed_at = Some(Utc::now());
+                log::debug!(
+                    "UI camera background {} deferred: media capacity busy",
+                    camera_id
+                );
+            }
             Err(error) => {
-                mark_refresh_failed(cache, camera_id, &error.to_string(), "refresh failed");
+                mark_refresh_failed(
+                    cache,
+                    camera_id,
+                    &crate::core::cameras::sanitize_camera_error(&error),
+                    "refresh failed",
+                );
             }
         }
     });
@@ -105,14 +120,15 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
 
 fn mark_refresh_failed(cache: &mut UiBackgroundCache, camera_id: i64, error: &str, context: &str) {
     let now = Utc::now();
-    let repeated = cache.last_error.as_deref() == Some(error);
     let warning_cooled_down = cache.last_warned_at.is_none_or(|warned_at| {
         now - warned_at >= Duration::seconds(UI_BACKGROUND_WARNING_COOLDOWN_S)
     });
     cache.failed_at = Some(now);
     cache.last_error = Some(error.to_string());
 
-    if repeated && !warning_cooled_down {
+    // A failing endpoint can alternate between timeouts and empty responses.
+    // Limit warnings per camera outage, not per exact error string.
+    if !warning_cooled_down {
         log::debug!(
             "UI camera background {} repeated error: {}; {}",
             camera_id,
@@ -157,6 +173,29 @@ pub fn next_interval(current: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alternating_snapshot_errors_preserve_frame_and_warning_cooldown() {
+        let mut cache = UiBackgroundCache {
+            camera_id: 1,
+            captured_at: Some(Utc::now()),
+            failed_at: None,
+            last_warned_at: None,
+            last_error: None,
+            bytes: Some(vec![1, 2, 3]),
+            refreshing: false,
+        };
+        mark_refresh_failed(&mut cache, 1, "timeout", "refresh failed");
+        let warned_at = cache.last_warned_at.unwrap();
+        mark_refresh_failed(&mut cache, 1, "empty response", "refresh failed");
+        assert_eq!(cache.last_warned_at, Some(warned_at));
+        assert_eq!(cache.bytes, Some(vec![1, 2, 3]));
+        assert_eq!(cache.last_error.as_deref(), Some("empty response"));
+        assert!(cache.failed_at.is_some());
+        cache.last_warned_at = Some(warned_at - Duration::seconds(301));
+        mark_refresh_failed(&mut cache, 1, "timeout", "refresh failed");
+        assert!(cache.last_warned_at.unwrap() >= warned_at);
+    }
 
     #[test]
     fn ui_background_interval_cycles_known_values() {
