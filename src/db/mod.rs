@@ -9,6 +9,8 @@ pub(crate) mod camera_recording_segments;
 pub(crate) mod camera_recording_sessions;
 pub(crate) mod cameras;
 pub(crate) mod command_choices;
+#[cfg(test)]
+mod contention_tests;
 pub(crate) mod device_event_log;
 pub(crate) mod devices;
 pub(crate) mod interface;

@@ -113,10 +113,7 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
     tokio::spawn(async move {
         let camera_id = camera.id;
         let camera_name = camera.name.clone();
-        let result = match pre_roll_snapshot(config.clone(), camera_id).await {
-            Some(bytes) => Ok(bytes),
-            None => crate::core::cameras::capture_snapshot(&camera).await,
-        };
+        let result = capture_preview(config.clone(), &camera).await;
         let mut cache_by_camera = config.camera_snapshot_cache.lock().await;
 
         let Some(cache) = cache_by_camera.get_mut(&camera_id) else {
@@ -155,6 +152,16 @@ fn spawn_refresh(config: Arc<AppConfig>, camera: db::cameras::Camera) {
             }
         }
     });
+}
+
+pub(super) async fn capture_preview(
+    config: Arc<AppConfig>,
+    camera: &db::cameras::Camera,
+) -> anyhow::Result<Vec<u8>> {
+    match pre_roll_snapshot(config, camera.id).await {
+        Some(bytes) => Ok(bytes),
+        None => crate::core::cameras::capture_snapshot(camera).await,
+    }
 }
 
 async fn pre_roll_snapshot(config: Arc<AppConfig>, camera_id: i64) -> Option<Vec<u8>> {

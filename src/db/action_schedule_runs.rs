@@ -286,6 +286,17 @@ pub async fn skip_before_dispatch(id: i64, now: i64, pool: &SqlitePool) -> Resul
 }
 
 pub async fn expire(now: i64, pool: &SqlitePool) -> Result<u64> {
+    // Even an UPDATE matching no rows needs SQLite's single writer lock.
+    // Keep idle planner ticks read-only; the UPDATE rechecks after acquiring it.
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM action_schedule_runs WHERE status = 'pending' AND deadline_at <= ?)",
+    )
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    if !expired {
+        return Ok(0);
+    }
     Ok(sqlx::query("UPDATE action_schedule_runs SET status = 'skipped', reason = 'deadline_expired', finished_at = ? WHERE status = 'pending' AND deadline_at <= ?")
         .bind(now).bind(now).execute(pool).await?.rows_affected())
 }
