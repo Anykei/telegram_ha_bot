@@ -18,6 +18,16 @@ pub async fn sync_rooms_from_ha(
     default_name: &str,
     pool: &SqlitePool,
 ) -> Result<()> {
+    // Existing named rooms require no write (including hidden/manual names).
+    let unchanged: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM rooms WHERE area = ? AND alias IS NOT NULL)",
+    )
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
+    if unchanged {
+        return Ok(());
+    }
     sqlx::query(
         r#"
         INSERT INTO rooms (area, alias, hide)
@@ -27,6 +37,7 @@ pub async fn sync_rooms_from_ha(
             -- We can only update the technical name in alias,
             -- BUT only if it's currently NULL.
             alias = COALESCE(alias, ?2)
+        WHERE alias IS NULL
         "#,
     )
     .bind(entity_id)

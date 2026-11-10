@@ -43,6 +43,29 @@ pub async fn sync_device(
         .map(|(d, _)| d)
         .unwrap_or("unknown");
 
+    // Avoid taking the single SQLite writer lock for every device on every
+    // maintenance pass. Missing metadata/visibility still uses the guarded
+    // UPSERT below, which preserves aliases if they change concurrently.
+    let unchanged: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM devices
+         WHERE entity_id = ?2 AND room_id IS (SELECT id FROM rooms WHERE area = ?1)
+           AND ha_name IS ?3 AND device_class IS ?4 AND device_domain IS ?5
+           AND archived = 0
+           AND (alias_is_manual = 1 OR alias IS ?3
+                OR (TRIM(alias) != '' AND alias != entity_id))
+           AND EXISTS(SELECT 1 FROM hidden_entities WHERE entity_id = ?2))",
+    )
+    .bind(ha_area_id)
+    .bind(ha_entity_id)
+    .bind(friendly_name)
+    .bind(device_class)
+    .bind(domain)
+    .fetch_one(pool)
+    .await?;
+    if unchanged {
+        return Ok(());
+    }
+
     sqlx::query(
         r#"
         INSERT INTO devices (room_id, entity_id, alias, ha_name, device_class, device_domain, archived)
