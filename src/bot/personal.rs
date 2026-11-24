@@ -399,10 +399,11 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
         match &request {
         PersonalPayload::Language { english } => db::set_user_language(ctx.user_id, if *english { Language::En } else { Language::Ru }, pool).await?,
         PersonalPayload::SetInterface { mode } => {
-            if *mode == db::interface::InterfaceMode::Classic || ctx.config.html_ui.enabled {
+            if *mode == db::interface::InterfaceMode::Classic || ctx.config.html_ui.available() {
                 db::interface::set(ctx.user_id, *mode, pool).await?;
+                ctx.config.html_ui.retry_delivery(ctx.user_id);
             } else {
-                alert = Some(words(ctx.lang, "HTML-интерфейс ещё не включён владельцем бота.", "HTML interface has not been enabled by the bot owner.").into());
+                alert = Some(words(ctx.lang, "HTML-интерфейс недоступен.", "The HTML interface is unavailable.").into());
             }
         },
         PersonalPayload::Quiet { enabled } => db::personal::set_quiet(ctx.user_id, *enabled, pool).await?,
@@ -433,7 +434,12 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
     let mut next_state = None;
     let text = match &request {
         PersonalPayload::Interface => {
-            let mode = db::interface::get(ctx.user_id, &ctx.config.db).await?;
+            let html_available = ctx.config.html_ui.available();
+            let mode = if super::html_ui::preferred(&ctx.config, ctx.user_id).await {
+                db::interface::InterfaceMode::Html
+            } else {
+                db::interface::InterfaceMode::Classic
+            };
             for (value, name) in [
                 (
                     db::interface::InterfaceMode::Classic,
@@ -441,7 +447,7 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 ),
                 (db::interface::InterfaceMode::Html, "HTML"),
             ] {
-                if value == db::interface::InterfaceMode::Classic || ctx.config.html_ui.enabled {
+                if value == db::interface::InterfaceMode::Classic || html_available {
                     rows.push(vec![button(
                         format!("{}{}", if mode == value { "✓ " } else { "" }, name),
                         PersonalPayload::SetInterface { mode: value },
@@ -452,7 +458,15 @@ pub async fn render(ctx: RenderContext, request: PersonalPayload) -> Result<View
                 t(ctx.lang, "common.back"),
                 PersonalPayload::Settings,
             )]);
-            w("Вид интерфейса\n\nВыбор сохраняется для вашего аккаунта. Разделы, ещё не перенесённые в HTML, открываются обычным видом. /classic — вернуться к кнопкам Telegram.", "Interface\n\nYour preference is saved. Sections without HTML support open in the classic view. /classic returns to Telegram buttons.").into()
+            if html_available {
+                w("Вид интерфейса\n\nВыбор сохраняется для вашего аккаунта. Разделы, ещё не перенесённые в HTML, открываются обычным видом. /classic — вернуться к кнопкам Telegram.", "Interface\n\nYour preference is saved. Sections without HTML support open in the classic view. /classic returns to Telegram buttons.").into()
+            } else {
+                w(
+                    "Вид интерфейса\n\nHTML-интерфейс недоступен.",
+                    "Interface\n\nThe HTML interface is unavailable.",
+                )
+                .into()
+            }
         }
         PersonalPayload::QuietInput => {
             let schedule =

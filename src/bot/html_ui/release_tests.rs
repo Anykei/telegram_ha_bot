@@ -600,7 +600,7 @@ async fn long_html_delivery_failure_uses_a_bounded_classic_page_and_saved_contex
     view.text
         .push_str(&"\nДлинная инструкция, все строки должны оставаться доступными.".repeat(200));
     assert!(view.text_page.is_none());
-    *fake.fail.lock().unwrap() = Some("sendWidget".into());
+    fake.fail_next("sendWidget");
     assert!(
         handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view, config.clone(), None).await?
     );

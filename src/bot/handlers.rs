@@ -15,11 +15,12 @@ use teloxide::types::{
 use teloxide::{Bot, RequestError};
 
 use super::html_ui::media_pending::{
-    Outcome as VideoOutcome, Target as VideoTarget, UploadUncertain,
+    Outcome as VideoOutcome, Receipt as VideoReceipt, Target as VideoTarget, UploadUncertain,
 };
 use super::models::View;
 use crate::bot::router::{
-    router, AdminPayload, CameraPayload, CommandPayload, Payload, RecordingRuleEditField,
+    router, AdminPayload, CameraPayload, CommandPayload, ControlPayload, DeviceCmd, Payload,
+    RecordingRuleEditField,
 };
 use crate::bot::State;
 use crate::core::commands::{CommandExecution, CommandSource};
@@ -75,7 +76,7 @@ pub async fn handle_command(
     match cmd {
         Command::Ui | Command::Classic | Command::Html => {
             let mut payload = Payload::Personal(super::personal::PersonalPayload::Interface);
-            let unavailable = matches!(cmd, Command::Html) && !config.html_ui.enabled;
+            let unavailable = matches!(cmd, Command::Html) && !config.html_ui.available();
             if !matches!(cmd, Command::Ui) && !unavailable {
                 let mode = if matches!(cmd, Command::Html) {
                     db::interface::InterfaceMode::Html
@@ -83,25 +84,14 @@ pub async fn handle_command(
                     db::interface::InterfaceMode::Classic
                 };
                 db::interface::set(user_id, mode, &config.db).await?;
-                payload = config
-                    .sessions
-                    .get(&user_id)
-                    .and_then(|s| Payload::from_string(&s.current_context).ok())
-                    .unwrap_or(Payload::Home)
-                    .for_refresh();
-                // Calendar drafts belong to the HTML message. A mode change
-                // returns to the last applied graph rather than applying a draft.
-                if let Payload::Control(crate::bot::router::ControlPayload::QuickAction {
-                    room,
-                    device,
-                    cmd: crate::bot::router::DeviceCmd::EditChartRange { .. },
-                }) = payload
-                {
-                    payload = Payload::Control(crate::bot::router::ControlPayload::DeviceControl {
-                        room,
-                        device,
-                    });
-                }
+                config.html_ui.retry_delivery(user_id);
+                payload = mode_switch_payload(
+                    config
+                        .sessions
+                        .get(&user_id)
+                        .and_then(|s| Payload::from_string(&s.current_context).ok())
+                        .unwrap_or(Payload::Home),
+                );
             } else {
                 dialogue.exit().await?;
             }
@@ -110,8 +100,8 @@ pub async fn handle_command(
                 view.alert = Some(
                     super::personal::words(
                         view.lang,
-                        "HTML-интерфейс ещё не включён владельцем бота.",
-                        "HTML interface has not been enabled by the bot owner.",
+                        "HTML-интерфейс недоступен. Сейчас используются кнопки Telegram.",
+                        "The HTML interface is unavailable. Telegram buttons are active.",
                     )
                     .into(),
                 );
@@ -172,6 +162,18 @@ pub async fn handle_command(
 
     let _ = bot.delete_message(chat_id, msg.id).await;
     Ok(())
+}
+
+fn mode_switch_payload(payload: Payload) -> Payload {
+    match payload.for_refresh() {
+        // The draft belongs to the previous widget. Restore only the applied range.
+        Payload::Control(ControlPayload::QuickAction {
+            room,
+            device,
+            cmd: DeviceCmd::OpenChartRange | DeviceCmd::EditChartRange { .. },
+        }) => Payload::Control(ControlPayload::DeviceControl { room, device }),
+        payload => payload,
+    }
 }
 
 pub async fn handle_idle_text(bot: Bot, msg: Message, config: Arc<AppConfig>) -> Result<()> {
@@ -653,7 +655,6 @@ async fn apply_command_execution_cancellable(
         }
         CommandExecution::SendCameraClip { camera_id, seconds } => {
             spawn_video_delivery(
-                bot.clone(),
                 chat_id,
                 user_id,
                 VideoTarget::Clip {
@@ -661,6 +662,11 @@ async fn apply_command_execution_cancellable(
                     seconds,
                 },
                 config,
+                VideoReceipt {
+                    bot: bot.clone(),
+                    widget: false,
+                    rendered: None,
+                },
             )
             .await?;
         }
@@ -969,8 +975,15 @@ pub async fn handle_callback(
         });
         return Ok(());
     }
-    let payload =
-        handle_camera_media_action(&bot, msg.chat().id, user_id, payload, &config).await?;
+    let (payload, video_rendered) = handle_camera_media_action(
+        &bot,
+        msg.chat().id,
+        user_id,
+        payload,
+        &config,
+        super::html_ui::is_widget(&q),
+    )
+    .await?;
     let token = config.begin_view_update(user_id);
     let chat_id = msg.chat().id;
     let message_id = msg.id();
@@ -987,6 +1000,9 @@ pub async fn handle_callback(
         }
         .await;
         config.finish_view_update(user_id, &token);
+        if let Some(rendered) = video_rendered {
+            let _ = rendered.send(());
+        }
         if let Err(error) = result {
             log::warn!("UI callback failed for {user_id}: {error}");
             if !token.is_cancelled() {
@@ -1103,93 +1119,48 @@ async fn handle_camera_media_action(
     user_id: u64,
     payload: Payload,
     config: &Arc<AppConfig>,
-) -> Result<Payload> {
-    match payload {
+    widget: bool,
+) -> Result<(Payload, Option<tokio::sync::oneshot::Sender<()>>)> {
+    if let Some(target) = VideoTarget::from_payload(&payload) {
+        let next = match payload {
+            Payload::Admin(AdminPayload::RoomCameraClip { room, camera, .. }) => {
+                Payload::Admin(AdminPayload::RoomCameraDetail { room, camera })
+            }
+            _ => payload.for_refresh(),
+        };
+        if matches!(next, Payload::Admin(_)) && user_id != config.root_user {
+            return Ok((next, None));
+        }
+        let (rendered, settled) = tokio::sync::oneshot::channel();
+        spawn_video_delivery(
+            chat_id,
+            user_id,
+            target,
+            config.clone(),
+            VideoReceipt {
+                bot: bot.clone(),
+                widget,
+                rendered: Some(settled),
+            },
+        )
+        .await?;
+        return Ok((next, Some(rendered)));
+    }
+
+    let next = match payload {
         Payload::Camera(CameraPayload::Snapshot { id }) => {
             spawn_camera_snapshot(bot.clone(), chat_id, user_id, id, config.clone());
-            Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
-        }
-        Payload::Camera(CameraPayload::Clip { id, seconds }) => {
-            spawn_video_delivery(
-                bot.clone(),
-                chat_id,
-                user_id,
-                VideoTarget::Clip {
-                    camera: id,
-                    seconds,
-                },
-                config.clone(),
-            )
-            .await?;
-            Ok(Payload::Camera(CameraPayload::CameraDetail { id }))
-        }
-        Payload::Camera(CameraPayload::SendRecordingSegment {
-            camera,
-            session,
-            segment,
-        }) => {
-            spawn_video_delivery(
-                bot.clone(),
-                chat_id,
-                user_id,
-                VideoTarget::Segment {
-                    camera,
-                    session,
-                    segment,
-                },
-                config.clone(),
-            )
-            .await?;
-            Ok(Payload::Camera(CameraPayload::RecordingSession {
-                camera,
-                session,
-            }))
-        }
-        Payload::Camera(CameraPayload::SendRecordingAll { camera, session }) => {
-            spawn_video_delivery(
-                bot.clone(),
-                chat_id,
-                user_id,
-                VideoTarget::All { camera, session },
-                config.clone(),
-            )
-            .await?;
-            Ok(Payload::Camera(CameraPayload::RecordingSession {
-                camera,
-                session,
-            }))
+            Payload::Camera(CameraPayload::CameraDetail { id })
         }
         Payload::Admin(AdminPayload::RoomCameraSnapshot { room, camera }) => {
             if user_id == config.root_user {
                 spawn_camera_snapshot(bot.clone(), chat_id, user_id, camera, config.clone());
             }
-            Ok(Payload::Admin(AdminPayload::RoomCameraDetail {
-                room,
-                camera,
-            }))
+            Payload::Admin(AdminPayload::RoomCameraDetail { room, camera })
         }
-        Payload::Admin(AdminPayload::RoomCameraClip {
-            room,
-            camera,
-            seconds,
-        }) => {
-            if user_id == config.root_user {
-                spawn_video_delivery(
-                    bot.clone(),
-                    chat_id,
-                    user_id,
-                    VideoTarget::Clip { camera, seconds },
-                    config.clone(),
-                )
-                .await?;
-            }
-            Ok(Payload::Admin(AdminPayload::RoomCameraDetail {
-                room,
-                camera,
-            }))
-        }
-        payload => Ok(payload),
-    }
+        payload => payload,
+    };
+    Ok((next, None))
 }
 
 fn spawn_camera_snapshot(
@@ -1212,20 +1183,22 @@ fn spawn_camera_snapshot(
 }
 
 async fn spawn_video_delivery(
-    bot: Bot,
     chat_id: ChatId,
     user_id: u64,
     target: VideoTarget,
     config: Arc<AppConfig>,
+    receipt: VideoReceipt,
 ) -> Result<()> {
     // Acquire admission and the overlap guard before the callback renders its receipt.
     let access = CameraDeliveryAccess::new(chat_id, user_id, target.camera(), &config).await?;
-    let Some(operation) =
-        config
-            .html_ui
-            .media
-            .begin(&config, user_id, &access.generation, target.clone())
-    else {
+    let bot = receipt.bot.clone();
+    let Some(operation) = config.html_ui.media.begin(
+        &config,
+        user_id,
+        &access.generation,
+        target.clone(),
+        receipt,
+    ) else {
         return Ok(());
     };
     crate::db::user::spawn_with_admission(async move {
@@ -1491,7 +1464,7 @@ async fn send_camera_clip(
     else {
         bot.send_message(chat_id, "Недостаточно прав для просмотра камеры.")
             .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     };
 
     let seconds = seconds.clamp(1, 120);
@@ -1568,7 +1541,7 @@ async fn send_camera_clip(
                 format!("Не удалось записать видео: {}", error),
             )
             .await?;
-            return Ok(VideoOutcome::failed());
+            return Ok(VideoOutcome::reported_failure());
         }
     };
 
@@ -1614,7 +1587,7 @@ async fn send_camera_clip(
                 Some("Video could not fit the Telegram upload limit"),
             )
             .await;
-            VideoOutcome::failed()
+            VideoOutcome::reported_failure()
         }
         Err(error) => {
             let camera_id = camera.id.to_string();
@@ -1789,7 +1762,7 @@ async fn send_recording_segment(
     let Some(segment) = db::camera_recording_segments::get_segment(segment_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Файл записи не найден.").await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     };
 
     if segment.session_id != session_id
@@ -1798,13 +1771,13 @@ async fn send_recording_segment(
     {
         bot.send_message(chat_id, "Эта часть записи еще не готова.")
             .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     }
 
     let Some(path) = segment.file_path else {
         bot.send_message(chat_id, "Файл записи отсутствует.")
             .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     };
 
     let (full_path, _) = match crate::core::camera_recording::recording_file_info(config, &path)
@@ -1826,7 +1799,7 @@ async fn send_recording_segment(
                 "Файл записи недоступен на диске. Проверьте папку хранения записей и логи сервиса.",
             )
             .await?;
-            return Ok(VideoOutcome::failed());
+            return Ok(VideoOutcome::reported_failure());
         }
     };
     let thumbnail = recording_video_thumbnail(config, &path).await;
@@ -1844,7 +1817,7 @@ async fn send_recording_segment(
     Ok(if sent {
         VideoOutcome::sent()
     } else {
-        VideoOutcome::failed()
+        VideoOutcome::reported_failure()
     })
 }
 
@@ -1863,12 +1836,12 @@ async fn send_recording_all(
     let Some(session) = db::camera_recording_sessions::get_session(session_id, &config.db).await?
     else {
         bot.send_message(chat_id, "Запись не найдена.").await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     };
     if session.camera_id != camera_id {
         bot.send_message(chat_id, "Недостаточно прав для просмотра записи.")
             .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     }
 
     let segments =
@@ -1876,7 +1849,7 @@ async fn send_recording_all(
     if segments.is_empty() {
         bot.send_message(chat_id, "Готовых частей записи нет.")
             .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     }
 
     let mut files = Vec::new();
@@ -1909,7 +1882,7 @@ async fn send_recording_all(
             "Файлы записи недоступны на диске. Проверьте папку хранения записей и логи сервиса.",
         )
         .await?;
-        return Ok(VideoOutcome::failed());
+        return Ok(VideoOutcome::reported_failure());
     }
 
     if missing_files > 0 {
@@ -1927,6 +1900,7 @@ async fn send_recording_all(
         failed: missing_files,
         ..Default::default()
     };
+    let mut reported_failures = 0;
     let file_count = files.len();
     for (index, (segment_index, full_path, relative_path)) in files.into_iter().enumerate() {
         if access.check().await.is_err() {
@@ -1946,7 +1920,10 @@ async fn send_recording_all(
         .await;
         match result {
             Ok(true) => outcome.sent += 1,
-            Ok(false) => outcome.failed += 1,
+            Ok(false) => {
+                outcome.failed += 1;
+                reported_failures += 1;
+            }
             Err(error) => {
                 outcome.failed += file_count - index;
                 outcome.uncertain = error.is::<UploadUncertain>();
@@ -1955,6 +1932,7 @@ async fn send_recording_all(
         }
     }
 
+    outcome.reported_in_chat = outcome.sent == 0 && reported_failures == outcome.failed;
     Ok(outcome)
 }
 
@@ -2210,8 +2188,7 @@ pub async fn render_current_view(
     result
 }
 
-/// Фоновое live-обновление: только редактирует существующее сообщение.
-/// Если сообщение удалено, сессия считается устаревшей и очищается.
+/// Background refresh edits the current message or replaces an obsolete message format.
 pub async fn refresh_current_view(
     bot: &Bot,
     config: &Arc<AppConfig>,
@@ -2239,9 +2216,6 @@ async fn refresh_current_view_inner(
     context: &str,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
-    if config.html_ui.input_is_open(user_id, message_id.0) {
-        return Ok(());
-    }
     if !is_current_session(config, user_id, message_id, context) {
         log::debug!(
             "Skip stale refresh before render for user {} context {}",
@@ -2251,18 +2225,44 @@ async fn refresh_current_view_inner(
         return Ok(());
     }
 
-    let decoded = Payload::from_string(context).context("Context decoding failed")?;
-    if matches!(
-        decoded,
-        Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
-            | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
-    ) {
+    let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
+    let replace_restored_view = current_mode == Some(UiMessageMode::Unknown)
+        || (current_mode == Some(UiMessageMode::Html)
+            && (!config.html_ui.has_message(user_id, message_id.0)
+                || !super::html_ui::preferred(config, user_id).await));
+    if !replace_restored_view && config.html_ui.input_is_open(user_id, message_id.0) {
         return Ok(());
     }
-    let payload = decoded.for_refresh();
+    let decoded = match Payload::from_string(context) {
+        Ok(payload) => payload,
+        Err(_) if replace_restored_view => Payload::Home,
+        Err(error) => return Err(error).context("Context decoding failed"),
+    };
+    if !replace_restored_view
+        && matches!(
+            decoded,
+            Payload::Settings(crate::bot::router::SettingsPayload::EditName { .. })
+                | Payload::AdminSettings(crate::bot::router::SettingsPayload::EditName { .. })
+        )
+    {
+        return Ok(());
+    }
+    let payload = if replace_restored_view {
+        let payload = mode_switch_payload(decoded);
+        if payload.is_navigation_view() || payload.is_device_view() || payload.is_chart_navigation()
+        {
+            payload
+        } else {
+            Payload::Home
+        }
+    } else {
+        decoded.for_refresh()
+    };
     // Graphs are refreshed by their controls. Re-uploading them on every heartbeat
     // competes with navigation for Telegram's edit quota.
-    if payload.is_chart_navigation() || matches!(payload, Payload::TextPage { .. }) {
+    if !replace_restored_view
+        && (payload.is_chart_navigation() || matches!(payload, Payload::TextPage { .. }))
+    {
         return Ok(());
     }
     let view = tokio::select! {
@@ -2283,6 +2283,32 @@ async fn refresh_current_view_inner(
             user_id,
             context
         );
+        return Ok(());
+    }
+
+    if replace_restored_view {
+        let result = reanchor_view_cancellable(
+            bot,
+            chat_id,
+            message_id,
+            user_id,
+            view,
+            config.clone(),
+            Some(token),
+        )
+        .await;
+        match result {
+            Ok(true) => reset_view_dialogue(config, user_id, &generation, token).await?,
+            Ok(false) => {}
+            Err(error) => {
+                if let Some(RequestError::RetryAfter(retry_after)) =
+                    error.downcast_ref::<RequestError>()
+                {
+                    block_user_ui_refresh(config, user_id, retry_after.chrono_duration());
+                }
+                return Err(error);
+            }
+        }
         return Ok(());
     }
 
@@ -2319,18 +2345,17 @@ async fn refresh_current_view_inner(
             Ok(())
         }
         Ok(EditViewResult::NotModified) => Ok(()),
-        Ok(EditViewResult::ModeChanged) => {
-            reanchor_view_cancellable(
-                bot,
-                chat_id,
-                message_id,
-                user_id,
-                view,
-                config.clone(),
-                Some(token),
-            )
-            .await
-        }
+        Ok(EditViewResult::ModeChanged) => reanchor_view_cancellable(
+            bot,
+            chat_id,
+            message_id,
+            user_id,
+            view,
+            config.clone(),
+            Some(token),
+        )
+        .await
+        .map(|_| ()),
         Ok(EditViewResult::MessageMissing) => {
             log::warn!(
                 "Live refresh target message is missing for user {}. Clearing session.",
@@ -2362,8 +2387,34 @@ async fn refresh_current_view_inner(
                 Some(token),
             )
             .await
+            .map(|_| ())
         }
     }
+}
+
+pub(super) async fn reset_view_dialogue(
+    config: &AppConfig,
+    user_id: u64,
+    generation: &str,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let _lifecycle = config.admission_lifecycle.lock().await;
+    if !db::user::admission_is_current(user_id, generation, &config.db).await?
+        || token.is_cancelled()
+    {
+        return Ok(());
+    }
+    let dialogue = config
+        .active_dialogues
+        .get(&user_id)
+        .map(|entry| entry.clone());
+    if let Some(dialogue) = dialogue {
+        dialogue.reset().await?;
+    }
+    if let Some(mut session) = config.sessions.get_mut(&user_id) {
+        session.recording_rule_wizard = None;
+    }
+    Ok(())
 }
 
 /// Атомарно применяет изменения стейта и обновляет сообщение.
@@ -2549,7 +2600,7 @@ pub(crate) async fn update_view_cancellable(
                         // The next iteration waits without holding the UI lock.
                         // Retry only the new message; the action has already completed.
                     }
-                    outcome => return outcome,
+                    outcome => return outcome.map(|_| ()),
                 }
             }
             Err(RequestError::RetryAfter(retry_after)) => {
@@ -2590,7 +2641,8 @@ pub(crate) async fn update_view_cancellable(
                     config,
                     cancellation,
                 )
-                .await;
+                .await
+                .map(|_| ());
             }
         }
     }
@@ -2616,17 +2668,16 @@ async fn edit_existing_view(
     view: &View,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> std::result::Result<EditViewResult, RequestError> {
-    if view_admission(view, config, user_id, chat_id)
+    let Some(generation) = view_admission(view, config, user_id, chat_id)
         .await
         .ok()
         .flatten()
-        .is_none()
-        || cancellation.is_some_and(|token| token.is_cancelled())
-    {
+    else {
+        return Ok(EditViewResult::NotModified);
+    };
+    if cancellation.is_some_and(|token| token.is_cancelled()) {
         return Ok(EditViewResult::NotModified);
     }
-    let text = view.get_text();
-    let kb = view.kb.clone();
     let current_mode = config.sessions.get(&user_id).map(|s| s.ui_message_mode);
     if super::html_ui::preferred(config, user_id).await && super::html_ui::eligible(view) {
         if current_mode != Some(UiMessageMode::Html)
@@ -2647,14 +2698,30 @@ async fn edit_existing_view(
         {
             Ok(Some(_)) => Ok(EditViewResult::Updated(UiMessageMode::Html)),
             Ok(None) => Ok(EditViewResult::NotModified),
-            Err(error) => Err(error
-                .downcast_ref::<RequestError>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    RequestError::Api(teloxide::ApiError::Unknown(error.to_string()))
-                })),
+            Err(error) => {
+                match error.downcast_ref::<RequestError>() {
+                    Some(error @ RequestError::RetryAfter(_)) => return Err(error.clone()),
+                    Some(RequestError::Api(teloxide::ApiError::MessageNotModified)) => {
+                        return Ok(EditViewResult::NotModified)
+                    }
+                    Some(error) if is_missing_message_error(error) => {
+                        return Ok(EditViewResult::ModeChanged)
+                    }
+                    _ => {}
+                }
+                if !cancellation.is_some_and(|token| token.is_cancelled()) {
+                    config.html_ui.delivery_failed(user_id, &generation);
+                    log::warn!("HTML edit failed; using classic view: {error}");
+                }
+                Ok(EditViewResult::ModeChanged)
+            }
         };
     }
+    if super::text_pages::needs_classic_pagination(view) {
+        return Ok(EditViewResult::ModeChanged);
+    }
+    let text = view.get_text();
+    let kb = view.kb.clone();
     let edit_mode = if view.text_page.is_some() && view.image.is_none() {
         UiMessageMode::Text
     } else {
@@ -2730,9 +2797,14 @@ async fn reanchor_view_cancellable(
     view: View,
     config: Arc<AppConfig>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
-) -> Result<()> {
-    if !send_new_view_inner(bot, chat_id, user_id, view, config, cancellation).await? {
-        return Ok(());
+) -> Result<bool> {
+    if !send_new_view_inner(bot, chat_id, user_id, view, config.clone(), cancellation).await?
+        || !config
+            .sessions
+            .get(&user_id)
+            .is_some_and(|session| session.last_menu_id != old_message_id.0)
+    {
+        return Ok(false);
     }
 
     let b = bot.clone();
@@ -2740,7 +2812,7 @@ async fn reanchor_view_cancellable(
         let _ = b.delete_message(chat_id, old_message_id).await;
     });
 
-    Ok(())
+    Ok(true)
 }
 
 pub(super) async fn view_admission(
@@ -2835,6 +2907,7 @@ pub(super) async fn view_admission(
 
 async fn clear_ghost_session(config: &Arc<AppConfig>, user_id: u64) {
     config.sessions.remove(&user_id);
+    config.html_ui.clear(user_id);
 
     if let Err(e) = db::clear_user_session(user_id, &config.db).await {
         log::error!("Failed to clear ghost session for user {}: {}", user_id, e);
@@ -2971,28 +3044,42 @@ pub(crate) async fn send_new_view_inner(
     };
     let mut view = view;
     view.admission_generation = Some(generation.clone());
-    super::text_pages::prepare(&mut view, user_id, &config).await?;
-    let payload_str = view.payload.to_string();
 
     if super::html_ui::preferred(&config, user_id).await {
         match super::html_ui::deliver(bot, &config, user_id, chat_id, None, &view, cancellation)
             .await
         {
             Ok(Some(message)) => {
-                crate::core::update_user_state_for_admission(
+                let committed = crate::core::update_user_state_for_admission(
                     &config,
                     user_id,
                     message.0,
-                    &payload_str,
+                    &view.payload.to_string(),
                     UiMessageMode::Html,
                     &generation,
                 )
                 .await;
-                return Ok(true);
+                if !committed {
+                    config.html_ui.clear_view(user_id);
+                    let _ = bot.delete_message(chat_id, message).await;
+                }
+                return Ok(committed);
             }
             Ok(None) => {}
-            Err(error) if error.downcast_ref::<RequestError>().is_some() => return Err(error),
-            Err(error) => log::warn!("HTML delivery failed; using classic view: {error}"),
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<RequestError>(),
+                    Some(RequestError::RetryAfter(_))
+                ) =>
+            {
+                return Err(error)
+            }
+            Err(error) => {
+                if !cancellation.is_some_and(|token| token.is_cancelled()) {
+                    config.html_ui.delivery_failed(user_id, &generation);
+                    log::warn!("HTML delivery failed; using classic view: {error}");
+                }
+            }
         }
         if view_admission(&view, &config, user_id, chat_id)
             .await?
@@ -3009,14 +3096,12 @@ pub(crate) async fn send_new_view_inner(
             )
             .into()
         });
-        // A failed HTML send must still fit native Telegram limits. The earlier
-        // preparation deliberately skipped the classic pager for HTML content.
-        super::text_pages::prepare_classic(&mut view, user_id, &config).await?;
     }
+    super::text_pages::prepare_classic(&mut view, user_id, &config).await?;
     let payload_str = view.payload.to_string();
     let text = view.get_text();
 
-    if (view.text_page.is_some() && view.image.is_none())
+    let (message, mode) = if (view.text_page.is_some() && view.image.is_none())
         || view_mode(&view.get_plain_text()) == UiMessageMode::Text
     {
         log::debug!(
@@ -3038,56 +3123,40 @@ pub(crate) async fn send_new_view_inner(
             .reply_markup(view.kb)
             .await?;
 
-        if cancellation.is_some_and(|token| token.is_cancelled()) {
-            let _ = bot.delete_message(chat_id, sent.id).await;
+        (sent.id, UiMessageMode::Text)
+    } else {
+        let image = resolve_view_image(&mut view, user_id, &config).await;
+        if view_admission(&view, &config, user_id, chat_id)
+            .await?
+            .is_none()
+            || cancellation.is_some_and(|token| token.is_cancelled())
+        {
             return Ok(false);
         }
-        crate::core::update_user_state_for_admission(
+        let sent = bot
+            .send_photo(chat_id, InputFile::memory(image))
+            .caption(&text)
+            .parse_mode(ParseMode::MarkdownV2)
+            .reply_markup(view.kb)
+            .await?;
+        (sent.id, UiMessageMode::Photo)
+    };
+
+    if cancellation.is_some_and(|token| token.is_cancelled())
+        || !crate::core::update_user_state_for_admission(
             &config,
             user_id,
-            sent.id.0,
+            message.0,
             &payload_str,
-            UiMessageMode::Text,
+            mode,
             &generation,
         )
-        .await;
-        config.html_ui.clear(user_id);
-        return Ok(true);
-    }
-
-    // Исправлено: send_photo принимает InputFile, а не InputMedia
-    let image = resolve_view_image(&mut view, user_id, &config).await;
-    let input_file = InputFile::memory(image);
-    if view_admission(&view, &config, user_id, chat_id)
-        .await?
-        .is_none()
-        || cancellation.is_some_and(|token| token.is_cancelled())
+        .await
     {
+        let _ = bot.delete_message(chat_id, message).await;
         return Ok(false);
     }
-
-    let sent = bot
-        .send_photo(chat_id, input_file)
-        .caption(&text)
-        .parse_mode(ParseMode::MarkdownV2)
-        .reply_markup(view.kb)
-        .await?;
-
-    if cancellation.is_some_and(|token| token.is_cancelled()) {
-        let _ = bot.delete_message(chat_id, sent.id).await;
-        return Ok(false);
-    }
-    // Критическая правка: сохраняем ID СООБЩЕНИЯ БОТА (sent.id), а не входящего апдейта
-    crate::core::update_user_state_for_admission(
-        &config,
-        user_id,
-        sent.id.0,
-        &payload_str,
-        UiMessageMode::Photo,
-        &generation,
-    )
-    .await;
-    config.html_ui.clear(user_id);
+    config.html_ui.clear_view(user_id);
     Ok(true)
 }
 

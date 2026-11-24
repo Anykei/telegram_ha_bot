@@ -13,6 +13,7 @@ use crate::i18n::{t, Language};
 const MAX_HISTORY_DAYS: i32 = 10;
 const MAX_BACK_HOURS: i32 = MAX_HISTORY_DAYS * 24;
 pub(crate) const MAX_PERIOD_HOURS: u32 = MAX_BACK_HOURS as u32;
+const DEFAULT_PERIOD_HOURS: u32 = 24;
 
 pub async fn render(
     ctx: RenderContext,
@@ -22,21 +23,26 @@ pub async fn render(
     cmd: DeviceCmd,
 ) -> anyhow::Result<View> {
     ctx.track_device(dev.id, &dev.entity_id);
-    let absolute = match cmd {
+    let (absolute, expired_range) = match cmd {
         DeviceCmd::ShowChartRange { start, end } => {
-            crate::charts::range::validate(start, end, Utc::now()).map_err(anyhow::Error::msg)?;
-            Some([start, end])
+            match crate::charts::range::validate(start, end, Utc::now()) {
+                Ok(()) => (Some([start, end]), false),
+                Err("past") if !crate::bot::html_ui::preferred(&ctx.config, ctx.user_id).await => {
+                    (None, true)
+                }
+                Err(error) => return Err(anyhow::Error::msg(error)),
+            }
         }
-        _ => None,
+        _ => (None, false),
     };
-    // 1. Извлекаем параметры из команды или ставим дефолт
+    // For an exact range, the default only drives the classic controls for rolling windows.
     let params = match cmd {
         DeviceCmd::ShowChart { h, o } => ChartParams {
             period_hours: h,
             offset_hours: o,
         },
         _ => ChartParams {
-            period_hours: 24,
+            period_hours: DEFAULT_PERIOD_HOURS,
             offset_hours: 0,
         },
     };
@@ -143,7 +149,7 @@ pub async fn render(
     let mut nav_row = vec![];
 
     // Кнопка НАЗАД (только если не превысили лимит хранения)
-    if (params.offset_hours.abs() + 24) <= MAX_BACK_HOURS {
+    if absolute.is_none() && (params.offset_hours.abs() + 24) <= MAX_BACK_HOURS {
         nav_row.push(InlineKeyboardButton::callback(
             localized(ctx.lang, "⏪ -24ч", "⏪ -24h"),
             Payload::Control(ControlPayload::QuickAction {
@@ -201,7 +207,7 @@ pub async fn render(
             .iter()
             .map(|(label, h)| {
                 InlineKeyboardButton::callback(
-                    if *h == params.period_hours {
+                    if absolute.is_none() && *h == params.period_hours {
                         format!("✓ {}", label)
                     } else {
                         label.to_string()
@@ -219,11 +225,6 @@ pub async fn render(
             })
             .collect(),
     );
-
-    // An exact calendar interval has no implicit hour rounding in classic mode.
-    if absolute.is_some() {
-        rows.clear();
-    }
 
     // 7. Утилиты и Навигация
     rows.push(vec![InlineKeyboardButton::callback(
@@ -309,6 +310,14 @@ pub async fn render(
         html_chart: Some(html_chart),
         html_range: Some([history.start_time.timestamp(), history.end_time.timestamp()]),
         image,
+        notice: expired_range.then(|| {
+            localized(
+                ctx.lang,
+                "Сохранённый интервал устарел. Показаны последние 24 часа.",
+                "The saved range expired. Showing the last 24 hours.",
+            )
+            .into()
+        }),
         notifications: ctx.notifications,
         text,
         kb: InlineKeyboardMarkup::new(rows),
@@ -380,7 +389,10 @@ pub async fn saved_chart_payload(
     Ok(Payload::Control(ControlPayload::QuickAction {
         room,
         device,
-        cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+        cmd: DeviceCmd::ShowChart {
+            h: DEFAULT_PERIOD_HOURS,
+            o: 0,
+        },
     }))
 }
 
@@ -393,7 +405,10 @@ pub fn render_manual_input(room_id: i64, device_id: i64, state: State, lang: Lan
     let cancel_payload = Payload::Control(ControlPayload::QuickAction {
         room: room_id,
         device: device_id,
-        cmd: DeviceCmd::ShowChart { h: 24, o: 0 },
+        cmd: DeviceCmd::ShowChart {
+            h: DEFAULT_PERIOD_HOURS,
+            o: 0,
+        },
     });
 
     View {

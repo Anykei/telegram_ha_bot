@@ -230,6 +230,8 @@ pub(crate) async fn cleanup_expired_sessions(config: &Arc<AppConfig>) {
         }
         config.cancel_view_update(user_id);
         config.sessions.remove(&user_id);
+        config.html_ui.clear(user_id);
+        config.html_ui.retry_delivery(user_id);
 
         if let Err(e) = db::clear_user_session(user_id, &config.db).await {
             error!("Failed to clear expired session {}: {}", user_id, e);

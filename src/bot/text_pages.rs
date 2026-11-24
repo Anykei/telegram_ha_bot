@@ -84,6 +84,10 @@ fn content_limit(view: &View) -> usize {
     }
 }
 
+pub(super) fn needs_classic_pagination(view: &View) -> bool {
+    view.text_page.is_none() && text_len(&view.get_full_plain_text()) > content_limit(view)
+}
+
 fn layout(view: &View) -> (String, Vec<String>) {
     let limit = content_limit(view);
     let status = View {
@@ -188,7 +192,7 @@ pub async fn prepare(view: &mut View, user: u64, config: &AppConfig) -> Result<(
 
 /// Also used after an HTML transport failure, regardless of the saved preference.
 pub async fn prepare_classic(view: &mut View, user: u64, config: &AppConfig) -> Result<()> {
-    if view.text_page.is_none() && text_len(&view.get_full_plain_text()) <= content_limit(view) {
+    if view.text_page.is_none() && !needs_classic_pagination(view) {
         return Ok(());
     }
     let page = view.text_page.map_or(0, |current| current.page);

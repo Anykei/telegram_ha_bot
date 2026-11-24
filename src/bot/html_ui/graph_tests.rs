@@ -68,6 +68,66 @@ fn edit_query(config: &AppConfig, edit: Edit) -> CallbackQuery {
     let (key,_)=s.actions.iter().find(|(_,p)|matches!(p,Payload::Control(ControlPayload::QuickAction{cmd:DeviceCmd::EditChartRange{edit:e,..},..}) if *e==edit)).expect("issued editor action");
     query(&s, key)
 }
+
+#[tokio::test]
+async fn disabled_html_restores_saved_graph_once_as_classic() -> Result<()> {
+    for mode in [UiMessageMode::Html, UiMessageMode::Unknown] {
+        let (mut config, _) = mock_config().await?;
+        Arc::get_mut(&mut config).unwrap().html_ui.enabled = false;
+        let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+        let context = action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 }).to_string();
+        let generation = db::admission_generation(1, &config.db).await?.unwrap();
+        let old_message = MessageId(99);
+        db::save_user_session(
+            1,
+            old_message.0,
+            &context,
+            mode,
+            Utc::now(),
+            &generation,
+            &config.db,
+        )
+        .await?;
+        crate::restore_sessions(&config).await?;
+        assert_eq!(config.sessions.get(&1).unwrap().ui_message_mode, mode);
+        let fake = FakeTelegram::new().await?;
+        handlers::refresh_current_view(&fake.bot, &config, 1, ChatId(1), old_message, &context)
+            .await?;
+        let new_message = MessageId(config.sessions.get(&1).unwrap().last_menu_id);
+        assert_ne!(new_message, old_message);
+        assert_eq!(config.sessions.get(&1).unwrap().current_context, context);
+        assert_eq!(
+            config.sessions.get(&1).unwrap().ui_message_mode,
+            UiMessageMode::Photo
+        );
+        assert_eq!(
+            db::interface::get(1, &config.db).await?,
+            db::interface::InterfaceMode::Html
+        );
+
+        config.sessions.clear();
+        crate::restore_sessions(&config).await?;
+        assert_eq!(
+            config.sessions.get(&1).unwrap().ui_message_mode,
+            UiMessageMode::Photo
+        );
+        handlers::refresh_current_view(&fake.bot, &config, 1, ChatId(1), new_message, &context)
+            .await?;
+        let calls = fake.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(method, _)| method.eq_ignore_ascii_case("sendPhoto"))
+                .count(),
+            1
+        );
+        assert!(calls
+            .iter()
+            .all(|(method, _)| !method.eq_ignore_ascii_case("sendWidget")));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboard() -> Result<()> {
     let (config, _) = mock_config().await?;
@@ -132,6 +192,104 @@ async fn graph_overview_replaces_presets_with_calendar_but_keeps_classic_keyboar
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn classic_graph_keeps_saved_exact_bounds_and_offers_rolling_presets() -> Result<()> {
+    let (mut config, _) = mock_config().await?;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    let end = Utc::now().timestamp() - 4001;
+    let start = end - 4873;
+    let exact = action(room, device, DeviceCmd::ShowChartRange { start, end });
+    let html = router(exact.clone(), 1, config.clone()).await?;
+    let prepared = presentation::prepare(&html, "a".repeat(32), 1)?;
+    assert!(!prepared.actions.values().any(|payload| matches!(
+        payload,
+        Payload::Control(ControlPayload::QuickAction {
+            cmd: DeviceCmd::ShowChart { .. },
+            ..
+        })
+    )));
+
+    Arc::get_mut(&mut config).unwrap().html_ui.enabled = false;
+    let classic = router(
+        Payload::Control(ControlPayload::DeviceControl { room, device }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert_eq!(classic.payload, exact);
+    assert_eq!(classic.html_range, Some([start, end]));
+    let mut relative_buttons = Vec::new();
+    for button in classic.kb.inline_keyboard.iter().flatten() {
+        let teloxide::types::InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+            continue;
+        };
+        if let Payload::Control(ControlPayload::QuickAction {
+            cmd: DeviceCmd::ShowChart { h, o },
+            ..
+        }) = Payload::from_string(data)?
+        {
+            assert!(!button.text.starts_with('✓'));
+            relative_buttons.push((h, o));
+        }
+    }
+    assert_eq!(
+        relative_buttons,
+        [(24, 0), (12, 0), (24, 0), (72, 0), (168, 0)]
+    );
+    let preset = action(room, device, DeviceCmd::ShowChart { h: 72, o: 0 });
+    let relative = router(preset.clone(), 1, config.clone()).await?;
+    assert_eq!(relative.payload, preset);
+    let [start, end] = relative.html_range.context("Missing range for preset")?;
+    assert_eq!(end - start, 72 * 3600);
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_exact_range_recovers_to_current_classic_graph() -> Result<()> {
+    let (mut config, _) = mock_config().await?;
+    Arc::get_mut(&mut config).unwrap().html_ui.enabled = false;
+    let (room, device) = device(&config, "sensor.bedroom_humidity").await?;
+    let end = Utc::now().timestamp() - crate::charts::range::LOOKBACK;
+    let exact = action(
+        room,
+        device,
+        DeviceCmd::ShowChartRange {
+            start: end - 3600,
+            end,
+        },
+    );
+    let before = Utc::now().timestamp();
+    let recovered = router(exact, 1, config.clone()).await?;
+    assert!(recovered.alert.is_none());
+    assert!(recovered.notice.is_some());
+    let [start, end] = recovered.html_range.context("Missing recovery range")?;
+    assert_eq!(end - start, 24 * 3600);
+    assert!((before..=Utc::now().timestamp()).contains(&end));
+    let current = action(room, device, DeviceCmd::ShowChart { h: 24, o: 0 });
+    assert_eq!(recovered.payload, current);
+    assert_eq!(
+        db::settings::get_string(&format!("ui:chart:1:{device}"), &config.db).await?,
+        Some(current.to_string()),
+    );
+    let refresh_text = crate::i18n::t(recovered.lang, "control.refresh");
+    let refresh = recovered
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .find(|button| button.text == refresh_text)
+        .context("Missing classic Refresh button")?;
+    assert_eq!(
+        refresh.kind,
+        teloxide::types::InlineKeyboardButtonKind::CallbackData(current.to_string())
+    );
+    let refreshed = router(current.clone(), 1, config).await?;
+    assert_eq!(refreshed.payload, current);
+    assert!(refreshed.notice.is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn calendar_draft_keeps_one_editor_message_and_exact_bounds_across_graph_transitions(
 ) -> Result<()> {
@@ -575,7 +733,7 @@ async fn png_export_failure_is_visible_and_only_a_fresh_explicit_tap_retries() -
     let export = action(room, device, DeviceCmd::ExportChart);
     let callback = action_query(&config, &export);
     fake.clear();
-    *fake.fail.lock().unwrap() = Some("sendDocument".into());
+    fake.fail_next("sendDocument");
     press(&fake, &config, &dialogue, callback.clone()).await?;
     let failed = current(&config);
     assert!(failed
