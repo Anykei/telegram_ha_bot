@@ -23,6 +23,7 @@ pub struct UserSession {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiMessageMode {
+    Unknown,
     Photo,
     Text,
     Html,

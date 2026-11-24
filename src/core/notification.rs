@@ -428,7 +428,9 @@ mod tests {
         db::devices::sync_device("light.hall", "hall", "Свет", "light", &config.db).await?;
         db::subscriptions::toggle_hidden("light.hall", &config.db).await?;
         db::subscriptions::toggle_subscription(42, "light.hall", &config.db).await?;
-        config.sessions.insert(42, session_for(Payload::Home));
+        let mut session = session_for(Payload::Home);
+        session.ui_message_mode = crate::models::UiMessageMode::Html;
+        config.sessions.insert(42, session);
         let _held = super::super::notification_delivery::hold_delivery(&config, 4);
         let refreshes = LatestRefreshes::default();
         process_and_dispatch(

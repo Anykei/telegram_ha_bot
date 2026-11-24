@@ -84,7 +84,7 @@ async fn recovery_uses_persisted_anchor_after_restart() -> Result<()> {
     let fake = FakeTelegram::new().await?;
     let old = publish(&fake, &config, Payload::Personal(PersonalPayload::Settings)).await?;
     config.html_ui.sessions.remove(&1);
-    config.sessions.get_mut(&1).unwrap().ui_message_mode = UiMessageMode::Photo;
+    config.sessions.get_mut(&1).unwrap().ui_message_mode = UiMessageMode::Unknown;
     // Authentication registers a handle even if the dialogue has no stored state.
     config.active_dialogues.insert(
         1,
@@ -188,7 +188,8 @@ async fn recovery_keeps_original_message_if_replacement_fails() -> Result<()> {
     let (config, _) = config().await?;
     let fake = FakeTelegram::new().await?;
     let old = publish(&fake, &config, Payload::Home).await?;
-    *fake.fail.lock().unwrap() = Some("sendWidget".into());
+    fake.fail_next("sendWidget");
+    fake.fail_next("sendPhoto");
     fake.clear();
     assert!(resolve(&fake.bot, &recovery_query(&old), &config)
         .await
@@ -202,5 +203,35 @@ async fn recovery_keeps_original_message_if_replacement_fails() -> Result<()> {
         .calls()
         .iter()
         .any(|(m, _)| m.eq_ignore_ascii_case("DeleteMessage")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_opens_classic_home_when_telegram_rejects_the_widget() -> Result<()> {
+    let (config, _) = config().await?;
+    let fake = FakeTelegram::new().await?;
+    let old = publish(&fake, &config, Payload::Home).await?;
+    fake.fail_next("sendWidget");
+    fake.clear();
+
+    resolve(&fake.bot, &recovery_query(&old), &config).await?;
+
+    assert_eq!(
+        config.sessions.get(&1).unwrap().ui_message_mode,
+        UiMessageMode::Photo
+    );
+    assert_ne!(config.sessions.get(&1).unwrap().last_menu_id, old.message);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .map(|(method, _)| method.to_ascii_lowercase())
+            .collect::<Vec<_>>(),
+        [
+            "answerwidgetquery",
+            "sendwidget",
+            "sendphoto",
+            "deletemessage"
+        ]
+    );
     Ok(())
 }

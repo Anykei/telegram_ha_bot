@@ -1,5 +1,94 @@
-use super::super::super::media_pending::{Outcome, Target};
+use super::super::super::media_pending::{Outcome, Receipt, Target};
 use super::*;
+
+fn widget_receipt(fake: &FakeTelegram) -> Receipt {
+    Receipt {
+        bot: fake.bot.clone(),
+        widget: true,
+        rendered: None,
+    }
+}
+
+#[tokio::test]
+async fn video_receipt_uses_chat_after_widget_fallback_and_for_a_command_without_a_view(
+) -> Result<()> {
+    for (widget, leave_camera) in [(true, false), (true, true), (false, false)] {
+        let (config, _) = config().await?;
+        let fake = FakeTelegram::new().await?;
+        let camera = db::cameras::add_manual_camera(
+            db::cameras::NewCamera {
+                name: "Video test",
+                room_id: 1,
+                stream_url: "mock://unused",
+                snapshot_url: None,
+                clip_seconds: 10,
+            },
+            &config.db,
+        )
+        .await?;
+        let generation = db::admission_generation(1, &config.db).await?.unwrap();
+        let route = Payload::Camera(CameraPayload::CameraDetail { id: camera });
+        if widget {
+            crate::core::update_user_state_with_mode(
+                &config,
+                1,
+                7,
+                &route.to_string(),
+                UiMessageMode::Html,
+            )
+            .await;
+        }
+        let operation = config
+            .html_ui
+            .media
+            .begin(
+                &config,
+                1,
+                &generation,
+                Target::Clip {
+                    camera,
+                    seconds: 10,
+                },
+                Receipt {
+                    bot: fake.bot.clone(),
+                    widget,
+                    rendered: None,
+                },
+            )
+            .unwrap();
+        if widget {
+            let context = if leave_camera {
+                Payload::Home
+            } else {
+                route.clone()
+            };
+            crate::core::update_user_state_with_mode(
+                &config,
+                1,
+                8,
+                &context.to_string(),
+                UiMessageMode::Photo,
+            )
+            .await;
+        }
+        operation.complete(Outcome::sent()).await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].0.eq_ignore_ascii_case("sendMessage"));
+        assert_eq!(calls[0].1["text"], "Видео отправлено: 1");
+        let mut view = View {
+            payload: route,
+            ..Default::default()
+        };
+        assert!(config
+            .html_ui
+            .media
+            .decorate(1, &generation, &mut view)
+            .is_none());
+        assert_eq!(config.runtime_status.read().await.ui_refresh_queued, 0);
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn video_pending_remains_after_read_new_revision_and_navigation_without_replaying(
@@ -39,7 +128,13 @@ async fn video_pending_remains_after_read_new_revision_and_navigation_without_re
     let operation = config
         .html_ui
         .media
-        .begin(&config, 1, &generation, target.clone())
+        .begin(
+            &config,
+            1,
+            &generation,
+            target.clone(),
+            widget_receipt(&fake),
+        )
         .unwrap();
     let first = publish(&fake, &config, route.clone()).await?;
     let action = Payload::Camera(CameraPayload::Clip {
@@ -85,7 +180,7 @@ async fn video_pending_remains_after_read_new_revision_and_navigation_without_re
     assert!(config
         .html_ui
         .media
-        .begin(&config, 1, &generation, target)
+        .begin(&config, 1, &generation, target, widget_receipt(&fake))
         .is_none());
     // Completion while elsewhere must not resurrect the camera page.
     let home = publish(&fake, &config, Payload::Home).await?;
@@ -148,7 +243,13 @@ async fn archive_send_all_button_stays_visible_and_busy_until_worker_finishes() 
     let operation = config
         .html_ui
         .media
-        .begin(&config, 1, &initial.generation, target)
+        .begin(
+            &config,
+            1,
+            &initial.generation,
+            target,
+            widget_receipt(&fake),
+        )
         .unwrap();
     let pending = publish(&fake, &config, route.clone()).await?;
     let button = pending
@@ -208,7 +309,13 @@ async fn cancelled_video_worker_queues_unknown_receipt_without_restoring_old_nav
         let operation = config
             .html_ui
             .media
-            .begin(&config, 1, &initial.generation, target.clone())
+            .begin(
+                &config,
+                1,
+                &initial.generation,
+                target.clone(),
+                widget_receipt(&fake),
+            )
             .unwrap();
         publish(
             &fake,

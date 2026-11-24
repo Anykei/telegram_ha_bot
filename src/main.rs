@@ -19,7 +19,7 @@ extern crate pretty_env_logger;
 extern crate log;
 
 use crate::config::EnvPaths;
-use crate::models::{AppConfig, RuntimeStatus, UiMessageMode};
+use crate::models::{AppConfig, RuntimeStatus};
 use crate::options::AppOptions;
 
 mod bot;
@@ -83,12 +83,13 @@ async fn main() -> Result<()> {
     .validate()
     .context("Error checking env variables.")?;
     info!(
-        "Startup config: db={}, migrations={}, ha_url={}, default_language={:?}, voice_enabled={}, recording_storage={}, recording_parallel_jobs={}",
+        "Startup config: db={}, migrations={}, ha_url={}, default_language={:?}, voice_enabled={}, html_widgets_enabled={}, recording_storage={}, recording_parallel_jobs={}",
         paths.db_url(),
         paths.migrations.display(),
         paths.ha_url,
         options.default_language,
         options.voice_enabled,
+        options.html_widgets_enabled,
         options.camera_recording_storage_root,
         options.camera_recording_max_parallel_jobs
     );
@@ -181,24 +182,7 @@ async fn main() -> Result<()> {
     });
 
     info!("Load Backup sessions from database...");
-    let active_sessions = db::get_all_active_sessions(&app_config.db).await?;
-
-    for (uid, mid, context, last_seen_at) in active_sessions {
-        app_config.sessions.insert(
-            uid as u64,
-            crate::models::UserSession {
-                last_menu_id: mid,
-                current_context: context,
-                ui_message_mode: UiMessageMode::Photo,
-                header_entities: std::collections::HashSet::new(), // Это можно тоже хранить в БД, если нужно
-                recording_rule_wizard: None,
-                last_ui_refresh_at: None,
-                ui_refresh_blocked_until: None,
-                last_seen_at,
-                last_persisted_at: Some(last_seen_at),
-            },
-        );
-    }
+    restore_sessions(&app_config).await?;
     info!("Restored {} action sessions.", app_config.sessions.len());
 
     match db::devices::get_all_display_names(&app_config.db).await {
@@ -298,10 +282,13 @@ async fn main() -> Result<()> {
             if let Err(error) = _bot.delete_webhook().await {
                 log::warn!("Cannot clear Telegram webhook: {error}");
             }
+            let config = app_config.clone();
             dispatcher
                 .dispatch_with_listener(
-                    bot::html_ui::transport::listener(_bot.clone()),
-                    LoggingErrorHandler::with_custom_text("HTML update listener error"),
+                    bot::html_ui::transport::listener(_bot.clone(), move || {
+                        config.html_ui.disable_widget_updates();
+                    }),
+                    LoggingErrorHandler::with_custom_text("Telegram update listener error"),
                 )
                 .await;
         } else {
@@ -387,6 +374,26 @@ async fn main() -> Result<()> {
 
     info!("Database connection closed.");
     info!("Shutting down...");
+    Ok(())
+}
+
+async fn restore_sessions(config: &AppConfig) -> Result<()> {
+    for session in db::get_all_active_sessions(&config.db).await? {
+        config.sessions.insert(
+            session.user_id as u64,
+            crate::models::UserSession {
+                last_menu_id: session.message_id,
+                current_context: session.context,
+                ui_message_mode: session.message_mode,
+                header_entities: Default::default(),
+                recording_rule_wizard: None,
+                last_ui_refresh_at: None,
+                ui_refresh_blocked_until: None,
+                last_seen_at: session.last_seen_at,
+                last_persisted_at: Some(session.last_seen_at),
+            },
+        );
+    }
     Ok(())
 }
 

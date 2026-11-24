@@ -3,6 +3,7 @@
 //! This module handles user existence checks and session management.
 
 use crate::i18n::Language;
+use crate::models::UiMessageMode;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
@@ -181,32 +182,37 @@ pub async fn delete_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// Retrieves all active user sessions.
-///
-/// # Arguments
-/// * `pool` - Database connection pool
-///
-/// # Returns
-/// * `Result<Vec<(i64, i32, String, DateTime<Utc>)>>` - List of active sessions
-pub async fn get_all_active_sessions(
-    pool: &SqlitePool,
-) -> Result<Vec<(i64, i32, String, DateTime<Utc>)>> {
-    let rows = sqlx::query_as::<_, (i64, i32, String, Option<String>)>(
-        "SELECT id, last_menu_id, current_context, last_seen_at FROM users WHERE private_menu_verified = 1 AND last_menu_id > 0 AND current_context != ''",
+pub struct StoredSession {
+    pub user_id: i64,
+    pub message_id: i32,
+    pub context: String,
+    pub last_seen_at: DateTime<Utc>,
+    pub message_mode: UiMessageMode,
+}
+
+pub async fn get_all_active_sessions(pool: &SqlitePool) -> Result<Vec<StoredSession>> {
+    let rows = sqlx::query_as::<_, (i64, i32, String, Option<String>, Option<String>)>(
+        "SELECT id, last_menu_id, current_context, last_seen_at, ui_message_mode FROM users WHERE private_menu_verified = 1 AND last_menu_id > 0 AND current_context != ''",
     )
     .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, last_menu_id, current_context, last_seen_at)| {
-            (
-                id,
-                last_menu_id,
-                current_context,
-                parse_saved_timestamp(last_seen_at).unwrap_or_else(Utc::now),
-            )
-        })
+        .map(
+            |(user_id, message_id, context, last_seen_at, message_mode)| StoredSession {
+                user_id,
+                message_id,
+                context,
+                last_seen_at: parse_saved_timestamp(last_seen_at).unwrap_or_else(Utc::now),
+                message_mode: match message_mode.as_deref() {
+                    Some("photo") => UiMessageMode::Photo,
+                    Some("text") => UiMessageMode::Text,
+                    Some("html") => UiMessageMode::Html,
+                    _ => UiMessageMode::Unknown,
+                },
+            },
+        )
         .collect())
 }
 
@@ -221,14 +227,21 @@ pub async fn save_user_session(
     user_id: u64,
     msg_id: i32,
     context: &str,
+    message_mode: UiMessageMode,
     last_seen_at: DateTime<Utc>,
     generation: &str,
     pool: &SqlitePool,
 ) -> Result<SessionSave> {
+    let message_mode = match message_mode {
+        UiMessageMode::Photo => Some("photo"),
+        UiMessageMode::Text => Some("text"),
+        UiMessageMode::Html => Some("html"),
+        UiMessageMode::Unknown => None,
+    };
     let result = sqlx::query(
-        "UPDATE users SET last_menu_id = ?, current_context = ?, last_seen_at = COALESCE(last_seen_at, ?), private_menu_verified = 1 WHERE id = ? AND admission_generation = ?",
+        "UPDATE users SET last_menu_id = ?, current_context = ?, ui_message_mode = ?, last_seen_at = COALESCE(last_seen_at, ?), private_menu_verified = 1 WHERE id = ? AND admission_generation = ?",
     )
-    .bind(msg_id).bind(context).bind(last_seen_at.to_rfc3339())
+    .bind(msg_id).bind(context).bind(message_mode).bind(last_seen_at.to_rfc3339())
     .bind(user_id as i64).bind(generation).execute(pool).await?;
     Ok(if result.rows_affected() == 1 {
         SessionSave::Saved
@@ -430,7 +443,7 @@ pub async fn admission_is_current(
 
 pub async fn clear_user_session(user_id: u64, pool: &SqlitePool) -> Result<()> {
     sqlx::query(
-        "UPDATE users SET last_menu_id = -1, current_context = '', last_seen_at = NULL WHERE id = ?",
+        "UPDATE users SET last_menu_id = -1, current_context = '', ui_message_mode = NULL, last_seen_at = NULL WHERE id = ?",
     )
     .bind(user_id as i64)
     .execute(pool)
@@ -514,7 +527,16 @@ mod tests {
         let task_pool = pool.clone();
         let task = tokio::spawn(async move {
             barrier.await.unwrap();
-            save_user_session(42, 9, "old-form", Utc::now(), &old_generation, &task_pool).await
+            save_user_session(
+                42,
+                9,
+                "old-form",
+                UiMessageMode::Html,
+                Utc::now(),
+                &old_generation,
+                &task_pool,
+            )
+            .await
         });
         delete_user(42, &pool).await?;
         assert!(set_user_language(42, Language::En, &pool).await.is_err());
@@ -526,13 +548,33 @@ mod tests {
         assert_eq!(get_user_language(42, &pool).await?, None);
         let fresh = admission_generation(42, &pool).await?.unwrap();
         assert_eq!(
-            save_user_session(42, 10, "new", Utc::now(), &fresh, &pool).await?,
+            save_user_session(
+                42,
+                10,
+                "new",
+                UiMessageMode::Text,
+                Utc::now(),
+                &fresh,
+                &pool
+            )
+            .await?,
             SessionSave::Saved
         );
-        assert_eq!(get_all_active_sessions(&pool).await?.len(), 1);
+        let sessions = get_all_active_sessions(&pool).await?;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].message_mode, UiMessageMode::Text);
         delete_user(42, &pool).await?;
         assert_eq!(
-            save_user_session(42, 11, "late", Utc::now(), &fresh, &pool).await?,
+            save_user_session(
+                42,
+                11,
+                "late",
+                UiMessageMode::Photo,
+                Utc::now(),
+                &fresh,
+                &pool
+            )
+            .await?,
             SessionSave::Revoked
         );
         assert!(!user_exists(42, &pool).await);
@@ -549,6 +591,7 @@ mod tests {
                 last_menu_id INTEGER DEFAULT -1,
                 current_context TEXT DEFAULT '',
                 last_seen_at TEXT,
+                ui_message_mode TEXT,
                 private_menu_verified INTEGER DEFAULT 1
             )
             "#,
@@ -567,7 +610,9 @@ mod tests {
         .execute(&pool)
         .await?;
 
-        assert_eq!(get_all_active_sessions(&pool).await?.len(), 1);
+        let sessions = get_all_active_sessions(&pool).await?;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].message_mode, UiMessageMode::Unknown);
 
         clear_user_session(42, &pool).await?;
 

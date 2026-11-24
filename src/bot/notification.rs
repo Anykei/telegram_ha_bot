@@ -78,7 +78,7 @@ pub(crate) async fn deliver_notification(
     if !allowed
         || !crate::db::admission_is_current(user_id as u64, &generation, &config.db).await?
         // A queued message may outlive a switch from classic to HTML.
-        || crate::core::notification_delivery::suppress_device_message(&config, user_id as u64, &scope).await?
+        || crate::core::notification_delivery::suppress_device_message(&config, user_id as u64, &scope).await
     {
         return Ok(());
     }

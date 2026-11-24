@@ -26,8 +26,7 @@ pub(super) async fn home(bot: &Bot, query: &CallbackQuery, config: &Arc<AppConfi
     .fetch_optional(&config.db)
     .await?
     .flatten();
-    // Persisted identity also works after restart, when HTML sessions are gone
-    // and restored ordinary sessions still have the historical Photo mode.
+    // Persisted identity also works after restart, before the HTML action map is rebuilt.
     if saved_message != Some(message.id().0)
         || config
             .sessions
@@ -50,37 +49,23 @@ pub(super) async fn home(bot: &Bot, query: &CallbackQuery, config: &Arc<AppConfi
         return answer(bot, query, "denied").await;
     }
     answer(bot, query, "").await?;
-    config.cancel_view_update(user);
+    let token = config.begin_view_update(user);
     // A data edit cannot revive a closed JS runtime or change graph/range HTML.
     // Publish the replacement first; a failed delivery leaves the old anchor intact.
-    if let Some(replacement) =
-        deliver(bot, config, user, message.chat().id, None, &view, None).await?
-    {
-        crate::core::update_user_state_for_admission(
-            config,
+    let result = async {
+        if !handlers::send_new_view_inner(
+            bot,
+            message.chat().id,
             user,
-            replacement.0,
-            &Payload::Home.to_string(),
-            UiMessageMode::Html,
-            &generation,
+            view,
+            config.clone(),
+            Some(&token),
         )
-        .await;
-        if !config
-            .sessions
-            .get(&user)
-            .is_some_and(|s| s.last_menu_id == replacement.0)
+        .await?
         {
             return Ok(());
         }
-        let dialogue = config.active_dialogues.get(&user).map(|d| d.clone());
-        if let Some(dialogue) = dialogue {
-            // The authentication layer may register a dialogue without a saved
-            // state. Reset works for both open input and an already idle chat.
-            dialogue.reset().await?;
-        }
-        if let Some(mut session) = config.sessions.get_mut(&user) {
-            session.recording_rule_wizard = None;
-        }
+        let reset = handlers::reset_view_dialogue(config, user, &generation, &token).await;
         // Pending device/video operations are deliberately retained until their
         // real outcomes arrive; returning Home must not unlock duplicate writes.
         if let Err(error) = bot.delete_message(message.chat().id, message.id()).await {
@@ -90,6 +75,9 @@ pub(super) async fn home(bot: &Bot, query: &CallbackQuery, config: &Arc<AppConfi
                 error
             );
         }
+        reset
     }
-    Ok(())
+    .await;
+    config.finish_view_update(user, &token);
+    result
 }

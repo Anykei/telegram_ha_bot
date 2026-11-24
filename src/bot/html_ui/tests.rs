@@ -120,7 +120,7 @@ struct FakeTelegram {
     bot: Bot,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     uploads: Arc<Mutex<Vec<UploadedFile>>>,
-    fail: Arc<Mutex<Option<String>>>,
+    failures: Arc<Mutex<Vec<String>>>,
     update_batches: Arc<Mutex<std::collections::VecDeque<Vec<Value>>>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -137,8 +137,8 @@ impl FakeTelegram {
         let recorded = calls.clone();
         let uploads = Arc::new(Mutex::new(Vec::new()));
         let recorded_uploads = uploads.clone();
-        let fail = Arc::new(Mutex::new(None::<String>));
-        let failing = fail.clone();
+        let failures = Arc::new(Mutex::new(Vec::<String>::new()));
+        let failing = failures.clone();
         let update_batches = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let pending_updates = update_batches.clone();
         let task = tokio::spawn(async move {
@@ -180,16 +180,12 @@ impl FakeTelegram {
                 });
                 recorded.lock().unwrap().push((method.clone(), body));
                 let fail = {
-                    let mut method_to_fail = failing.lock().unwrap();
-                    if method_to_fail
-                        .as_deref()
-                        .is_some_and(|m| m.eq_ignore_ascii_case(&method))
-                    {
-                        method_to_fail.take();
-                        true
-                    } else {
-                        false
-                    }
+                    let mut methods = failing.lock().unwrap();
+                    methods
+                        .iter()
+                        .position(|m| m.eq_ignore_ascii_case(&method))
+                        .map(|index| methods.remove(index))
+                        .is_some()
                 };
                 id += 1;
                 let result = if method == "getUpdates" {
@@ -225,13 +221,16 @@ impl FakeTelegram {
             bot,
             calls,
             uploads,
-            fail,
+            failures,
             update_batches,
             task,
         })
     }
     fn calls(&self) -> Vec<(String, Value)> {
         self.calls.lock().unwrap().clone()
+    }
+    fn fail_next(&self, method: &str) {
+        self.failures.lock().unwrap().push(method.to_owned());
     }
     fn clear(&self) {
         self.calls.lock().unwrap().clear();
@@ -309,7 +308,7 @@ async fn polling_delivers_both_interfaces_and_advances_past_invalid_updates() ->
         ],
         vec![json!({"update_id":17,"message":message})],
     ]);
-    let mut listener = transport::listener(fake.bot.clone());
+    let mut listener = transport::listener(fake.bot.clone(), || {});
     let stop = listener.stop_token();
     let updates = listener.as_stream();
     futures_util::pin_mut!(updates);
@@ -849,7 +848,7 @@ async fn delivery_failure_and_unsupported_views_fall_back_without_changing_prefe
 {
     let (config, _) = config().await?;
     let fake = FakeTelegram::new().await?;
-    *fake.fail.lock().unwrap() = Some("sendWidget".into());
+    fake.fail_next("sendWidget");
     let view = router(Payload::Home, 1, config.clone()).await?;
     assert!(
         handlers::send_new_view_inner(&fake.bot, ChatId(1), 1, view, config.clone(), None).await?
@@ -862,12 +861,60 @@ async fn delivery_failure_and_unsupported_views_fall_back_without_changing_prefe
         db::interface::get(1, &config.db).await?,
         db::interface::InterfaceMode::Html
     );
+    let message = MessageId(config.sessions.get(&1).unwrap().last_menu_id);
+    fake.clear();
+    for _ in 0..2 {
+        handlers::refresh_current_view(
+            &fake.bot,
+            &config,
+            1,
+            ChatId(1),
+            message,
+            &Payload::Home.to_string(),
+        )
+        .await?;
+    }
+    let methods: Vec<_> = fake.calls().into_iter().map(|(method, _)| method).collect();
+    assert_eq!(methods.len(), 2);
+    assert!(methods
+        .iter()
+        .all(|method| method.eq_ignore_ascii_case("editMessageMedia")));
+    assert_eq!(config.sessions.get(&1).unwrap().last_menu_id, message.0);
+    assert!(
+        !crate::core::notification_delivery::suppress_device_message(
+            &config,
+            1,
+            &crate::models::NotificationScope::Device("light.living".into()),
+        )
+        .await
+    );
+
     let mut view = router(Payload::Home, 1, config.clone()).await?;
     view.next_state = Some(crate::bot::State::PersonalQuietHours);
     assert!(eligible(&view));
     view.next_state = None;
     view.image = Some(vec![1]);
     assert!(!eligible(&view));
+
+    let command = serde_json::from_value(
+        json!({"message_id":99,"date":1,"from":{"id":1,"is_bot":false,"first_name":"U"},"chat":{"id":1,"type":"private"},"text":"/html"}),
+    )?;
+    let dialogue = Dialogue::new(
+        teloxide::dispatching::dialogue::InMemStorage::new(),
+        ChatId(1),
+    );
+    handlers::handle_command(
+        fake.bot.clone(),
+        command,
+        handlers::Command::Html,
+        config.clone(),
+        dialogue,
+    )
+    .await?;
+    assert_eq!(
+        config.sessions.get(&1).unwrap().ui_message_mode,
+        UiMessageMode::Html
+    );
     Ok(())
 }
 

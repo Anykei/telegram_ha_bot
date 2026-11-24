@@ -86,3 +86,74 @@ async fn help_voice_guidance_obeys_global_and_user_permissions() -> Result<()> {
     assert!(view.text.contains("/cancel"));
     Ok(())
 }
+
+#[tokio::test]
+async fn disabled_html_marks_classic_selected_without_changing_saved_preference() -> Result<()> {
+    let (config, _) = super::super::config().await?;
+    let interface = Payload::Personal(PersonalPayload::Interface);
+    let generation = db::admission_generation(1, &config.db).await?.unwrap();
+    config.html_ui.delivery_failed(1, &generation);
+    let fallback = router(interface.clone(), 1, config.clone()).await?;
+    let labels: Vec<_> = fallback
+        .kb
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .map(|button| button.text.as_str())
+        .collect();
+    assert!(labels.contains(&"✓ Обычный"));
+    assert!(labels.contains(&"HTML"));
+    router(
+        Payload::Personal(PersonalPayload::SetInterface {
+            mode: db::interface::InterfaceMode::Html,
+        }),
+        1,
+        config.clone(),
+    )
+    .await?;
+    assert!(preferred(&config, 1).await);
+
+    config.html_ui.disable_widget_updates();
+    for lang in [Language::Ru, Language::En] {
+        db::user::set_user_language(1, lang, &config.db).await?;
+        let view = router(interface.clone(), 1, config.clone()).await?;
+        let selections: Vec<_> = view
+            .kb
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .filter_map(|button| {
+                let teloxide::types::InlineKeyboardButtonKind::CallbackData(data) = &button.kind
+                else {
+                    return None;
+                };
+                match Payload::from_string(data).ok()? {
+                    Payload::Personal(PersonalPayload::SetInterface { mode }) => {
+                        Some((mode, button.text.as_str()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            selections,
+            [(
+                db::interface::InterfaceMode::Classic,
+                crate::bot::personal::words(lang, "✓ Обычный", "✓ Classic")
+            )]
+        );
+        assert!(view.text.contains(crate::bot::personal::words(
+            lang,
+            "HTML-интерфейс недоступен",
+            "The HTML interface is unavailable"
+        )));
+        assert_eq!(
+            db::interface::get(1, &config.db).await?,
+            db::interface::InterfaceMode::Html
+        );
+        let navigation = router(Payload::HelpTopic(Topic::Navigation), 1, config.clone()).await?;
+        assert!(!navigation.text.contains("/html"));
+        assert!(navigation.text.contains("/ui"));
+    }
+    Ok(())
+}

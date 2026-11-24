@@ -6,13 +6,15 @@ use crate::{
     },
     db,
     i18n::Language,
-    models::AppConfig,
+    models::{AppConfig, UiMessageMode},
 };
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use teloxide::{prelude::*, types::MessageId};
+use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -147,6 +149,7 @@ pub(crate) struct Outcome {
     pub sent: usize,
     pub failed: usize,
     pub uncertain: bool,
+    pub reported_in_chat: bool,
 }
 impl Outcome {
     pub fn sent() -> Self {
@@ -159,6 +162,12 @@ impl Outcome {
         Self {
             failed: 1,
             ..Self::default()
+        }
+    }
+    pub fn reported_failure() -> Self {
+        Self {
+            reported_in_chat: true,
+            ..Self::failed()
         }
     }
     pub fn from_error(error: &anyhow::Error) -> Self {
@@ -215,6 +224,12 @@ impl std::fmt::Display for UploadUncertain {
 }
 impl std::error::Error for UploadUncertain {}
 
+pub(crate) struct Receipt {
+    pub bot: Bot,
+    pub widget: bool,
+    pub rendered: Option<oneshot::Receiver<()>>,
+}
+
 struct Entry {
     id: u64,
     generation: String,
@@ -233,6 +248,7 @@ impl Registry {
         user: u64,
         generation: &str,
         target: Target,
+        receipt: Receipt,
     ) -> Option<Operation> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let entries = entries.entry(user).or_default();
@@ -268,7 +284,7 @@ impl Registry {
         Some(Operation {
             config: config.clone(),
             user,
-            id: Some(id),
+            pending: Some((id, receipt)),
             target,
             generation: generation.into(),
         })
@@ -320,15 +336,22 @@ impl Registry {
             .and_then(|entries| entries.iter().find(|e| e.id == id))
             .is_none_or(|e| e.shown)
     }
-    fn finish(&self, user: u64, id: u64, outcome: Outcome) -> bool {
+    fn finish(&self, user: u64, id: u64, outcome: Option<Outcome>) -> bool {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(entry) = entries
-            .get_mut(&user)
-            .and_then(|e| e.iter_mut().find(|e| e.id == id))
-        else {
+        let Some(operations) = entries.get_mut(&user) else {
             return false;
         };
-        entry.outcome = Some(outcome);
+        let Some(index) = operations.iter().position(|entry| entry.id == id) else {
+            return false;
+        };
+        if let Some(outcome) = outcome {
+            operations[index].outcome = Some(outcome);
+        } else {
+            operations.remove(index);
+            if operations.is_empty() {
+                entries.remove(&user);
+            }
+        }
         true
     }
 }
@@ -336,38 +359,54 @@ impl Registry {
 pub(crate) struct Operation {
     config: Arc<AppConfig>,
     user: u64,
-    id: Option<u64>,
+    pending: Option<(u64, Receipt)>,
     target: Target,
     generation: String,
 }
 impl Operation {
-    fn release(&mut self, outcome: Outcome) {
-        if let Some(id) = self.id.take() {
-            // An old admission's completion must not release a newer send-all guard.
-            if self.config.html_ui.media.finish(self.user, id, outcome) {
-                if let Target::All { session, .. } = self.target {
-                    self.config.finish_recording_send(self.user, session);
-                }
-            }
+    fn release(&mut self, outcome: Outcome) -> Option<(u64, Receipt)> {
+        let (id, receipt) = self.pending.take()?;
+        // Only a widget renders saved results. A chat receipt is sent once.
+        let saved_outcome = receipt.widget.then_some(outcome);
+        if !self
+            .config
+            .html_ui
+            .media
+            .finish(self.user, id, saved_outcome)
+        {
+            return None;
         }
+        if let Target::All { session, .. } = self.target {
+            self.config.finish_recording_send(self.user, session);
+        }
+        Some((id, receipt))
     }
     pub async fn complete(mut self, outcome: Outcome) {
-        let Some(id) = self.id else {
-            return;
-        };
-        self.release(outcome);
-        refresh_receipt(&self.config, self.user, id, &self.generation, &self.target).await;
+        if let Some((id, receipt)) = self.release(outcome) {
+            present_receipt(
+                &self.config,
+                self.user,
+                id,
+                &self.generation,
+                &self.target,
+                receipt,
+                outcome,
+            )
+            .await;
+        }
     }
 }
 impl Drop for Operation {
     fn drop(&mut self) {
         // Cancellation is not proof that a Telegram upload failed. Never retry it.
-        let id = self.id;
-        self.release(Outcome {
+        let outcome = Outcome {
             uncertain: true,
             ..Outcome::failed()
-        });
-        if let Some(id) = id.filter(|_| tokio::runtime::Handle::try_current().is_ok()) {
+        };
+        if let Some((id, receipt)) = self
+            .release(outcome)
+            .filter(|_| tokio::runtime::Handle::try_current().is_ok())
+        {
             let (config, user, generation, target) = (
                 self.config.clone(),
                 self.user,
@@ -375,19 +414,42 @@ impl Drop for Operation {
                 self.target.clone(),
             );
             db::user::spawn_with_admission(async move {
-                refresh_receipt(&config, user, id, &generation, &target).await;
+                present_receipt(&config, user, id, &generation, &target, receipt, outcome).await;
             });
         }
     }
 }
 
-async fn refresh_receipt(
+fn matching_view(config: &AppConfig, user: u64, target: &Target) -> Option<(MessageId, String)> {
+    config.sessions.get(&user).and_then(|session| {
+        let payload = Payload::from_string(&session.current_context).ok()?;
+        target.matches_view(&payload).then(|| {
+            (
+                MessageId(session.last_menu_id),
+                session.current_context.clone(),
+            )
+        })
+    })
+}
+
+async fn present_receipt(
     config: &Arc<AppConfig>,
     user: u64,
     id: u64,
     generation: &str,
     target: &Target,
+    mut receipt: Receipt,
+    outcome: Outcome,
 ) {
+    // Wait for the initiating callback to settle its screen and release its
+    // update token before deciding which presentation owns the result.
+    if let Some(rendered) = receipt.rendered.take() {
+        let _ = rendered.await;
+    }
+    if !receipt.widget {
+        send_chat_receipt(config, user, generation, target, &receipt.bot, outcome).await;
+        return;
+    }
     // A queued refresh may be skipped while a callback owns the UI. Keep
     // requesting a coalesced read until this exact receipt was displayed.
     for _ in 0..120 {
@@ -404,12 +466,17 @@ async fn refresh_receipt(
         {
             return;
         }
-        let compatible = config
+        let uses_native_message = config
             .sessions
             .get(&user)
-            .and_then(|s| Payload::from_string(&s.current_context).ok())
-            .is_some_and(|p| target.matches_view(&p));
-        if !compatible {
+            .is_some_and(|session| session.ui_message_mode != UiMessageMode::Html);
+        if uses_native_message || !super::preferred(config, user).await {
+            if config.html_ui.media.finish(user, id, None) {
+                send_chat_receipt(config, user, generation, target, &receipt.bot, outcome).await;
+            }
+            return;
+        }
+        if matching_view(config, user, target).is_none() {
             return;
         }
         let _ = crate::core::enqueue_current_refresh(config, user).await;
@@ -417,9 +484,69 @@ async fn refresh_receipt(
     }
 }
 
+async fn send_chat_receipt(
+    config: &Arc<AppConfig>,
+    user: u64,
+    generation: &str,
+    target: &Target,
+    bot: &Bot,
+    outcome: Outcome,
+) {
+    let lang = db::get_user_language(user, &config.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(config.default_language);
+    if !db::cameras::get_accessible_camera(
+        user,
+        user == config.root_user,
+        target.camera(),
+        &config.db,
+    )
+    .await
+    .is_ok_and(|camera| camera.is_some())
+        || !db::admission_is_current(user, generation, &config.db)
+            .await
+            .unwrap_or(false)
+    {
+        return;
+    }
+    if !outcome.reported_in_chat
+        && bot
+            .send_message(ChatId(user as i64), outcome.text(lang == Language::En))
+            .await
+            .is_err()
+    {
+        log::warn!("operation=video_receipt user={} result=failed", user);
+    }
+    // The Classic archive temporarily hides Send all. Rebuild that keyboard
+    // once if it is still open, leaving any newer screen in place.
+    if matches!(target, Target::All { .. }) {
+        if let Some((message, context)) = matching_view(config, user, target) {
+            let _ = crate::bot::handlers::refresh_current_view(
+                bot,
+                config,
+                user,
+                ChatId(user as i64),
+                message,
+                &context,
+            )
+            .await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn widget_receipt() -> Receipt {
+        Receipt {
+            bot: Bot::new("123:test"),
+            widget: true,
+            rendered: None,
+        }
+    }
 
     #[tokio::test]
     async fn media_guard_survives_ui_reset_and_blocks_overlapping_archive_work() {
@@ -436,14 +563,14 @@ mod tests {
         let first = config
             .html_ui
             .media
-            .begin(&config, 1, "g1", segment.clone())
+            .begin(&config, 1, "g1", segment.clone(), widget_receipt())
             .unwrap();
         config.html_ui.clear(1);
         assert!(config.html_ui.media.blocks(1, "g1", &segment));
         assert!(config
             .html_ui
             .media
-            .begin(&config, 1, "g1", all.clone())
+            .begin(&config, 1, "g1", all.clone(), widget_receipt())
             .is_none());
         let independent = config
             .html_ui
@@ -457,6 +584,7 @@ mod tests {
                     session: 10,
                     segment: 101,
                 },
+                widget_receipt(),
             )
             .unwrap();
         drop(first);
@@ -464,13 +592,13 @@ mod tests {
         let all_guard = config
             .html_ui
             .media
-            .begin(&config, 1, "g1", all.clone())
+            .begin(&config, 1, "g1", all.clone(), widget_receipt())
             .unwrap();
         assert!(config.is_recording_send_in_progress(1, 10));
         assert!(config
             .html_ui
             .media
-            .begin(&config, 1, "g1", segment)
+            .begin(&config, 1, "g1", segment, widget_receipt())
             .is_none());
         drop(all_guard);
         assert!(!config.is_recording_send_in_progress(1, 10));
@@ -487,12 +615,12 @@ mod tests {
         let old = config
             .html_ui
             .media
-            .begin(&config, 1, "old", target.clone())
+            .begin(&config, 1, "old", target.clone(), widget_receipt())
             .unwrap();
         let current = config
             .html_ui
             .media
-            .begin(&config, 1, "new", target.clone())
+            .begin(&config, 1, "new", target.clone(), widget_receipt())
             .unwrap();
         drop(old);
         assert!(config.is_recording_send_in_progress(1, 10));
@@ -510,11 +638,13 @@ mod tests {
                 sent: 2,
                 failed: 1,
                 uncertain: false,
+                reported_in_chat: false,
             },
             Outcome {
                 sent: 1,
                 failed: 1,
                 uncertain: true,
+                reported_in_chat: false,
             },
         ] {
             let target = Target::All {
@@ -524,9 +654,9 @@ mod tests {
             let mut operation = config
                 .html_ui
                 .media
-                .begin(&config, 1, "g", target.clone())
+                .begin(&config, 1, "g", target.clone(), widget_receipt())
                 .unwrap();
-            operation.release(outcome);
+            let _ = operation.release(outcome);
             let mut view = View {
                 payload: Payload::Camera(CameraPayload::RecordingSession {
                     camera: 1,
@@ -561,16 +691,17 @@ mod tests {
                     camera: 1,
                     seconds: 10,
                 },
+                widget_receipt(),
             )
             .unwrap();
-        let id = operation.id.unwrap();
+        let id = operation.pending.as_ref().unwrap().0;
         let mut view = View {
             payload: Payload::Camera(CameraPayload::CameraDetail { id: 1 }),
             ..Default::default()
         };
         let pending = config.html_ui.media.decorate(1, "g", &mut view);
         assert_eq!(pending, None);
-        operation.release(Outcome::sent());
+        let _ = operation.release(Outcome::sent());
         config.html_ui.media.mark_shown(1, pending);
         assert!(!config.html_ui.media.is_shown(1, id));
         let receipt = config.html_ui.media.decorate(1, "g", &mut view);

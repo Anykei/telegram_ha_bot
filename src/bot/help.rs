@@ -48,11 +48,19 @@ impl Topic {
         words(lang, ru, en)
     }
 
-    fn text(self, lang: Language) -> &'static str {
+    fn text(self, lang: Language, html_available: bool) -> &'static str {
         let (ru, en) = match self {
+            Self::Controls if !html_available => (
+                "Комнаты → устройство: нажмите нужное действие и дождитесь обновления карточки.\n\n«Сценарии» запускают группы действий и сценарии HA. Если появилось подтверждение, проверьте действие перед запуском.",
+                "Rooms → device: select an action and wait for the card to update.\n\nScenarios runs action groups and HA scripts/scenes. If confirmation appears, review the action before running it.",
+            ),
             Self::Controls => (
                 "Комнаты → устройство: нажмите нужное действие. В HTML кнопка заблокирована, пока команда применяется. Не повторяйте её при ожидании.\n\n«Сценарии» запускают группы действий и сценарии HA. Если появилось подтверждение, проверьте действие перед запуском.",
                 "Rooms → device: select an action. In HTML, its button is locked while the change is pending; do not repeat the command.\n\nScenarios runs action groups and HA scripts/scenes. If confirmation appears, review the action before running it.",
+            ),
+            Self::Charts if !html_available => (
+                "Откройте датчик в комнате. Выберите готовый период или нажмите «Свой интервал» и отправьте длительность в часах.\n\n«Текущее» откроет окно графика, которое заканчивается сейчас.",
+                "Open a sensor in a room. Choose a preset or tap Custom range and send a duration in hours.\n\nCurrent opens a chart window ending now.",
             ),
             Self::Charts => (
                 "Откройте датчик в комнате. В HTML «Период» позволяет выбрать даты и время начала и конца. Примените интервал, чтобы обновить график.\n\n«Отправить PNG» пришлёт отдельное изображение: его можно увеличить, сохранить или переслать.",
@@ -73,6 +81,10 @@ impl Topic {
             Self::Input => (
                 "Напишите: «включи свет в кухне». Укажите комнату и устройство; если найдено несколько вариантов, выберите нужный.\n\n/cancel отменяет ввод текущего поля, сохраняя поля черновика. Уже принятую команду он не отменяет.",
                 "Type “turn on kitchen light”. Include the room and device; choose a match if several are found.\n\n/cancel cancels the current input and keeps saved draft fields. It does not undo an accepted command.",
+            ),
+            Self::Navigation if !html_available => (
+                "«Назад» — предыдущий уровень; ↻ — обновить данные. Стрелки снизу листают содержимое.\n\n/start — главное меню\n/help — помощь\n/ui — вид интерфейса\n/classic — кнопки Telegram\n/cancel — отмена ввода",
+                "Back returns to the previous level; ↻ refreshes data. Bottom arrows page through content.\n\n/start — home\n/help — help\n/ui — interface\n/classic — Telegram buttons\n/cancel — cancel input",
             ),
             Self::Navigation => (
                 "«Назад» — предыдущий уровень; ↻ — обновить данные. Стрелки снизу листают содержимое.\n\n/start — главное меню\n/help — помощь\n/ui — выбор интерфейса\n/html — HTML-карточки\n/classic — кнопки Telegram\n/cancel — отмена ввода",
@@ -123,7 +135,7 @@ pub async fn render(ctx: RenderContext, topic: Option<Topic>) -> Result<View> {
         Payload::Home
     };
     let mut text = topic
-        .map(|t| t.text(ctx.lang))
+        .map(|t| t.text(ctx.lang, ctx.config.html_ui.available()))
         .unwrap_or(words(
             ctx.lang,
             "Выберите тему, чтобы узнать, как пользоваться ботом.",

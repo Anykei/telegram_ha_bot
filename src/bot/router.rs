@@ -4721,6 +4721,8 @@ async fn router_admin_inner(mut ctx: RenderContext, payload: AdminPayload) -> an
                     crate::db::delete_user(id, &ctx.config.db).await?;
                     ctx.config.cancel_view_update(id);
                     ctx.config.sessions.remove(&id);
+                    ctx.config.html_ui.clear(id);
+                    ctx.config.html_ui.retry_delivery(id);
                     ctx.config.dialogue_generations.remove(&id);
                     if let Some((_, dialogue)) = ctx.config.active_dialogues.remove(&id) { let _ = dialogue.exit().await; }
                     // Keep the existing lock: in-flight jobs may still own its Arc.

@@ -352,14 +352,14 @@ pub async fn update_user_state_for_admission(
     context: &str,
     ui_message_mode: crate::models::UiMessageMode,
     generation: &str,
-) {
+) -> bool {
     let _lifecycle = config.admission_lifecycle.lock().await;
     let now = Utc::now();
     if !db::user::admission_is_current(user_id, generation, &config.db)
         .await
         .unwrap_or(false)
     {
-        return;
+        return false;
     }
     // A redraw can occur after a restart without an in-memory session. Restore
     // the persisted user activity, rather than creating a new inactivity lease.
@@ -373,11 +373,11 @@ pub async fn update_user_state_for_admission(
             Some(at) => at,
             // A background result must not recreate a session removed by TTL
             // cleanup. Only authentication can establish new user activity.
-            None => return,
+            None => return false,
         },
         Err(error) => {
             log::warn!("Session activity lookup failed: {}", error);
-            return;
+            return false;
         }
     };
     let previous_persisted_at = config
@@ -397,6 +397,7 @@ pub async fn update_user_state_for_admission(
             user_id,
             msg_id,
             context,
+            ui_message_mode,
             last_seen_at,
             generation,
             &config.db,
@@ -409,11 +410,11 @@ pub async fn update_user_state_for_admission(
                     "operation=session_save owner={} stage=commit result=revoked",
                     user_id
                 );
-                return;
+                return false;
             }
             Err(error) => {
                 log::warn!("Session persistence failed: {}", error);
-                return;
+                return false;
             }
         }
     }
@@ -439,5 +440,6 @@ pub async fn update_user_state_for_admission(
             },
         },
     );
+    true
 }
 pub(crate) mod readonly;

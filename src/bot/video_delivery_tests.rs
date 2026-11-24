@@ -16,6 +16,27 @@ async fn camera_config(timeout: u64) -> Result<Arc<AppConfig>> {
     Ok(config)
 }
 
+async fn archive_fixture(config: &AppConfig, root: &Path, total: i64, present: i64) -> Result<i64> {
+    let rule = sqlx::query("INSERT INTO camera_recording_rules(name,camera_id) VALUES('Test',1)")
+        .execute(&config.db)
+        .await?
+        .last_insert_rowid();
+    let session = sqlx::query("INSERT INTO camera_recording_sessions(event_group_id,rule_id,camera_id,trigger_summary,status,first_event_at,last_event_at,stop_after_at,expires_at) VALUES('video-test',?,1,'Test','completed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,datetime('now','+1 day'))").bind(rule).execute(&config.db).await?.last_insert_rowid();
+    for index in 0..total {
+        let path = format!("{index}.mp4");
+        if index < present {
+            std::fs::write(root.join(&path), b"test video")?;
+            std::fs::write(
+                root.join(format!("{index}.preview.jpg")),
+                crate::bot::utils::UI_PLACEHOLDER_BYTES,
+            )?;
+        }
+        sqlx::query("INSERT INTO camera_recording_segments(session_id,camera_id,segment_index,file_path,duration_s,status,expires_at) VALUES(?,1,?,?,10,'ready',datetime('now','+1 day'))")
+            .bind(session).bind(index).bind(&path).execute(&config.db).await?;
+    }
+    Ok(session)
+}
+
 #[tokio::test]
 async fn delivered_videos_each_expire_using_the_existing_message_timeout() -> Result<()> {
     let config = camera_config(1).await?;
@@ -105,23 +126,7 @@ async fn archive_delivery_reports_partial_success_and_keeps_source_files() -> Re
     Arc::get_mut(&mut config)
         .unwrap()
         .camera_recording_storage_root = root.to_string_lossy().into();
-    let rule = sqlx::query("INSERT INTO camera_recording_rules(name,camera_id) VALUES('Test',1)")
-        .execute(&config.db)
-        .await?
-        .last_insert_rowid();
-    let session = sqlx::query("INSERT INTO camera_recording_sessions(event_group_id,rule_id,camera_id,trigger_summary,status,first_event_at,last_event_at,stop_after_at,expires_at) VALUES('video-test',?,1,'Test','completed',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,datetime('now','+1 day'))").bind(rule).execute(&config.db).await?.last_insert_rowid();
-    for index in 0..3 {
-        let path = format!("{index}.mp4");
-        if index < 2 {
-            std::fs::write(root.join(&path), b"test video")?;
-            std::fs::write(
-                root.join(format!("{index}.preview.jpg")),
-                crate::bot::utils::UI_PLACEHOLDER_BYTES,
-            )?;
-        }
-        sqlx::query("INSERT INTO camera_recording_segments(session_id,camera_id,segment_index,file_path,duration_s,status,expires_at) VALUES(?,1,?,?,10,'ready',datetime('now','+1 day'))")
-            .bind(session).bind(index).bind(&path).execute(&config.db).await?;
-    }
+    let session = archive_fixture(&config, &root, 3, 2).await?;
     let access = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
     let (bot, server) = crate::bot::router::control_tests::mock_telegram_edits(vec![
         (200, message(700)),
@@ -135,7 +140,7 @@ async fn archive_delivery_reports_partial_success_and_keeps_source_files() -> Re
         VideoOutcome {
             sent: 2,
             failed: 1,
-            uncertain: false
+            ..Default::default()
         }
     );
     let requests = tokio::time::timeout(StdDuration::from_secs(5), server).await???;
@@ -153,6 +158,134 @@ async fn archive_delivery_reports_partial_success_and_keeps_source_files() -> Re
     assert!(root.join("0.mp4").exists());
     assert!(root.join("1.mp4").exists());
     std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn classic_archive_upload_reports_success_and_failure_and_refreshes_once() -> Result<()> {
+    use crate::i18n::Language;
+
+    for (lang, mut responses, notice) in [
+        (
+            Language::Ru,
+            vec![(200, message(701)), (200, message(702))],
+            "Видео отправлено: 2",
+        ),
+        (
+            Language::En,
+            vec![(
+                400,
+                json!({
+                    "ok": false,
+                    "error_code": 400,
+                    "description": "Bad Request: wrong file identifier/HTTP URL specified"
+                }),
+            )],
+            "Video could not be sent. You can retry.",
+        ),
+    ] {
+        let storage = crate::core::cameras::TemporaryMedia::new()?;
+        let root = storage.path().parent().unwrap().to_path_buf();
+        let mut config = camera_config(0).await?;
+        Arc::get_mut(&mut config)
+            .unwrap()
+            .camera_recording_storage_root = root.to_string_lossy().into_owned();
+        db::set_user_language(42, lang, &config.db).await?;
+        let session = archive_fixture(&config, &root, 2, 2).await?;
+        let route = Payload::Camera(CameraPayload::RecordingSession { camera: 1, session });
+        crate::core::update_user_state_with_mode(
+            &config,
+            42,
+            7,
+            &route.to_string(),
+            UiMessageMode::Photo,
+        )
+        .await;
+        let uploads = responses.len();
+        responses.extend([
+            (200, message(703)),
+            (200, message(7)),
+            (200, json!({"ok":true,"result":true})),
+        ]);
+        let (bot, mut server) =
+            crate::bot::router::control_tests::mock_telegram_edits(responses).await?;
+        spawn_video_delivery(
+            ChatId(42),
+            42,
+            VideoTarget::All { camera: 1, session },
+            config.clone(),
+            VideoReceipt {
+                bot: bot.clone(),
+                widget: false,
+                rendered: None,
+            },
+        )
+        .await?;
+
+        // Retain the last fake response for a probe. Any extra camera request
+        // would consume it and finish the server before the probe can be sent.
+        assert!(
+            tokio::time::timeout(StdDuration::from_millis(1300), &mut server)
+                .await
+                .is_err()
+        );
+        bot.delete_message(ChatId(42), MessageId(999)).await?;
+        let requests = tokio::time::timeout(StdDuration::from_secs(5), server).await???;
+        let method = |index: usize| requests[index]["method"].as_str().unwrap();
+        assert!((0..uploads).all(|i| method(i).contains("SendVideo")));
+        assert!(method(uploads).contains("SendMessage"));
+        assert_eq!(requests[uploads]["text"], notice);
+        assert!(method(uploads + 1).contains("EditMessageMedia"));
+        let send_all = Payload::Camera(CameraPayload::SendRecordingAll { camera: 1, session });
+        assert!(requests[uploads + 1]["multipart"]
+            .as_str()
+            .unwrap()
+            .contains(&send_all.to_string()));
+        assert!(method(uploads + 2).contains("DeleteMessage"));
+        assert!(!config.is_recording_send_in_progress(42, session));
+        assert_eq!(config.runtime_status.read().await.ui_refresh_queued, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn classic_video_keeps_detailed_error_without_a_second_chat_receipt() -> Result<()> {
+    let config = camera_config(0).await?;
+    let access = CameraDeliveryAccess::new(ChatId(42), 42, 1, &config).await?;
+    let (bot, server) = crate::bot::router::control_tests::mock_telegram_edits(vec![
+        (200, message(701)),
+        (200, json!({"ok":true,"result":true})),
+    ])
+    .await?;
+    let operation = config
+        .html_ui
+        .media
+        .begin(
+            &config,
+            42,
+            &access.generation,
+            VideoTarget::Segment {
+                camera: 1,
+                session: 7,
+                segment: 9,
+            },
+            VideoReceipt {
+                bot: bot.clone(),
+                widget: false,
+                rendered: None,
+            },
+        )
+        .unwrap();
+    let outcome = send_recording_segment(&bot, ChatId(42), 7, 9, &access).await?;
+    assert_eq!(outcome, VideoOutcome::reported_failure());
+    operation.complete(outcome).await;
+    bot.delete_message(ChatId(42), MessageId(999)).await?;
+    let requests = tokio::time::timeout(StdDuration::from_secs(5), server).await???;
+    assert_eq!(requests[0]["text"], "Файл записи не найден.");
+    assert!(requests[1]["method"]
+        .as_str()
+        .unwrap()
+        .contains("DeleteMessage"));
     Ok(())
 }
 

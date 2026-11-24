@@ -3383,9 +3383,9 @@ async fn background_redraw_preserves_user_activity_in_memory_and_persisted_sessi
     assert_eq!(
         persisted
             .iter()
-            .find(|(user, _, _, _)| *user == 42)
+            .find(|session| session.user_id == 42)
             .unwrap()
-            .3,
+            .last_seen_at,
         inactive_since
     );
     let cutoff = Utc::now() - Duration::hours(config.session_ttl_hours as i64);

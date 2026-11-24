@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::models::{AppConfig, NotificationData, NotificationScope};
+use crate::models::{AppConfig, NotificationData, NotificationScope, UiMessageMode};
 
 pub const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
 pub const NOTIFICATION_WORKERS: usize = 2;
@@ -32,17 +32,18 @@ struct QueuedNotification {
     scope: NotificationScope,
 }
 
-/// Device transitions are visible in Home's status panel in HTML mode. Camera
-/// recording notices have their own lifecycle and are not state duplicates.
+/// A delivered classic menu overrides the stored HTML preference for device notices.
 pub(crate) async fn suppress_device_message(
     config: &AppConfig,
     user_id: u64,
     scope: &NotificationScope,
-) -> anyhow::Result<bool> {
-    Ok(config.html_ui.enabled
-        && matches!(scope, NotificationScope::Device(_))
-        && crate::db::interface::get(user_id, &config.db).await?
-            == crate::db::interface::InterfaceMode::Html)
+) -> bool {
+    matches!(scope, NotificationScope::Device(_))
+        && config
+            .sessions
+            .get(&user_id)
+            .is_none_or(|session| session.ui_message_mode == UiMessageMode::Html)
+        && crate::bot::html_ui::preferred(config, user_id).await
 }
 
 pub async fn enqueue(config: &AppConfig, data: NotificationData) -> anyhow::Result<()> {
@@ -51,7 +52,7 @@ pub async fn enqueue(config: &AppConfig, data: NotificationData) -> anyhow::Resu
         let Some(generation) = crate::db::admission_generation(user_id, &config.db).await? else {
             continue;
         };
-        if suppress_device_message(config, user_id, &data.scope).await? {
+        if suppress_device_message(config, user_id, &data.scope).await {
             continue;
         }
         let item = QueuedNotification {

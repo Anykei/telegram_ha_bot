@@ -23,7 +23,7 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -60,6 +60,8 @@ struct WidgetSession {
 #[derive(Default)]
 pub struct HtmlUi {
     pub enabled: bool,
+    widget_updates_disabled: AtomicBool,
+    failed_deliveries: DashMap<u64, String>,
     sessions: DashMap<u64, WidgetSession>,
     ranges: DashMap<u64, range::Draft>,
     pub(crate) pending: pending::PendingCommands,
@@ -72,9 +74,24 @@ impl HtmlUi {
             ..Default::default()
         }
     }
-    pub fn clear(&self, user: u64) {
+    pub fn available(&self) -> bool {
+        self.enabled && !self.widget_updates_disabled.load(Ordering::Acquire)
+    }
+    pub fn disable_widget_updates(&self) {
+        self.widget_updates_disabled.store(true, Ordering::Release);
+    }
+    pub fn retry_delivery(&self, user: u64) {
+        self.failed_deliveries.remove(&user);
+    }
+    pub fn delivery_failed(&self, user: u64, generation: &str) {
+        self.failed_deliveries.insert(user, generation.to_owned());
+    }
+    pub fn clear_view(&self, user: u64) {
         self.sessions.remove(&user);
         self.ranges.remove(&user);
+    }
+    pub fn clear(&self, user: u64) {
+        self.clear_view(user);
         self.pending.clear(user);
     }
     pub fn input_is_open(&self, user: u64, message: i32) -> bool {
@@ -82,12 +99,35 @@ impl HtmlUi {
             .get(&user)
             .is_some_and(|session| session.message == message && session.view.next_state.is_some())
     }
+    pub fn has_message(&self, user: u64, message: i32) -> bool {
+        self.sessions
+            .get(&user)
+            .is_some_and(|session| session.message == message)
+    }
 }
 
 pub async fn preferred(config: &AppConfig, user: u64) -> bool {
-    config.html_ui.enabled
-        && db::interface::get(user, &config.db).await.ok()
-            == Some(db::interface::InterfaceMode::Html)
+    if !config.html_ui.available() {
+        return false;
+    }
+    let failed_generation = config
+        .html_ui
+        .failed_deliveries
+        .get(&user)
+        .map(|entry| entry.value().clone());
+    if let Some(generation) = failed_generation {
+        if db::user::admission_is_current(user, &generation, &config.db)
+            .await
+            .unwrap_or(true)
+        {
+            return false;
+        }
+        config
+            .html_ui
+            .failed_deliveries
+            .remove_if(&user, |_, failed| *failed == generation);
+    }
+    db::interface::get(user, &config.db).await.ok() == Some(db::interface::InterfaceMode::Html)
 }
 pub fn eligible(view: &View) -> bool {
     presentation::prepare(view, "0".repeat(32), 1).is_ok()
@@ -183,7 +223,7 @@ pub async fn deliver(
     view: &View,
     cancellation: Option<&CancellationToken>,
 ) -> Result<Option<MessageId>> {
-    if !presentation::supported(view) {
+    if !config.html_ui.available() || !presentation::supported(view) {
         return Ok(None);
     }
     let Some(generation) = handlers::view_admission(view, config, user, chat).await? else {
@@ -361,8 +401,8 @@ pub async fn resolve(
     let current = config.sessions.get(&user).is_some_and(|session| {
         session.last_menu_id == message.id().0 && session.ui_message_mode == UiMessageMode::Html
     });
-    if !config.html_ui.enabled
-        || !current
+    if !current
+        || !preferred(config, user).await
         || snapshot.message != message.id().0
         || !db::user::admission_is_current(user, &snapshot.generation, &config.db).await?
         || handlers::view_admission(&snapshot.view, config, user, message.chat().id)
