@@ -1,7 +1,6 @@
 // Local Chromium via its DevTools pipe; no server, browser download or HA access.
-import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, access, writeFile, rm } from 'node:fs/promises';
-import { tmpdir, homedir } from 'node:os';
+import { mkdir, readdir, access, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
@@ -12,6 +11,7 @@ import { checkGraph } from './graph-browser.mjs';
 import { checkAudit } from './audit-browser.mjs';
 import { checkLive } from './live-browser.mjs';
 import { checkUnified } from './unified-browser.mjs';
+import { openBrowser } from './browser-connection.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 let executable = process.env.HA_WIDGET_CHROME;
@@ -23,28 +23,7 @@ if (!executable && process.platform === 'darwin') {
   }
 }
 if (!executable) throw Error('Set HA_WIDGET_CHROME to an installed Chromium executable.');
-const profile = await mkdtemp(join(tmpdir(), 'ha-widget-browser-'));
-const browser = spawn(executable, ['--headless', '--no-sandbox', '--remote-debugging-pipe', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--no-first-run', '--no-default-browser-check', '--password-store=basic', '--use-mock-keychain', `--user-data-dir=${profile}`], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
-let next = 0, buffer = '', sessionId;
-const pending = new Map();
-browser.stderr.on('data', () => {});
-browser.stdio[4].on('data', chunk => {
-  buffer += chunk.toString();
-  let index;
-  while ((index = buffer.indexOf('\0')) !== -1) {
-    const message = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
-    const task = pending.get(message.id);
-    if (task) { clearTimeout(task.timer); pending.delete(message.id); message.error ? task.reject(Error(JSON.stringify(message.error))) : task.resolve(message.result); }
-  }
-});
-function command(method, params = {}, session = sessionId) {
-  return new Promise((resolve, reject) => {
-    const id = ++next;
-    const timer = setTimeout(() => { pending.delete(id); reject(Error(`Timeout: ${method}`)); }, 12000);
-    pending.set(id, { resolve, reject, timer });
-    browser.stdio[3].write(JSON.stringify({ id, method, params, ...(session ? { sessionId: session } : {}) }) + '\0');
-  });
-}
+const { command, close } = await openBrowser(executable);
 async function evaluate(expression) {
   const result = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
   if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
@@ -64,8 +43,6 @@ async function scenario(value) {
   await until(`${get('name')} && ${get('state')}.textContent !== 'Нет данных'`);
 }
 try {
-  const { targetId } = await command('Target.createTarget', { url: 'about:blank' }, null);
-  ({ sessionId } = await command('Target.attachToTarget', { targetId, flatten: true }, null));
   await command('Page.enable');
   await command('Network.enable');
   // The complete page must work even with networking forcibly offline.
@@ -150,8 +127,5 @@ try {
   await checkAudit({root, command, evaluate, until});
   }
 } finally {
-  await command('Browser.close', {}, null).catch(() => {});
-  browser.kill();
-  await new Promise(resolve => setTimeout(resolve, 250));
-  await rm(profile, { recursive: true, force: true }).catch(() => {});
+  await close();
 }
