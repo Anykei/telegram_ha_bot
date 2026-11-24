@@ -96,6 +96,7 @@ jobs:
           HA_WIDGET_CHROME="$(command -v google-chrome)"
           export HA_WIDGET_CHROME
           test -n "$HA_WIDGET_CHROME"
+          "$HA_WIDGET_CHROME" --version
           npm run check:browser --prefix ui/widgets
 
   automation:
