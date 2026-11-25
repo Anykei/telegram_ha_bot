@@ -518,20 +518,27 @@ pub async fn archive_missing_devices(
         return Ok(0);
     }
 
-    // Build placeholders for IN clause
     let placeholders = synced_entity_ids
         .iter()
         .map(|_| "?")
         .collect::<Vec<_>>()
         .join(", ");
+    // Check for missing devices without acquiring the SQLite writer lock.
+    // Only placeholders are interpolated. The UPDATE rechecks the same predicate.
+    let missing = format!("entity_id NOT IN ({placeholders}) AND archived = 0");
+    let mut lookup = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
+        "SELECT EXISTS(SELECT 1 FROM devices WHERE {missing})"
+    )));
+    for entity_id in synced_entity_ids {
+        lookup = lookup.bind(entity_id);
+    }
+    if !lookup.fetch_one(pool).await? {
+        return Ok(0);
+    }
 
-    let query_str = format!(
-        "UPDATE devices SET archived = 1 WHERE entity_id NOT IN ({}) AND archived = 0",
-        placeholders
-    );
-
-    // Only placeholder count is interpolated; entity IDs are bound below.
-    let mut query = sqlx::query(sqlx::AssertSqlSafe(query_str));
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE devices SET archived = 1 WHERE {missing}"
+    )));
     for entity_id in synced_entity_ids {
         query = query.bind(entity_id);
     }
@@ -714,6 +721,36 @@ mod tests {
         .await?;
 
         Ok(pool)
+    }
+
+    #[tokio::test]
+    async fn archive_missing_devices_respects_inventory_and_flags() -> anyhow::Result<()> {
+        let pool = test_pool().await?;
+        sqlx::query(
+            "INSERT INTO devices (room_id, entity_id, archived) VALUES
+             (1, 'light.present', 0), (1, 'light.missing', 0), (1, 'light.archived', 1)",
+        )
+        .execute(&pool)
+        .await?;
+
+        assert_eq!(archive_missing_devices(&[], &pool).await?, 0);
+        let synced = [String::from("light.present")];
+        assert_eq!(archive_missing_devices(&synced, &pool).await?, 1);
+        assert_eq!(archive_missing_devices(&synced, &pool).await?, 0);
+
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT entity_id, archived FROM devices ORDER BY id")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(
+            rows,
+            [
+                ("light.present".to_owned(), 0),
+                ("light.missing".to_owned(), 1),
+                ("light.archived".to_owned(), 1),
+            ]
+        );
+        Ok(())
     }
 
     #[tokio::test]

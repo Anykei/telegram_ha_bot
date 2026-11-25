@@ -119,6 +119,15 @@ pub async fn list_recent(
 }
 
 pub async fn purge_older_than(cutoff: DateTime<Utc>, pool: &SqlitePool) -> Result<u64> {
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM activity_log WHERE DATETIME(created_at) < DATETIME(?))",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+    if !expired {
+        return Ok(0);
+    }
     let result = sqlx::query("DELETE FROM activity_log WHERE DATETIME(created_at) < DATETIME(?)")
         .bind(cutoff)
         .execute(pool)

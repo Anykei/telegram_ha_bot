@@ -162,10 +162,20 @@ pub async fn replace_for_review(
 /// Keep receipts for begun operations; discard only unused, expired proposals.
 /// Legacy identity tombstones deliberately survive this cleanup.
 pub async fn purge_expired(pool: &SqlitePool) -> Result<u64> {
+    let now = chrono::Utc::now().timestamp();
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM ui_confirmations WHERE status IN ('pending', 'cancelled') AND expires_at <= ?)",
+    )
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    if !expired {
+        return Ok(0);
+    }
     Ok(sqlx::query(
         "DELETE FROM ui_confirmations WHERE status IN ('pending', 'cancelled') AND expires_at <= ?",
     )
-    .bind(chrono::Utc::now().timestamp())
+    .bind(now)
     .execute(pool)
     .await?
     .rows_affected())

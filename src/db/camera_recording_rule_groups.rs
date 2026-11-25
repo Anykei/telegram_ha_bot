@@ -311,50 +311,37 @@ pub async fn can_user_toggle_group(
 }
 
 pub async fn toggle_rule_in_group(rule_id: i64, group_id: i64, pool: &SqlitePool) -> Result<bool> {
-    let mut conn = pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM camera_recording_rule_group_items WHERE rule_id = ? AND group_id = ?",
+    )
+    .bind(rule_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await?;
 
-    let result: Result<bool> = async {
-        let exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM camera_recording_rule_group_items WHERE rule_id = ? AND group_id = ?",
+    let selected = if exists.is_some() {
+        sqlx::query(
+            "DELETE FROM camera_recording_rule_group_items WHERE rule_id = ? AND group_id = ?",
         )
         .bind(rule_id)
         .bind(group_id)
-        .fetch_optional(&mut *conn)
+        .execute(&mut *tx)
         .await?;
+        false
+    } else {
+        sqlx::query(
+            "INSERT INTO camera_recording_rule_group_items (rule_id, group_id) VALUES (?, ?)",
+        )
+        .bind(rule_id)
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+        true
+    };
 
-        if exists.is_some() {
-            sqlx::query(
-                "DELETE FROM camera_recording_rule_group_items WHERE rule_id = ? AND group_id = ?",
-            )
-            .bind(rule_id)
-            .bind(group_id)
-            .execute(&mut *conn)
-            .await?;
-            Ok(false)
-        } else {
-            sqlx::query(
-                "INSERT INTO camera_recording_rule_group_items (rule_id, group_id) VALUES (?, ?)",
-            )
-            .bind(rule_id)
-            .bind(group_id)
-            .execute(&mut *conn)
-            .await?;
-            Ok(true)
-        }
-    }
-    .await;
-
-    match result {
-        Ok(selected) => {
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
-            Ok(selected)
-        }
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            Err(error)
-        }
-    }
+    tx.commit().await?;
+    Ok(selected)
 }
 
 pub async fn add_rule_to_group(rule_id: i64, group_id: i64, pool: &SqlitePool) -> Result<bool> {
@@ -523,6 +510,27 @@ pub async fn rule_groups_enabled(rule_id: i64, pool: &SqlitePool) -> Result<bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_rule_group_commit_releases_the_connection_transaction() -> Result<()> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        let group = create_group("Recording group", &pool).await?;
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+
+        // With the missing rule checked only at commit, the transaction must
+        // roll back before the only connection can serve the next writer.
+        assert!(toggle_rule_in_group(i64::MAX, group, &pool).await.is_err());
+        let writer = pool.begin_with("BEGIN IMMEDIATE").await?;
+        writer.rollback().await?;
+        assert!(list_group_rules(group, &pool).await?.is_empty());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn queued_group_toggle_rechecks_admission_and_scope_at_write_boundary() -> Result<()> {

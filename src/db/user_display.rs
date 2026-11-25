@@ -48,6 +48,12 @@ pub async fn capture(
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    let current = get(user_id, pool).await?;
+    if current.display_name.as_deref() == Some(name.as_str())
+        && current.username.as_deref() == username
+    {
+        return Ok(());
+    }
     sqlx::query("INSERT INTO user_display_metadata (user_id, display_name, username) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name, username = excluded.username WHERE display_name IS NOT excluded.display_name OR username IS NOT excluded.username")
         .bind(i64::try_from(user_id)?).bind(name).bind(username).execute(pool).await?;
     Ok(())
