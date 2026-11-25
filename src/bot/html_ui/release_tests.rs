@@ -397,7 +397,7 @@ async fn html_temperature_form_keeps_dialogue_on_read_and_uses_regular_input_val
         room,
         device: climate,
     });
-    publish(&fake, &config, card.clone()).await?;
+    let thermostat = publish(&fake, &config, card.clone()).await?;
     let dialogue = Dialogue::new(
         teloxide::dispatching::dialogue::InMemStorage::<crate::bot::State>::new(),
         ChatId(1),
@@ -430,9 +430,15 @@ async fn html_temperature_form_keeps_dialogue_on_read_and_uses_regular_input_val
         &form.view.payload.to_string(),
     )
     .await?;
+    // Opening the form may replace the widget and delete the previous one asynchronously.
+    let calls = fake.calls();
     assert!(
-        fake.calls().is_empty(),
-        "Heartbeat must not replace a form or create a new draft"
+        calls.is_empty()
+            || matches!(calls.as_slice(), [(method, body)]
+                if method.eq_ignore_ascii_case("deleteMessage")
+                    && form.message != thermostat.message
+                    && body["message_id"] == thermostat.message),
+        "Heartbeat must not replace a form or create a new draft: {calls:?}"
     );
     press(&fake, &config, &dialogue, query(&form, "read")).await?;
     assert_eq!(current(&config).pages[0].rev, form.pages[0].rev);
