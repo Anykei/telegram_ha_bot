@@ -310,6 +310,15 @@ pub async fn recover_one(id: i64, pool: &SqlitePool) -> Result<u64> {
 }
 
 async fn recover_interrupted(id: Option<i64>, pool: &SqlitePool) -> Result<u64> {
+    let interrupted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM action_schedule_runs WHERE status = 'executing' AND (?1 IS NULL OR id = ?1))",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    if !interrupted {
+        return Ok(0);
+    }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let runs: Vec<ScheduleRun> = sqlx::query_as(
         "SELECT * FROM action_schedule_runs WHERE status = 'executing' AND (? IS NULL OR id = ?)",

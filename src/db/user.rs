@@ -75,8 +75,18 @@ pub async fn list_admin_users(root_user: u64, pool: &SqlitePool) -> Result<Vec<u
 }
 
 pub async fn add_user(user_id: u64, pool: &SqlitePool) -> Result<()> {
+    let id = user_id as i64;
+    // A duplicate INSERT still waits for SQLite's writer lock.
+    if sqlx::query_scalar::<_, i64>("SELECT id FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
     sqlx::query("INSERT OR IGNORE INTO users (id) VALUES (?)")
-        .bind(user_id as i64)
+        .bind(id)
         .execute(pool)
         .await?;
 

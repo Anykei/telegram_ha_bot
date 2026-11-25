@@ -17,7 +17,7 @@ pub fn spawn_background_maintenance(
     config: Arc<AppConfig>,
     cancel_token: CancellationToken,
 ) -> JoinHandle<()> {
-    info!("Core: Notification processor started");
+    info!("Core: Background maintenance started");
 
     tokio::spawn(async move {
         start_background_maintenance(bot, config, cancel_token).await;

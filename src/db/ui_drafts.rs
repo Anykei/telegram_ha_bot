@@ -112,10 +112,22 @@ fn expiration(now: i64, ttl_hours: u64) -> i64 {
 /// Bound each maintenance tick; saved-result links remain until their draft TTL.
 pub async fn purge_expired(pool: &SqlitePool) -> Result<()> {
     let now = Utc::now().timestamp();
-    sqlx::query("DELETE FROM ui_drafts WHERE id IN (SELECT id FROM ui_drafts WHERE expires_at <= ? ORDER BY expires_at LIMIT 500)")
-        .bind(now).execute(pool).await?;
-    sqlx::query("DELETE FROM command_choices WHERE id IN (SELECT id FROM command_choices WHERE expires_at <= ? ORDER BY expires_at LIMIT 500)")
-        .bind(now).execute(pool).await?;
+    let (drafts, choices): (bool, bool) = sqlx::query_as(
+        "SELECT
+            EXISTS(SELECT 1 FROM ui_drafts WHERE expires_at <= ?1),
+            EXISTS(SELECT 1 FROM command_choices WHERE expires_at <= ?1)",
+    )
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    if drafts {
+        sqlx::query("DELETE FROM ui_drafts WHERE id IN (SELECT id FROM ui_drafts WHERE expires_at <= ? ORDER BY expires_at LIMIT 500)")
+            .bind(now).execute(pool).await?;
+    }
+    if choices {
+        sqlx::query("DELETE FROM command_choices WHERE id IN (SELECT id FROM command_choices WHERE expires_at <= ? ORDER BY expires_at LIMIT 500)")
+            .bind(now).execute(pool).await?;
+    }
     Ok(())
 }
 

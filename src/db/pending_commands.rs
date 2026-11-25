@@ -126,6 +126,14 @@ pub async fn mark_cancelled(id: i64, pool: &SqlitePool) -> Result<()> {
 }
 
 pub async fn expire_old(pool: &SqlitePool) -> Result<u64> {
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pending_commands WHERE status = 'pending' AND julianday(expires_at) <= julianday('now'))",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !expired {
+        return Ok(0);
+    }
     let result = sqlx::query(
         r#"
         UPDATE pending_commands
